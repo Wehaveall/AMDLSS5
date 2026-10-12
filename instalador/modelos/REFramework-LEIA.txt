@@ -1,0 +1,3 @@
+REFramework (https://github.com/praydog/REFramework), MIT license, (c) praydog.
+Unmodified dinput8.dll from REFramework.zip of the official nightly release (github.com/praydog/REFramework-nightly); see origem.txt.
+Required by the mod in Capcom RE Engine games (Resident Evil etc.). The installer only adds it when the game has no dinput8.dll.

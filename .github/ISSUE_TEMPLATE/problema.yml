@@ -1,0 +1,50 @@
+name: Problema / Bug report
+description: Algo nao funcionou no jogo ou no instalador / Something did not work in a game or in the installer
+labels: [bug]
+body:
+  - type: input
+    id: jogo
+    attributes:
+      label: Jogo (e versao) / Game (and version)
+      placeholder: "Ex.: Resident Evil Requiem (Steam)"
+    validations:
+      required: true
+  - type: input
+    id: placa
+    attributes:
+      label: Placa de video e driver / GPU and driver
+      placeholder: "Ex.: RX 9070 XT, Adrenalin 26.x"
+    validations:
+      required: true
+  - type: input
+    id: config
+    attributes:
+      label: Resolucao e modo do FSR / Resolution and FSR mode
+      placeholder: "Ex.: 4K, FSR Ultra Performance, Frame Generation ligado/on"
+  - type: input
+    id: versao
+    attributes:
+      label: Versao do AMDLSS5 / AMDLSS5 version
+      placeholder: "Ex.: 1.2.1"
+    validations:
+      required: true
+  - type: textarea
+    id: oque
+    attributes:
+      label: O que aconteceu / What happened
+      description: Passos para repetir, o que esperava e o que viu / Steps to reproduce, what you expected and what you saw
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >-
+        Arraste aqui os arquivos dlssnr_on_amd.log e nr_*.log da pasta do jogo (ou um zip com eles) /
+        Drop the dlssnr_on_amd.log and nr_*.log files from the game folder here (or a zip with them)
+  - type: checkboxes
+    id: overlay
+    attributes:
+      label: Conferido / Checked
+      options:
+        - label: O overlay de metricas/gravacao do AMD Adrenalin estava desligado / The AMD Adrenalin metrics/recording overlay was off

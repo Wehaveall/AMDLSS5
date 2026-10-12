@@ -1,0 +1,20 @@
+# binarios e saidas de build (o pacote de lancamento fica fora do git)
+build/
+out/
+bin/
+obj/
+.vs/
+*.dll
+*.exe
+*.zip
+*.hsaco
+*.cso
+*.bin
+*.pdb
+*.obj
+*.lib
+*.exp
+*.map
+*.ilk
+*.log
+*.dat

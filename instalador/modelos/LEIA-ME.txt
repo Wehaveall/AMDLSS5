@@ -1,0 +1,56 @@
+AMDLSS5 MOD {VERSAO}
+
+PT: abra AMDLSS5-Instalador.exe, clique em "Selecionar pasta do jogo..." (ou no .exe do jogo) e em Instalar.
+    Para remover: abra o instalador, escolha o jogo e clique em Desinstalar (volta tudo como era).
+    No jogo: use FSR 3.1. A rede neural começa DESLIGADA: aperte F10 para ligar (e para desligar).
+    End abre o menu do mod.
+    O pacote não traz INI: na primeira vez o mod cria o dlssnr_on_amd.ini (só configurações do proxy) e as
+    escolhas do menu ficam em amdlss5.dat, na mesma pasta. Desinstalar remove os dois.
+
+EN: run AMDLSS5-Instalador.exe, click "Select game folder..." (or the game .exe) and Install.
+    To remove: run the installer, choose the game and click Uninstall (everything goes back as it was).
+    In game: use FSR 3.1. The neural network starts OFF: press F10 to turn it on (and off).
+    End opens the mod menu.
+    The package has no INI: on first run the mod creates dlssnr_on_amd.ini (proxy settings only) and menu
+    choices are saved to amdlss5.dat in the same folder. Uninstalling removes both.
+
+ES: abre AMDLSS5-Instalador.exe, pulsa "Seleccionar carpeta del juego..." (o el .exe del juego) e Instalar.
+    Para quitar: abre el instalador, elige el juego y pulsa Desinstalar (todo vuelve a como estaba).
+    En el juego: usa FSR 3.1. La red neuronal empieza APAGADA: pulsa F10 para activarla (y desactivarla).
+    End abre el menú del mod.
+    El paquete no trae INI: la primera vez el mod crea dlssnr_on_amd.ini (solo ajustes del proxy) y las
+    opciones del menú se guardan en amdlss5.dat, en la misma carpeta. Desinstalar quita los dos.
+
+Requisitos / Requirements: AMD Radeon RX 9070 / RX 9070 XT (RDNA 4); jogo DirectX 12 com FSR 3.1 /
+DirectX 12 game with FSR 3.1 / juego DirectX 12 con FSR 3.1.
+Testado apenas na Radeon RX 9070 XT, em Resident Evil Requiem, Onimusha: Way of the Sword (demo), Cyberpunk 2077 e
+Monster Hunter Wilds. / Tested only on a Radeon RX 9070 XT, in Resident Evil Requiem, Onimusha: Way of the Sword
+(demo), Cyberpunk 2077 and Monster Hunter Wilds. / Probado solo en una Radeon RX 9070 XT, en Resident Evil Requiem,
+Onimusha: Way of the Sword (demo), Cyberpunk 2077 y Monster Hunter Wilds.
+Mantenha a pasta payload ao lado do instalador / Keep the payload folder next to the installer /
+Mantén la carpeta payload junto al instalador.
+
+AVISO / WARNING / AVISO (AMD Adrenalin):
+PT: antes de jogar, desligue o overlay de métricas e a gravação/replay instantâneo do Adrenalin e deixe o ajuste
+    de desempenho em "Padrão" (sem overclock salvo); reinicie o PC depois de mudar. Com eles ligados a placa pode
+    ficar muito lenta e travar (tela preta/TDR) no carregamento do jogo, com este mod e com o original.
+EN: before playing, turn off the Adrenalin metrics overlay and recording/instant replay and set performance tuning
+    to "Default" (no saved overclock); reboot after changing it. With them on the GPU can become very slow and hang
+    (black screen/TDR) while the game loads, with this mod and with the original one.
+ES: antes de jugar, apaga el overlay de métricas y la grabación/repetición instantánea de Adrenalin y deja el ajuste
+    de rendimiento en "Predeterminado" (sin overclock guardado); reinicia el PC después. Con ellos activos la tarjeta
+    puede ir muy lenta y colgarse (pantalla negra/TDR) al cargar el juego, con este mod y con el original.
+
+NOVIDADES DA 1.2.1 / WHAT'S NEW / NOVEDADES:
+PT: correção de bug na rede.
+EN: network bug fix.
+ES: corrección de un error en la red.
+
+NOVIDADES DA 1.2.0:
+PT: melhorias de qualidade de imagem, estabilidade e desempenho; correções de bugs.
+EN: image quality, stability and performance improvements; bug fixes.
+ES: mejoras de calidad de imagen, estabilidad y rendimiento; corrección de errores.
+
+Créditos / Credits: Daniel (danielblnc), DLSS-NR-on-AMD (proxy version.dll; ainda tentando contato para permissões /
+still trying to contact him for permission); NVIDIA (DLSS, nvngx_dlssnr.dll); praydog (REFramework, MIT).
+SHA-256 de cada arquivo / of every file: payload\pacote.json.
