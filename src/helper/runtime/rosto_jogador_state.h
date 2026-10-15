@@ -492,7 +492,16 @@ struct QuadroRender {int on{-1};float nivel{},ganho{};float cx{},cy{},lado{};int
 inline QuadroRender& quadro_render(){static QuadroRender q[n_inst];return q[inst_atual()];}
 
 inline void log(const char* linha) noexcept {
-    (void)linha;
+    static std::atomic<unsigned> linhas{0};if(linhas.fetch_add(1)>=6000)return;
+    try{
+        HMODULE self{};wchar_t path[32768]{};
+        if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&global),&self)||
+           !GetModuleFileNameW(self,path,32768))return;
+        std::ofstream f(std::filesystem::path(path).parent_path()/L"nr_rosto_jogador.log",std::ios::app);
+        f<<"pid="<<GetCurrentProcessId()<<" tick="<<GetTickCount64()<<' ';
+        if(inst_atual()>=1)f<<"[npc"<<char('1'+inst_atual())<<"] ";
+        f<<linha<<'\n';
+    }catch(...){}
 }
 inline void envenenar(const char* motivo) noexcept {
     if(!global().envenenado.exchange(true)){char t[256]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_DESLIGADO motivo=%s (sessao inteira; a cena segue igual)",motivo?motivo:"?");log(t);}

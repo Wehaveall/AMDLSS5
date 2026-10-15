@@ -252,7 +252,15 @@ bool root(ID3D12Device* d,unsigned constants,unsigned srvs,unsigned uavs,ComPtr<
 template<class T,std::size_t N>bool pipeline(ID3D12Device* d,ID3D12RootSignature* r,const T(&bytes)[N],ComPtr<ID3D12PipelineState>& p){D3D12_COMPUTE_PIPELINE_STATE_DESC q{};q.pRootSignature=r;q.CS={bytes,sizeof(bytes)};const bool ok=SUCCEEDED(d->CreateComputePipelineState(&q,IID_PPV_ARGS(&p)));if(ok)nrorc_vram::registrar(nrorc::Api::Pso,0,"pso");return ok;}
 
 void registrar_realce(const char* modo,unsigned antes,unsigned depois,float luz,float detalhe){
-(void)modo;(void)antes;(void)depois;(void)luz;(void)detalhe;
+    static std::atomic<unsigned long long> ultimo{~0ull};
+    const unsigned long long chave=(static_cast<unsigned long long>(depois>>8)<<24)^(static_cast<unsigned long long>(antes>>8))^
+                                   (static_cast<unsigned long long>(modo[4])<<56)^(static_cast<unsigned long long>(modo[0])<<48);
+    if(ultimo.exchange(chave)==chave)return;
+    FILE* f{};if(fopen_s(&f,"nr_realce.log","a")!=0||!f)return;
+    std::fprintf(f,"pid=%lu REALCE modo=%s luz=%.2f detalhe=%.2f teto_ini=%.2f teto=%.2f detalhe_forca=%.2f cor=%.2f%s\n",GetCurrentProcessId(),modo,
+                 double(luz),double(detalhe),((antes>>21)&255u)/20.,((depois>>21)&255u)/20.,((depois>>8)&63u)/20.,((depois>>14)&127u)/20.,
+                 ((depois>>8)&63u)==20u&&((depois>>14)&127u)==20u&&((depois>>21)&255u)==40u?" (formula do Daniel, sem teto)":"");
+    std::fclose(f);
 }
 
 unsigned teto_unico(unsigned tone){
@@ -270,18 +278,7 @@ constexpr unsigned despejo_maximo=120;
 unsigned despejos_reservados{};
 struct Despejo { unsigned restantes{},espera{},intervalo{},contador{};float ganho{16.f};bool profundidade{},etapas_fill{}; };
 Despejo ler_despejo(){
-    Despejo d;double v{};
-
-    if(ler_ini(L"NeuralDumpFrames",v)&&v>=1&&v<=double(despejo_maximo))d.restantes=unsigned(v);
-
-    if(ler_ini(L"NeuralDumpGain",v)&&v>=.1&&v<=1000.)d.ganho=float(v);
-
-    if(ler_ini(L"NeuralDumpAfterFrames",v)&&v>=0&&v<=1e6)d.espera=unsigned(v);
-
-    if(ler_ini(L"NeuralDumpEveryFrames",v)&&v>=0&&v<=1e6)d.intervalo=unsigned(v);
-    d.profundidade=ler_ini(L"NeuralDumpDepth",v)&&v==1.;
-    d.etapas_fill=ler_ini(L"NeuralDumpFillStages",v)&&v==1.;
-    return d;
+ return Despejo{};
 }
 
 bool ler_pontual(){double v{};return ler_ini(L"NeuralReprojectPointMotion",v)&&v==1.;}
@@ -525,7 +522,12 @@ struct Backend::Impl {
  unsigned trace_restantes=[]{double v=0;return ler_ini(L"NeuralCenaTrace",v)&&v>=1.&&v<=200000.?unsigned(v):0u;}();
  float trace_expo{};long long trace_qpc{};
  void trace(int job,int age,const char* reason){
-(void)job;(void)age;(void)reason;
+  if(!trace_restantes)return;--trace_restantes;
+  LARGE_INTEGER q{},fq{};QueryPerformanceCounter(&q);QueryPerformanceFrequency(&fq);
+  const double ms=trace_qpc&&fq.QuadPart?double(q.QuadPart-trace_qpc)*1000./double(fq.QuadPart):0.;trace_qpc=q.QuadPart;
+  FILE* f{};if(fopen_s(&f,"nr_cena_trace.log","a")==0&&f){std::fprintf(f,"pid=%lu frame=%llu job=%d age=%d expo=%.6g ms=%.3f segurados=%u composed=%llu skipped=%llu halo_post=%llu reason=%s\n",
+   GetCurrentProcessId(),policy.frame,job,age,double(trace_expo),ms,segurados_seguidos,composed,skipped,hpost.quadros,reason);std::fclose(f);}
+
 }
 
  void perder_post(const char* motivo){if(!post.ativo)return;post.ativo=false;++post_lost;if(post_lost<=3||(post_lost&255)==0)log_post(post.job,motivo,nullptr);}
@@ -1131,43 +1133,55 @@ struct Backend::Impl {
  std::uint64_t realocacoes{};
 
  void log_realocacao(unsigned para_w,unsigned para_h){
-(void)para_w;(void)para_h;
+  ++realocacoes;
+  if(realocacoes>3&&(realocacoes&255)!=0)return;
+  {
+   if(ready)nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu de=%ux%u para=%ux%u total=%llu reason=capture_realocado\n",
+                         GetCurrentProcessId(),policy.frame,width,height,para_w,para_h,realocacoes);
+   else nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu de=incompleta para=%ux%u total=%llu reason=capture_realocado\n",
+                     GetCurrentProcessId(),policy.frame,para_w,para_h,realocacoes);
+  }
+
 }
  void log_constants(const Constants& k){
-(void)k;
+  if(captures++%256u)return;
+  {
+   nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu CONST jitter_fsr=%.5g,%.5g valido=%u compensar=%g scale=%.8g,%.8g jitter=%.8g,%.8g inverse=%.8g,%.8g"
+                  " clamp=%.4g reference=%.6g divergence=%.4g depth_rel=%.4g color=%.4g rate=%.4g"
+                  " deform=%.4g detail=%.4g occlusion=%.4g bilateral=%.4g tau=%.4g ridge=%.4g celula=%u retencao=%u guia=%u ajustes=%llu"
+                  " limite_ganho=%.2g protecao_suave=%u ganho_limitado=%llu"
+                  " protecao_luz=%.2g protecao_detalhe=%.3g suavizar_luz=%.2g luz_eps=%.3g luz_delta=%.3g luz_raio=%u luz_quadros=%llu luz_filtrados=%llu"
+                  " halo=%u halo_bits=0x%08x halo_quadros=%llu leitura_prof=%u piso_razao=%.6g tardia=%u"
+                  " halo_rede=%u halo_rede_pct=%.4g rede_pct=%.4g luz_prof=%u luz_prof_quadros=%llu"
+                  " halo_exc=%.2g halo_exc_raio=%u halo_exc_quadros=%llu borda=%u borda_raio=%u borda_quadros=%llu"
+                  " corte=%u corte_raio_warp=%u corte_raio=%u corte_quadros=%llu idade_media=%.2f\n",
+                GetCurrentProcessId(),policy.frame,double(nrreproject::jitter_atual_x.load()),double(nrreproject::jitter_atual_y.load()),
+                nrreproject::jitter_valido.load()?1u:0u,double(nrreproject::value(nrreproject::controls,nrreproject::JitterComp)),
+                k.scale_x,k.scale_y,k.jitter_x,k.jitter_y,
+                k.inverse_x,k.inverse_y,k.clamp_strength,k.motion_reference,k.motion_divergence,
+                k.depth_relative,k.color_threshold,k.confidence_rate,k.deform_tolerance,
+                k.detail_motion,k.occlusion_tolerance,bil_apply?bilateral.forca:0.f,bilateral.tau,bilateral.ridge,bilateral.celula,bilateral.retencao,bilateral.guia,
+                static_cast<unsigned long long>(bil_fits),double(nrreproject::value(nrreproject::controls,nrreproject::GainLimit)),
+                nrreproject::value(nrreproject::controls,nrreproject::SoftGuard)>.5f?1u:0u,static_cast<unsigned long long>(ganho_limitados),
+                double(nrreproject::value(nrreproject::controls,nrreproject::LightGuard)),double(nrreproject::value(nrreproject::controls,nrreproject::DetailGuard)),
+                double(nrreproject::value(nrreproject::controls,nrreproject::LightSmooth)),double(luz_eps),double(luz_delta),luz_raio,
+                static_cast<unsigned long long>(luz_quadros),static_cast<unsigned long long>(luz_filtrados),
+                unsigned(nrreproject::value(nrreproject::controls,nrreproject::HaloReduce)+.5f),halo_ultimo,static_cast<unsigned long long>(halo_quadros),
+                (k.flags&1024u)?1u:0u,double(nrreproject::value(nrreproject::controls,nrreproject::RatioFloor)),
+                unsigned(nrreproject::value(nrreproject::controls,nrreproject::LateCompose)+.5f),
+                unsigned(nrreproject::value(nrreproject::controls,nrreproject::HaloNetScale)+.5f),halo_rede_pct,nrprescale::efetivo.load(),
+                unsigned(nrreproject::value(nrreproject::controls,nrreproject::LightGuideDepth)+.5f),static_cast<unsigned long long>(luz_prof_quadros),
+                double(nrreproject::value(nrreproject::controls,nrreproject::HaloExcess)),halo_exc_raio,static_cast<unsigned long long>(halo_exc_quadros),
+                (k.flags&2048u)?1u:0u,(k.pad>>1)&127u,static_cast<unsigned long long>(borda_quadros),
+                unsigned(nrreproject::value(nrreproject::controls,nrreproject::HaloCutMoving)+.5f),corte_raio_warp,corte_raio_comp,
+                static_cast<unsigned long long>(corte_quadros),double(idade_media));
+  }
+
 }
 
  DespejoPendente reservar_despejo(ID3D12GraphicsCommandList* c){
-
-  if(suprimir_despejo)return {};
-  if(const unsigned pedido=nrreproject::despejo_pedido.exchange(0)){despejo.restantes=pedido;despejo.espera=0;despejo.intervalo=0;nrreproject::despejo_gravados.store(0);}
-  if(!despejo.restantes||despejos_reservados>=despejo_maximo||!warped||!device)return {};
-  if(despejo.espera){--despejo.espera;return {};}
-  if(despejo.intervalo){if(despejo.contador++%despejo.intervalo)return {};}
-  const auto wd=warped->GetDesc();
-  D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};UINT64 total{};
-  device->GetCopyableFootprints(&wd,0,1,0,&fp,nullptr,nullptr,&total);
-  if(!total)return {};
-  D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_READBACK;
-  D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=total;bd.Height=1;bd.DepthOrArraySize=1;bd.MipLevels=1;bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-  ComPtr<ID3D12Resource> leitura;
-  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&leitura))))return {};
-  DespejoPendente d{leitura,begins+3,width,height,despejos_reservados,
-                      fp.Footprint.RowPitch,std::size_t(total),despejo.ganho};
-  d.par_solicitado=despejo.etapas_fill;
-
-  if(despejo.etapas_fill&&SUCCEEDED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&d.antes)))){
-   d.raw=true;d.fatia=constants.slice;d.idade=constants.age;d.quadro=policy.frame;
-   d.pontual=pontual;d.fill_ativo=preenchimento>0&&fill_pso;d.fill_limiar=d.fill_ativo?preenchimento:0.f;
-   transition(c,warped.Get(),read_state,D3D12_RESOURCE_STATE_COPY_SOURCE);
-   D3D12_TEXTURE_COPY_LOCATION dst{},src{};dst.pResource=d.antes.Get();dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;dst.PlacedFootprint=fp;
-   src.pResource=warped.Get();src.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-   c->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
-   transition(c,warped.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,read_state);
-  }
-  --despejo.restantes;++despejos_reservados;nrreproject::despejo_gravados.fetch_add(1);
-  return d;
- }
+ (void)c;return {};
+}
  void gravar_despejo(ID3D12GraphicsCommandList* c,ID3D12Resource* fonte,const DespejoPendente& reserva){
   if(!reserva.leitura)return;
   const auto wd=warped->GetDesc();D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};UINT64 total{};
@@ -1247,13 +1261,119 @@ struct Backend::Impl {
  }
 
  void escrever_despejos_vencidos(){
+
 }
 
  bool escrever_bmp(const DespejoPendente& d){
-(void)d;return false;
+  void* mapeado{};
+
+  const D3D12_RANGE leitura{0,d.bytes};
+  if(!d.leitura||FAILED(d.leitura->Map(0,&leitura,&mapeado))||!mapeado)return false;
+  const unsigned pixels=d.largura*d.altura;
+  std::vector<unsigned char> imagem(std::size_t(pixels)*4);
+  std::vector<float> profundidades;
+  float minimo=std::numeric_limits<float>::infinity(),maximo=-std::numeric_limits<float>::infinity();
+  unsigned finitos=0;
+  if(d.profundidade){
+   profundidades.resize(pixels);
+   for(unsigned y=0;y<d.altura;++y){
+
+    std::memcpy(profundidades.data()+std::size_t(y)*d.largura,
+                static_cast<const char*>(mapeado)+std::size_t(y)*d.passo,std::size_t(d.largura)*sizeof(float));
+   }
+   for(const float z:profundidades)if(std::isfinite(z)){minimo=std::min(minimo,z);maximo=std::max(maximo,z);++finitos;}
+  }
+  for(unsigned y=0;y<d.altura;++y){
+   const unsigned short* linha=reinterpret_cast<const unsigned short*>(static_cast<const char*>(mapeado)+std::size_t(y)*d.passo);
+   for(unsigned x=0;x<d.largura;++x){
+    unsigned char* saida=imagem.data()+(std::size_t(y)*d.largura+x)*4;
+    if(d.profundidade) {
+     const float z=profundidades[std::size_t(y)*d.largura+x];
+
+     const double span=double(maximo)-double(minimo);
+     const unsigned char v=std::isfinite(z)&&span>0
+       ?static_cast<unsigned char>(std::clamp((double(z)-minimo)/span,0.,1.)*255.+.5):0;
+     saida[0]=std::isfinite(z)?v:255;saida[1]=v;saida[2]=std::isfinite(z)?v:255;
+    } else if(d.confianca) {
+
+     const float c=meio_para_float(linha[x*4+3]);
+     const unsigned char v=(!std::isfinite(c)||c<=0)?0:(c>=1.f?255:(unsigned char)(c*255.f+.5f));
+     saida[0]=v;saida[1]=v;saida[2]=v;
+    } else if(d.movimento) {
+
+     saida[0]=0;
+     saida[1]=amostra_movimento(linha[x*2+1],float(d.altura));
+     saida[2]=amostra_movimento(linha[x*2+0],float(d.largura));
+    } else {
+     saida[0]=amostra(linha[x*4+2],d.ganho);
+     saida[1]=amostra(linha[x*4+1],d.ganho);
+     saida[2]=amostra(linha[x*4+0],d.ganho);
+    }
+    saida[3]=255;
+   }
+  }
+  bool raw_ok=true;
+  if(d.raw){
+   char nome_raw[80];NRLOGF(nome_raw,sizeof nome_raw,d.antes_fill?"nr_antes_fill_%lu_%u.rgba16f":"nr_residuo_%lu_%u.rgba16f",GetCurrentProcessId(),d.indice);
+   FILE* raw{};raw_ok=fopen_s(&raw,nome_raw,"wb")==0&&raw;
+   if(raw){for(unsigned y=0;y<d.altura;++y){const auto* row=static_cast<const char*>(mapeado)+std::size_t(y)*d.passo;
+     if(std::fwrite(row,1,std::size_t(d.largura)*8,raw)!=std::size_t(d.largura)*8)raw_ok=false;}
+    if(std::fclose(raw)!=0)raw_ok=false;}
+  }
+  const D3D12_RANGE nada{0,0};d.leitura->Unmap(0,&nada);
+  unsigned char cabecalho[54]{};
+  const unsigned dados=std::size_t(pixels)*4>0xffffffffull?0u:unsigned(std::size_t(pixels)*4);
+  const unsigned tamanho=54u+dados;
+  cabecalho[0]='B';cabecalho[1]='M';
+  std::memcpy(cabecalho+2,&tamanho,4);
+  const unsigned offset=54;std::memcpy(cabecalho+10,&offset,4);
+  const unsigned info=40;std::memcpy(cabecalho+14,&info,4);
+  const int largura=int(d.largura),altura=-int(d.altura);
+  std::memcpy(cabecalho+18,&largura,4);std::memcpy(cabecalho+22,&altura,4);
+  const unsigned short planos=1,bits=32;
+  std::memcpy(cabecalho+26,&planos,2);std::memcpy(cabecalho+28,&bits,2);
+  std::memcpy(cabecalho+34,&dados,4);
+  char nome[64];
+  NRLOGF(nome,sizeof nome,d.antes_fill?"nr_antes_fill_%lu_%u.bmp":d.profundidade?"nr_profundidade_%lu_%u.bmp":(d.confianca?"nr_confianca_%lu_%u.bmp":(d.movimento?"nr_movimento_%lu_%u.bmp":(d.fonte?"nr_fonte_%lu_%u.bmp":"nr_residuo_%lu_%u.bmp"))),GetCurrentProcessId(),d.indice);
+  FILE* f{};
+  bool bmp_ok=fopen_s(&f,nome,"wb")==0&&f;
+  if(f){
+   if(std::fwrite(cabecalho,1,sizeof cabecalho,f)!=sizeof cabecalho)bmp_ok=false;
+   if(std::fwrite(imagem.data(),1,imagem.size(),f)!=imagem.size())bmp_ok=false;
+   if(std::fclose(f)!=0)bmp_ok=false;
+  }
+  if(d.profundidade){
+   char raw[64],meta[64];
+   NRLOGF(raw,sizeof raw,"nr_profundidade_%lu_%u.f32",GetCurrentProcessId(),d.indice);
+   NRLOGF(meta,sizeof meta,"nr_profundidade_%lu_%u.json",GetCurrentProcessId(),d.indice);
+   if(fopen_s(&f,raw,"wb")==0&&f){std::fwrite(profundidades.data(),sizeof(float),profundidades.size(),f);std::fclose(f);}
+   if(fopen_s(&f,meta,"wb")==0&&f){
+    std::fprintf(f,"{\"format\":\"R32_FLOAT_LE\",\"origin\":\"top-left\",\"width\":%u,\"height\":%u,"
+                   "\"pid\":%lu,\"index\":%u,\"frame\":%llu,\"slice\":%u,\"age\":%u,"
+                   "\"depth_relative\":%.9g,\"depth_absolute\":%.9g,\"finite_count\":%u,\"min\":",
+                   d.largura,d.altura,GetCurrentProcessId(),d.indice,d.quadro,d.fatia,d.idade,
+                   d.depth_relative,d.depth_absolute,finitos);
+    if(finitos)std::fprintf(f,"%.9g,\"max\":%.9g",minimo,maximo);
+    else std::fprintf(f,"null,\"max\":null");
+    std::fprintf(f,"}\n");std::fclose(f);
+   }
+  }
+
+  nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu DUMP indice=%u %ux%u ganho=%.6g arquivo=%s\n",
+                GetCurrentProcessId(),policy.frame,d.indice,d.largura,d.altura,d.ganho,nome);
+  return raw_ok&&bmp_ok;
+
 }
  void escrever_par(const DespejoPendente& d){
-(void)d;
+  char meta[80];NRLOGF(meta,sizeof meta,"nr_fill_pair_%lu_%u.json",GetCurrentProcessId(),d.indice);
+  FILE* f{};if(fopen_s(&f,meta,"wb")!=0||!f)return;
+  const int count=std::fprintf(f,"{\"format\":\"RGBA16_FLOAT_LE\",\"origin\":\"top-left\",\"width\":%u,\"height\":%u,"
+    "\"pid\":%lu,\"index\":%u,\"frame\":%llu,\"slice\":%u,\"age\":%u,\"point_motion\":%s,\"fill_active\":%s,\"fill_threshold\":%.9g,"
+    "\"before\":\"nr_antes_fill_%lu_%u.rgba16f\",\"after\":\"nr_residuo_%lu_%u.rgba16f\"}\n",
+    d.largura,d.altura,GetCurrentProcessId(),d.indice,d.quadro,d.fatia,d.idade,d.pontual?"true":"false",d.fill_ativo?"true":"false",d.fill_limiar,
+    GetCurrentProcessId(),d.indice,GetCurrentProcessId(),d.indice);
+  const int closed=std::fclose(f);if(count<0||closed!=0)DeleteFileA(meta);
+
 }
 
  void log_post(int job,const char* reason,const D3D12_RESOURCE_DESC* od){{
@@ -1782,15 +1902,73 @@ unsigned final_maximo_(){const unsigned t=final_teto_sessao.load(std::memory_ord
 std::atomic<unsigned long long> escrita_bytes{0};std::atomic<long long> escrita_t0{0};std::atomic<int> escritores{0},escritores_max{0};
 void escrever_final_(Final f,unsigned long long& bytes);
 void escrever_final(Final f){
-(void)f;
+
+ {const int a=escritores.fetch_add(1)+1;int m=escritores_max.load();while(a>m&&!escritores_max.compare_exchange_weak(m,a)){}}
+ LARGE_INTEGER t{};QueryPerformanceCounter(&t);long long zero=0;escrita_t0.compare_exchange_strong(zero,t.QuadPart);
+ unsigned long long bytes=0;escrever_final_(std::move(f),bytes);escritores.fetch_sub(1);
 }
 void escrever_final_(Final f,unsigned long long& bytes){
-(void)f;(void)bytes;
+ static constexpr const char* lados[lados_final]{"entrada","saida","base","movimento","profundidade","exposicao"};
+ bool gpu_pronta=true;
+ if(f.seguro){
+
+  gpu_pronta=false;
+  if(f.marca)for(unsigned t=0;t<5000u;++t){if(*f.marca==f.valor){gpu_pronta=true;break;}Sleep(2);}
+  if(!gpu_pronta){
+   char nome[96];NRLOGF(nome,sizeof nome,"nr_final_%lu_%u_sem_gpu.json",GetCurrentProcessId(),f.indice);FILE* arq{};
+   if(fopen_s(&arq,nome,"w")==0&&arq){std::fprintf(arq,"{\"index\":%u,\"frame\":%llu,\"gpu_confirmou\":false,\"marcador\":%d}\n",f.indice,
+    static_cast<unsigned long long>(f.quadro),f.marca?1:0);std::fclose(arq);}
+   std::lock_guard<std::mutex> l(final_cemiterio_mutex);final_cemiterio.push_back(std::move(f.b));return;
+  }
+ }
+
+ float exposicao=-1.f;
+ if(f.exato&&f.b.leitura[5]&&(f.formato[5]==unsigned(DXGI_FORMAT_R32_FLOAT)||f.formato[5]==unsigned(DXGI_FORMAT_R32_TYPELESS))){
+  void* dados{};D3D12_RANGE faixa{0,4};
+  if(SUCCEEDED(f.b.leitura[5]->Map(0,&faixa,&dados))&&dados){std::memcpy(&exposicao,dados,4);D3D12_RANGE nada{0,0};f.b.leitura[5]->Unmap(0,&nada);}
+  if(!std::isfinite(exposicao))exposicao=-1.f;
+ }
+ for(unsigned k=0;k<lados_final;++k){
+  if(!f.b.leitura[k])continue;
+  void* dados{};D3D12_RANGE faixa{0,SIZE_T(f.fp[k].Footprint.RowPitch)*f.altura[k]};
+
+  if((k>=3||f.seguro)&&faixa.End>SIZE_T(f.b.tamanho[k]))faixa.End=SIZE_T(f.b.tamanho[k]);
+  if(FAILED(f.b.leitura[k]->Map(0,&faixa,&dados))||!dados)continue;
+  char nome[96];NRLOGF(nome,sizeof nome,"nr_final_%lu_%u_%s.raw",GetCurrentProcessId(),f.indice,lados[k]);
+  FILE* arq{};if(fopen_s(&arq,nome,"wb")==0&&arq){bytes+=std::fwrite(dados,1,size_t(faixa.End),arq);std::fclose(arq);}
+  D3D12_RANGE nada{0,0};f.b.leitura[k]->Unmap(0,&nada);
+  NRLOGF(nome,sizeof nome,"nr_final_%lu_%u_%s.json",GetCurrentProcessId(),f.indice,lados[k]);
+  if(fopen_s(&arq,nome,"w")==0&&arq){
+   std::fprintf(arq,"{\"format\":%u,\"width\":%u,\"height\":%u,\"row_pitch\":%u,\"mode\":\"%s\",\"frame\":%llu,\"index\":%u,\"age\":%d",
+    f.formato[k],unsigned(f.fp[k].Footprint.Width),f.altura[k],unsigned(f.fp[k].Footprint.RowPitch),f.modo==2?"sem_nr":"assincrono",
+    static_cast<unsigned long long>(f.quadro),f.indice,f.idade);
+   if(f.exato)std::fprintf(arq,",\"jitter\":[%.9g,%.9g],\"mv_scale\":[%.9g,%.9g],\"render\":[%u,%u],\"output\":[%u,%u],\"exposure\":%.9g,\"qpc_ms\":%.4f",
+    double(f.extras.jitter_x),double(f.extras.jitter_y),double(f.extras.mv_x),double(f.extras.mv_y),f.extras.render_w,f.extras.render_h,
+    f.extras.output_w,f.extras.output_h,double(exposicao),f.qpc_ms);
+
+   if(f.extras.valido)std::fprintf(arq,",\"camera\":{\"near\":%.9g,\"far\":%.9g,\"fov_vertical\":%.9g}",double(f.extras.camera_near),double(f.extras.camera_far),double(f.extras.camera_fov));
+   if(f.extras.valido&&f.extras.rj_on>=0)std::fprintf(arq,",\"rosto\":{\"on\":%d,\"nivel\":%.3f,\"ganho\":%.3f,\"cabeca\":[%.1f,%.1f,%.1f],\"recorte\":[%d,%d,%d],\"composto\":%d,\"job\":%d,\"idade\":%d}",
+    f.extras.rj_on,double(f.extras.rj_nivel),double(f.extras.rj_ganho),double(f.extras.rj_cx),double(f.extras.rj_cy),double(f.extras.rj_lado),f.extras.rj_rx,f.extras.rj_ry,f.extras.rj_rl,f.extras.rj_composto,f.extras.rj_job,f.extras.rj_idade);
+   for(int kn=0;kn<7;++kn)if(f.extras.valido&&f.extras.rjn_on[kn]>=0)std::fprintf(arq,",\"rosto%d\":{\"on\":%d,\"nivel\":%.3f,\"ganho\":%.3f,\"cabeca\":[%.1f,%.1f,%.1f],\"recorte\":[%d,%d,%d],\"composto\":%d,\"job\":%d}",
+    kn+2,f.extras.rjn_on[kn],double(f.extras.rjn_nivel[kn]),double(f.extras.rjn_ganho[kn]),double(f.extras.rjn_cx[kn]),double(f.extras.rjn_cy[kn]),double(f.extras.rjn_lado[kn]),f.extras.rjn_rx[kn],f.extras.rjn_ry[kn],f.extras.rjn_rl[kn],f.extras.rjn_composto[kn],f.extras.rjn_job[kn]);
+   std::fprintf(arq,"}\n");std::fclose(arq);}
+ }
+ escrita_bytes.fetch_add(bytes);const unsigned g=final_gravados.fetch_add(1)+1;
+
+ const unsigned alvo=(std::max)(1u,final_pedido.load());
+ if(g%24u==0u||g==alvo){
+  static std::atomic<unsigned> linhas{0};
+  if(linhas.fetch_add(1)<200u){LARGE_INTEGER t{},q{};QueryPerformanceCounter(&t);QueryPerformanceFrequency(&q);const long long t0=escrita_t0.load();
+   const double ms=q.QuadPart&&t0?double(t.QuadPart-t0)*1000.0/double(q.QuadPart):0.;
+   FILE* l{};if(fopen_s(&l,"nr_aviso.log","a")==0&&l){std::fprintf(l,"pid=%lu tick=%llu F9_ESCRITA quadros=%u pedido=%u MB=%.1f ms=%.0f escritores_max=%d\n",GetCurrentProcessId(),
+    GetTickCount64(),g,alvo,double(escrita_bytes.load())/(1024.*1024.),ms,escritores_max.load());std::fclose(l);}}
+  if(g==alvo){escrita_t0.store(0);escrita_bytes.store(0);escritores_max.store(0);}
+ }
 }
 }
 
 namespace {
-unsigned final_reserva_modo(){static const unsigned v=[]{double x=0.;return ler_ini(L"NeuralGravarF9Reserva",x)?(x==1.?1u:x==2.?2u:0u):0u;}();return v;}
+unsigned final_reserva_modo(){if(NR_SEM_GRAVACAO_K)return 0u;static const unsigned v=[]{double x=0.;return ler_ini(L"NeuralGravarF9Reserva",x)?(x==1.?1u:x==2.?2u:0u):0u;}();return v;}
 bool final_movimento_ini(){static const bool v=[]{double x=0.;return ler_ini(L"NeuralDumpFinalMovimento",x)&&x==1.;}();return v;}
 std::atomic<bool> reserva_voo{false};
 std::atomic<unsigned> reserva_falhas{0};
@@ -1798,7 +1976,8 @@ bool reserva_gravando{};
 std::atomic<unsigned long long> reserva_aloc_chamadora{0},reserva_aloc_fundo{0},reserva_lancamentos{0},reserva_prontas{0},reserva_descartadas{0};
 unsigned reserva_modo_efetivo(){return reserva_falhas.load(std::memory_order_relaxed)>=3u?0u:final_reserva_modo();}
 void log_reserva(const char* t){
-(void)t;
+ static std::atomic<unsigned> n{0};if(n.fetch_add(1)>=64u)return;
+ FILE* f{};if(fopen_s(&f,"nr_aviso.log","a")==0&&f){std::fprintf(f,"pid=%lu tick=%llu F9_RESERVA %s\n",GetCurrentProcessId(),GetTickCount64(),t);std::fclose(f);}
 }
 
 Buffers alocar_lote(ID3D12Device* dev,const UINT64* total,const bool* lado,DWORD chamadora,UINT64& bytes){
@@ -1853,115 +2032,13 @@ FinalReservaInfo final_reserva_info() noexcept{
  return i;
 }
 void preparar_final(void* command,void* input,void* output,unsigned modo) noexcept{
- try{
-  final_preparo_pedido.store(false);
-  if(reserva_modo_efetivo()!=2u)return;
-  auto* c=static_cast<ID3D12GraphicsCommandList*>(command);if(!c)return;
-  std::lock_guard<std::mutex> trava(final_mutex);
-  if(reserva_voo.load()||despejo_final.load()||final_indice>=final_maximo_())return;
-  ComPtr<ID3D12Device> dev;if(FAILED(c->GetDevice(IID_PPV_ARGS(&dev)))||!dev)return;
-
-  const FinalExtras extras=final_extras;const bool exato=final_movimento_ini()&&extras.valido;
-  ID3D12Resource* rs[lados_final]{static_cast<ID3D12Resource*>(input),static_cast<ID3D12Resource*>(output),modo==0?static_cast<ID3D12Resource*>(base_recurso.load()):nullptr,
-   exato?static_cast<ID3D12Resource*>(extras.motion):nullptr,exato?static_cast<ID3D12Resource*>(extras.depth):nullptr,exato?static_cast<ID3D12Resource*>(extras.exposure):nullptr};
-  const unsigned sub[lados_final]{0,0,base_fatia.load(),0,0,0};UINT64 total[lados_final]{};
-  for(unsigned k=0;k<lados_final;++k){
-   if(!rs[k])continue;const D3D12_RESOURCE_DESC desc=rs[k]->GetDesc();
-   if(desc.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D||desc.SampleDesc.Count!=1||desc.Width>8192||desc.Height>8192||sub[k]>=desc.DepthOrArraySize){rs[k]=nullptr;continue;}
-   if(k>=3){D3D12_FEATURE_DATA_FORMAT_INFO fi{desc.Format,0};if(FAILED(dev->CheckFeatureSupport(D3D12_FEATURE_FORMAT_INFO,&fi,sizeof fi))||fi.PlaneCount!=1){rs[k]=nullptr;continue;}}
-   D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};UINT linhas{};UINT64 linha{};dev->GetCopyableFootprints(&desc,sub[k],1,0,&fp,&linhas,&linha,&total[k]);if(!total[k])rs[k]=nullptr;
-  }
-  if(!rs[0]&&!rs[1])return;
-  if(!reserva_serve(reserva,rs,total))soltar_no_fundo(reserva);
-  const unsigned alvo=std::min(gravar_quadros.load(),final_maximo_()-final_indice);
-  if(reserva.size()<alvo)lancar_reserva(dev.Get(),total,rs,alvo-unsigned(reserva.size()));
- }catch(...){}
+ (void)command;(void)input;(void)output;(void)modo;
 }
 bool despejar_final(void* command,void* input,std::uint32_t estado_entrada,void* output,std::uint32_t estado_saida,unsigned modo,std::uint64_t quadro) noexcept{
- try{
-  auto* c=static_cast<ID3D12GraphicsCommandList*>(command);if(!c)return false;
-  std::lock_guard<std::mutex> trava(final_mutex);
-  if(final_indice>=final_maximo_()){if(gravar_aviso.load(std::memory_order_relaxed)){final_cheio.store(true);despejo_final.store(0);}return false;}
-  ComPtr<ID3D12Device> dev;if(FAILED(c->GetDevice(IID_PPV_ARGS(&dev)))||!dev)return false;
-  const unsigned modo_reserva=reserva_modo_efetivo();
-  if(modo_reserva)final_movimento=final_movimento_ini();
-  else if(reserva.empty()){double v{};final_movimento=ler_ini(L"NeuralDumpFinalMovimento",v)&&v==1.;}
-  const FinalExtras extras=final_extras;const bool exato=final_movimento&&extras.valido;
-  ID3D12Resource* rs[lados_final]{static_cast<ID3D12Resource*>(input),static_cast<ID3D12Resource*>(output),modo==0?static_cast<ID3D12Resource*>(base_recurso.load()):nullptr,
-   exato?static_cast<ID3D12Resource*>(extras.motion):nullptr,exato?static_cast<ID3D12Resource*>(extras.depth):nullptr,exato?static_cast<ID3D12Resource*>(extras.exposure):nullptr};
-  const unsigned fatia_base=base_fatia.load();
-  const std::uint32_t est[lados_final]{estado_entrada,estado_saida,4u,extras.motion_state,extras.depth_state,extras.exposure_state};
-  D3D12_RESOURCE_DESC desc[lados_final]{};D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp[lados_final]{};UINT linhas[lados_final]{};UINT64 total[lados_final]{};unsigned sub[lados_final]{0,0,fatia_base,0,0,0};
-  for(unsigned k=0;k<lados_final;++k){
-   if(!rs[k])continue;desc[k]=rs[k]->GetDesc();
-   if(desc[k].Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D||desc[k].SampleDesc.Count!=1||desc[k].Width>8192||desc[k].Height>8192||sub[k]>=desc[k].DepthOrArraySize){rs[k]=nullptr;continue;}
-   if(k>=3){
-
-    D3D12_FEATURE_DATA_FORMAT_INFO fi{desc[k].Format,0};
-    if(FAILED(dev->CheckFeatureSupport(D3D12_FEATURE_FORMAT_INFO,&fi,sizeof fi))||fi.PlaneCount!=1){rs[k]=nullptr;continue;}
-   }
-   UINT64 linha{};dev->GetCopyableFootprints(&desc[k],sub[k],1,0,&fp[k],&linhas[k],&linha,&total[k]);fp[k].Offset=0;if(!total[k])rs[k]=nullptr;
-  }
-  if(!rs[0]&&!rs[1])return false;
-  if(modo_reserva){
-
-   const unsigned n=std::min(despejo_final.load(),final_maximo_()-final_indice);
-   if(!reserva_gravando&&!reserva_serve(reserva,rs,total)){if(reserva_voo.load())return false;soltar_no_fundo(reserva);}
-   if(reserva.empty()||(!reserva_gravando&&reserva.size()<n)){lancar_reserva(dev.Get(),total,rs,n-unsigned((std::min)(reserva.size(),size_t(n))));return false;}
-   reserva_gravando=true;
-  }else if(reserva.empty()){
-
-   const unsigned n=std::min(despejo_final.load(),final_maximo_()-final_indice);
-   const DWORD chamadora=GetCurrentThreadId();bool lado[lados_final]{};for(unsigned k=0;k<lados_final;++k)lado[k]=rs[k]!=nullptr;UINT64 bytes=0;
-   for(unsigned j=0;j<n;++j)reserva.push_back(alocar_lote(dev.Get(),total,lado,chamadora,bytes));
-   return false;
-  }
-  Final f;f.modo=modo;f.quadro=quadro;f.indice=final_indice;f.idade=modo?-1:idade_composta.load();f.b=std::move(reserva.back());reserva.pop_back();
-  f.exato=exato;f.extras=extras;f.seguro=final_seguro_ini();
-  if(exato){LARGE_INTEGER t{},q{};QueryPerformanceCounter(&t);QueryPerformanceFrequency(&q);f.qpc_ms=q.QuadPart?double(t.QuadPart)*1000.0/double(q.QuadPart):0.0;}
-  for(unsigned k=0;k<lados_final;++k){
-   if(!rs[k]||!f.b.leitura[k]||f.b.tamanho[k]<total[k]){f.b.leitura[k].Reset();continue;}
-   const auto e=state(est[k]);if(e==D3D12_RESOURCE_STATES(~0u)){f.b.leitura[k].Reset();continue;}
-   f.fp[k]=fp[k];f.altura[k]=linhas[k];f.formato[k]=unsigned(desc[k].Format);
-   transition(c,rs[k],e,D3D12_RESOURCE_STATE_COPY_SOURCE);
-   D3D12_TEXTURE_COPY_LOCATION dst{},src{};dst.pResource=f.b.leitura[k].Get();dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;dst.PlacedFootprint=f.fp[k];
-   src.pResource=rs[k];src.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;src.SubresourceIndex=sub[k];
-   c->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
-   transition(c,rs[k],D3D12_RESOURCE_STATE_COPY_SOURCE,e);
-  }
-  if(f.seguro&&f.indice<final_teto_max){
-   ComPtr<ID3D12GraphicsCommandList2> c2;
-   if(auto* fm=final_marcas(dev.Get());fm&&SUCCEEDED(c->QueryInterface(IID_PPV_ARGS(&c2)))&&c2){
-    f.valor=0xF1A10000u|(f.indice+1u);fm->m[f.indice]=0u;
-    const D3D12_WRITEBUFFERIMMEDIATE_PARAMETER par{fm->buf->GetGPUVirtualAddress()+4u*f.indice,f.valor};
-    const D3D12_WRITEBUFFERIMMEDIATE_MODE modo_m=D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_OUT;
-    c2->WriteBufferImmediate(1,&par,&modo_m);f.marca=fm->m+f.indice;
-   }
-  }
-  ++final_indice;final_total.store(final_indice);finais.push_back(std::move(f));return true;
- }catch(...){return false;}
+ (void)command;(void)input;(void)estado_entrada;(void)output;(void)estado_saida;(void)modo;(void)quadro;return false;
 }
 void despejo_final_tick() noexcept{
- try{
-  {static bool lido=false;if(!lido){lido=true;double v{};
-   gravar_aviso.store(ler_ini(L"NeuralGravarAviso",v)&&v==1.);v=0.;gravar_f9.store(ler_ini(L"NeuralGravarF9",v)&&v==1.);
-   {double q=0.,t=0.;const bool tq=ler_ini(L"NeuralGravarF9Quadros",q),tt=ler_ini(L"NeuralGravarTeto",t);
-    const unsigned n=gravar_quadros_de(tq,q);gravar_quadros.store(n);final_teto_sessao.store(gravar_teto_de(n,tt,t));
-    if(tq||tt){char l[96];NRLOGF(l,sizeof l,"config quadros=%u teto=%u",n,final_teto_sessao.load());log_reserva(l);}}
-   if(const unsigned m=final_reserva_modo()){char t[96];NRLOGF(t,sizeof t,"config modo=%u gravar_f9=%d",m,gravar_f9.load()?1:0);log_reserva(t);}}}
-  std::vector<Final> prontos;
-  {std::lock_guard<std::mutex> trava(final_mutex);
-   for(auto it=finais.begin();it!=finais.end();){if(--it->espera==0){prontos.push_back(std::move(*it));it=finais.erase(it);}else ++it;}
-   if(!despejo_final.load())reserva_gravando=false;
-   if(finais.empty()&&!despejo_final.load()){
-    const unsigned m=reserva_modo_efetivo();
-    if(m==0u)reserva.clear();
-    else if(m==1u)soltar_no_fundo(reserva);
-    else if(!reserva_voo.load()&&final_indice<final_maximo_()&&(gravar_f9.load()||final_indice>0)&&
-            reserva.size()<std::min(gravar_quadros.load(),final_maximo_()-final_indice))final_preparo_pedido.store(true);
-   }}
-  for(auto& f:prontos)std::thread([g=std::move(f)]()mutable{try{escrever_final(std::move(g));}catch(...){}}).detach();
- }catch(...){}
+
 }
 }
 #include "late_compose.inl"

@@ -195,11 +195,7 @@ inline unsigned gravar_teto_de(unsigned quadros,bool presente,double v) noexcept
 inline std::atomic<std::uint64_t> aviso_cheio_ate_ms{0};
 
 inline bool pedir_gravacao(unsigned n,std::uint64_t agora_ms) noexcept {
-    if(gravar_aviso.load(std::memory_order_relaxed)){
-        if(final_cheio.load()||final_total.load()>=final_teto_sessao.load()){final_cheio.store(true);aviso_cheio_ate_ms.store(agora_ms+3000);despejo_final.store(0);return false;}
-        final_pedido.store(n);
-    }
-    final_gravados.store(0);despejo_final.store(n);return true;
+ (void)n;(void)agora_ms;return false;
 }
 
 inline std::atomic<bool> final_preparo_pedido{false};

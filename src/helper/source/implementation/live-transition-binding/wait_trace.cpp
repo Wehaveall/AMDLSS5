@@ -46,6 +46,9 @@ bool Buffer::Read(std::size_t index, Entry& output) const noexcept {
     return true;
 }
 void InitializeFromEnvironment() noexcept {
+    wchar_t setting[2]{};
+    const DWORD count = GetEnvironmentVariableW(L"NR_WAIT_TRACE", setting, 2);
+    enabled.store(count == 1 && setting[0] == L'1', std::memory_order_release);
 }
 bool Enabled() noexcept { return enabled.load(std::memory_order_relaxed); }
 void Record(Event event, std::uint64_t job, std::uint64_t queue,

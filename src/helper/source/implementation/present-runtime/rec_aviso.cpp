@@ -46,7 +46,8 @@ struct Desenho {
 };
 Desenho& d(){static auto* x=new Desenho;return *x;}
 void log_uma(const char* t) noexcept {
-(void)t;
+    static unsigned n=0;if(n>=8)return;++n;
+    FILE* f{};if(fopen_s(&f,"nr_aviso.log","a")==0&&f){std::fprintf(f,"pid=%lu tick=%llu %s\n",GetCurrentProcessId(),GetTickCount64(),t);std::fclose(f);}
 }
 }
 void texto(const char* t,int x0,int y0,int s,std::vector<Ret>& out){

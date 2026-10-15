@@ -29,6 +29,7 @@
 #include "rosto_jogador_state.h"
 #include "rosto_jogador_detecta.h"
 #include "yunet.h"
+#include "scrfd.h"
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -125,6 +126,10 @@ void diagnostic_escreve(const char* phase,unsigned pass,int status,double millis
         HMODULE self{};wchar_t path[32768]{};
         if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             reinterpret_cast<LPCWSTR>(&diagnostic_escreve),&self)||!GetModuleFileNameW(self,path,32768))return;
+
+std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_multipass.log",std::ios::app);
+        log<<"pid="<<GetCurrentProcessId()<<" tick="<<GetTickCount64()<<" phase="<<phase<<" pass="<<pass
+           <<" hip_status="<<status<<" elapsed_ms="<<milliseconds<<" request="<<request<<" completed_jobs="<<completed_jobs<<'\n';
 
     }catch(...){}
 #else
@@ -622,7 +627,10 @@ void acknowledge(char* base,unsigned value) {
 
 constexpr int job1_teto_padrao=1;
 static void job1_log(const char* linha) noexcept {
-    (void)linha;
+    try{wchar_t path[32768]{};HMODULE self{};
+        if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&job1_log),&self)||!GetModuleFileNameW(self,path,32768))return;
+        std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",std::ios::app);
+        log<<linha<<std::endl;}catch(...){}
 }
 extern "C" bool NRAquecerJob1_v1(void* proxy_base,int width,int height) noexcept {
     auto base=static_cast<char*>(proxy_base);
@@ -1231,6 +1239,11 @@ static void run_multipass_eval(void* primary,void* source,int input_pitch,int in
     const auto completed_style=read<unsigned>(base,0x71d084);
     if(previous_style!=completed_style || std::memcmp(previous_controls.data(),controls,sizeof(controls))!=0){
 
+std::ofstream log("nr_model_controls.log",std::ios::app);
+        log<<"pid="<<GetCurrentProcessId()<<" eval_returned=1 style="<<completed_style
+           <<" tone="<<controls[0]<<" structure="<<controls[1]<<" skin_mask="<<controls[2]
+           <<" local_mask="<<controls[3]<<" amd_scale="<<controls[4]<<" width="<<width<<" height="<<height<<'\n';
+
         std::memcpy(previous_controls.data(),controls,sizeof(controls));previous_style=completed_style;
     }
     nrstyletrace::capture(primary,destination,output_pitch,output_format,width,height);
@@ -1244,14 +1257,15 @@ static void run_multipass_eval(void* primary,void* source,int input_pitch,int in
 namespace nrpico {
 inline int ligado=-1;inline std::string buf;inline unsigned long long ru0{},rn0{},re0{},ch0{},fo0{};
 inline bool ativo(char* base) noexcept {
- (void)base;return false;
-}
+ if(ligado<0){ligado=0;try{const auto ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&ativo));
+  if(!ini.empty())ligado=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralLogPicoRede",0,ini.c_str()))==1?1:0;}catch(...){ligado=0;}}
+ return ligado==1;}
 inline double ms(std::int64_t a,std::int64_t b) noexcept {return nrjob::timeline().ms(b-a);}
 
 inline std::int64_t a_top{},a_d{},a_fim{},a_cerca{},a_subm{},a_capt{};inline int a_job{},a_flush{};
 struct Fim {bool on{false};~Fim(){if(on)a_fim=nrjob::qpc();}};
 
-inline void gravar(std::string&&) noexcept {}
+inline void gravar(std::string&& texto) noexcept {try{std::thread([t=std::move(texto)]{FILE* f{};if(fopen_s(&f,"nr_pico_rede.log","a")==0&&f){std::fputs(t.c_str(),f);std::fclose(f);}}).detach();}catch(...){}}
 }
 
 namespace nrpainel {

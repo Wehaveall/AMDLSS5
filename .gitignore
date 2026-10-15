@@ -1,4 +1,4 @@
-# binarios e saidas de build (o pacote de lancamento fica fora do git)
+# binaries and build outputs (the release package stays out of git)
 build/
 out/
 bin/

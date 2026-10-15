@@ -42,7 +42,13 @@ bool evaluate(void* opaque,const std::uint16_t* input,std::uint16_t* output,unsi
     return call.state.engine.evaluate(call.base,input,output,w,h,call.controls,error);
 }
 void log(Session& state,void* base,const std::string& text,double elapsed=0){
-(void)state;(void)base;(void)text;(void)elapsed;
+    const auto key=text.substr(0,text.find(':'));
+    if(key==state.previous && (state.completed<state.last_logged+120))return;
+    const auto path=folder(base);if(path.empty())return;
+    std::ofstream out(path/L"nr_present.log",std::ios::app);
+    out<<"pid="<<GetCurrentProcessId()<<" mode=Present source=swapchain temporal=off completed="<<state.completed
+       <<" elapsed_ms="<<elapsed<<" "<<text<<'\n';
+    state.previous=key;state.last_logged=state.completed;
 }
 }
 bool selected(void* base) noexcept {

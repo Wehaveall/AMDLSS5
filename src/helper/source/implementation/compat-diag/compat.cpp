@@ -37,7 +37,12 @@ void limpar(const char* id,char* out,std::size_t n) noexcept {
 }
 
 bool caminho_log(wchar_t (&path)[MAX_PATH]) noexcept {
-(void)path;return false;
+    HMODULE self{};
+    if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(&report),&self))return false;
+    const DWORD length=GetModuleFileNameW(self,path,MAX_PATH);if(!length||length>=MAX_PATH)return false;
+    wchar_t* slash=std::wcsrchr(path,L'\\');if(!slash)return false;
+    return wcscpy_s(slash+1,MAX_PATH-static_cast<std::size_t>(slash+1-path),L"nr_compat.log")==0;
 }
 
 struct Linha { bool ok{}; bool cabecalho{}; teste::Sink sink{}; char texto[4200]; };
@@ -51,7 +56,25 @@ bool montar(Estado& e,const char* id,const char* detalhe,Linha& l) noexcept {
 }
 
 void gravar(const Linha& l) noexcept {
-(void)l;
+    if(!l.ok)return;
+    if(l.sink){l.sink(l.texto);return;}
+    wchar_t path[MAX_PATH]{};if(!caminho_log(path))return;
+    FILE* log{};if(_wfopen_s(&log,path,L"ab")||!log)return;
+    if(l.cabecalho){
+        wchar_t self[MAX_PATH]{};HMODULE module{};
+        if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&report),&module))
+            (void)GetModuleFileNameW(module,self,MAX_PATH);
+        std::fprintf(log,"pid=%lu tick=%llu helper=%ls modules",GetCurrentProcessId(),static_cast<unsigned long long>(GetTickCount64()),self);
+        for(const wchar_t* name:{L"d3d12.dll",L"D3D12Core.dll",L"d3d12SDKLayers.dll",L"dxgi.dll",L"sl.interposer.dll",L"sl.common.dll",L"sl.pcl.dll",L"sl.reflex.dll",
+                                 L"sl.dlss_g.dll",L"GFSDK_Aftermath_Lib.x64.dll",L"amd_fidelityfx_dx12.dll",L"amd_fidelityfx_loader_dx12.dll",L"amd_fidelityfx_upscaler_dx12.dll",
+                                 L"ffx_fsr3_x64.dll",L"ffx_fsr3upscaler_x64.dll",L"amd_ags_x64.dll",L"amdhip64_7.dll",L"dinput8.dll",L"GameOverlayRenderer64.dll",L"RTSSHooks64.dll",
+                                 L"ReShade64.dll",L"dxgi_reshade.dll",L"OptiScaler.dll",L"nvngx.dll",L"version.dll",
+                                   L"amdihk64.dll",L"GameManager64.dll",L"detoured64.dll"})
+            std::fprintf(log," %ls=%p",name,static_cast<void*>(GetModuleHandleW(name)));
+        std::fprintf(log,"\n");
+    }
+    std::fputs(l.texto,log);
+    std::fclose(log);
 }
 }
 

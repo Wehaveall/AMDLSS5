@@ -712,7 +712,8 @@ void Backend::rj_compor(void* command,void* destination,unsigned formato,int job
   }
 
   {
-   constexpr float peso=.5f,limiar=.03f;
+   static const float peso=[]{char v[16]{};size_t n=0;if(getenv_s(&n,v,sizeof v,"NR_RJ_PESO")==0&&n){const float f=float(std::atof(v));if(f>0.f&&f<=1.f)return f;}return .5f;}();
+   static const float limiar=[]{char v[16]{};size_t n=0;if(getenv_s(&n,v,sizeof v,"NR_RJ_LIMIAR")==0&&n){const float f=float(std::atof(v));if(f>0.f)return f;}return .03f;}();
    k.peso=nrrj::temporal_inst()?peso:1.f;k.limiar=limiar;
    {const float t4=nrrj::acum_limiar.load(std::memory_order_relaxed);if(k.acum&&t4>0.f)k.limiar=t4;}
 
@@ -734,7 +735,7 @@ void Backend::rj_compor(void* command,void* destination,unsigned formato,int job
        G.compor_px-=std::uint64_t(k.fw)*k.fh;k.fx=u0;k.fy=v0;k.fw=unsigned(u1-u0);k.fh=unsigned(v1-v0);G.compor_px+=std::uint64_t(k.fw)*k.fh;}}}}}
 
   {
-   constexpr bool zero=false;
+   static const bool zero=[]{char v[8]{};size_t n=0;return getenv_s(&n,v,sizeof v,"NR_RJ_GANHO0")==0&&n&&v[0]=='1';}();
    if(zero||(nrrj::ablacao.load(std::memory_order_relaxed)&1u)){G.composto=true;auto& qz=nrrj::quadro_render();qz.composto=1;qz.job=job;qz.ganho=0.f;qz.idade=ap;return;}}
   if(det.pend&&!(k.acum&&nrrj::compor_rapido.load(std::memory_order_relaxed)&&G.compor_r&&det.camq))return;
   transition(c,G.compartilhado.Get(),D3D12_RESOURCE_STATE_COMMON,write_state);

@@ -18,7 +18,7 @@ inline constexpr unsigned char prologo[25]={0x4c,0x8b,0xc2,0x48,0x8b,0xd1,0x4d,0
 struct Estado{std::atomic<int> estado{0};bool log=false,sem_hudless=false;std::mutex m;char ultimo[512]{};unsigned linhas=0;unsigned long long chamadas=0,zerados=0;};
 inline Estado& st(){static Estado e;return e;}
 inline void escrever(const char* s){
-(void)s;
+FILE* f{};if(fopen_s(&f,"nr_fg_config.log","a")==0&&f){std::fprintf(f,"pid=%lu tick=%llu %s\n",GetCurrentProcessId(),GetTickCount64(),s);std::fclose(f);}
 }
 inline std::int32_t substituta(void** ctx,Header* desc){
  if(!desc||!ctx)return 6;

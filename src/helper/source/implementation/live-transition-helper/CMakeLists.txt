@@ -2,9 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 project(nr_live_helper LANGUAGES CXX)
 add_compile_options(/utf-8)
 
-  add_compile_definitions(NR_PUBLICO=1)
-
-  add_compile_options(/wd4127 /wd4100 /wd4189 /wd4505)
+  add_compile_definitions(NR_SEM_GRAVACAO=1)
 
 add_subdirectory(../universal-scale universal-scale)
 add_subdirectory(../adapter-menu adapter)
@@ -23,8 +21,6 @@ target_compile_features(nr_present_core PUBLIC cxx_std_17)
 target_compile_options(nr_present_core PRIVATE /W4 /WX /permissive- /EHsc)
 target_link_libraries(nr_present_core PUBLIC d3d12 dxgi bcrypt)
 add_library(nr_live_adapter SHARED export.cpp present_overlay.cpp present_integration.cpp menu_input.cpp "${NR_MULTIPASS_DIR}/multipass_runtime.cpp")
-
-  target_sources(nr_live_adapter PRIVATE "${NR_MULTIPASS_DIR}/nr_publico_cfg.cpp")
 
 find_path(NR_HIP_INCLUDE_DIR hip/hip_runtime_api.h
   HINTS "$ENV{HIP_PATH}/include" REQUIRED)

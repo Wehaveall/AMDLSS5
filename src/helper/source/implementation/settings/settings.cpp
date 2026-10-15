@@ -20,6 +20,59 @@ constexpr std::array<unsigned,7> percentages{100,85,70,65,50,40,30};
 constexpr std::array<const char*,7> texts{"1.00","0.85","0.70","0.65","0.50","0.40","0.30"};
 constexpr const char* section_name = "dlssnronamd";
 bool valid(unsigned percent) { return std::find(percentages.begin(),percentages.end(),percent) != percentages.end(); }
+std::string trim(std::string value) {
+    auto first=value.find_first_not_of(" \t\r");
+    if (first==std::string::npos) return {};
+    return value.substr(first,value.find_last_not_of(" \t\r")-first+1);
+}
+std::string lower(std::string value) {
+    for(char& c:value) if(c>='A' && c<='Z') c=static_cast<char>(c-'A'+'a');
+    return value;
+}
+struct Line { std::string body, ending; };
+struct Document { std::string bom; std::vector<Line> lines; };
+bool load(const std::filesystem::path& path, Document& doc, std::string& error, bool allow_missing) {
+    std::error_code ec;
+    bool exists=std::filesystem::exists(path,ec);
+    if(ec) { error="Cannot inspect selected INI: " + ec.message(); return false; }
+    if(!exists) {
+        if(allow_missing) return true;
+        error="Selected INI does not exist"; return false;
+    }
+    if(!std::filesystem::is_regular_file(path,ec) || ec) { error="Selected INI is not a regular file"; return false; }
+    std::ifstream file(path,std::ios::binary);
+    if(!file) { error="Cannot read selected INI"; return false; }
+    std::string bytes{std::istreambuf_iterator<char>(file),std::istreambuf_iterator<char>()};
+    if(file.bad()) { error="Cannot finish reading selected INI"; return false; }
+    if(bytes.find('\0') != std::string::npos || bytes.compare(0,2,"\xFF\xFE")==0 || bytes.compare(0,2,"\xFE\xFF")==0) {
+        error="Unsupported INI encoding (UTF-16/UTF-32 or embedded NUL); file unchanged"; return false;
+    }
+    std::size_t pos=0;
+    if(bytes.compare(0,3,"\xEF\xBB\xBF")==0) { doc.bom=bytes.substr(0,3); pos=3; }
+    while(pos<bytes.size()) {
+        auto end=bytes.find('\n',pos);
+        if(end==std::string::npos) { doc.lines.push_back({bytes.substr(pos),""}); break; }
+        bool cr=end>pos && bytes[end-1]=='\r';
+        doc.lines.push_back({bytes.substr(pos,end-pos-(cr?1:0)),cr?"\r\n":"\n"});
+        pos=end+1;
+    }
+    return true;
+}
+bool header(const Line& line,std::string& section) {
+    auto body=trim(line.body);
+    if(!body.empty() && body.front()=='[') {
+        section=body.size()>=2 && body.back()==']' ? lower(trim(body.substr(1,body.size()-2))) : "";
+        return true;
+    }
+    return false;
+}
+std::pair<std::string,std::string> key_value(const Line& line) {
+    auto body=trim(line.body);
+    if(body.empty() || body.front()==';' || body.front()=='#') return {};
+    auto equal=body.find('=');
+    if(equal==std::string::npos) return {};
+    return {lower(trim(body.substr(0,equal))),trim(body.substr(equal+1))};
+}
 bool parse_percent(const std::string& value,unsigned& percent) {
     if(value.empty()) return false;
 
@@ -39,28 +92,91 @@ bool parse_percent(const std::string& value,unsigned& percent) {
     if(!valid(candidate)) return false;
     percent=candidate; return true;
 }
-
-std::string valor_publico(const std::filesystem::path& ini,const wchar_t* chave,const wchar_t* padrao) {
-    wchar_t t[64]{};NRCFG_STR(L"DlssNrOnAmd",chave,padrao,t,64,ini.c_str());
-    std::string s;for(const wchar_t* c=t;*c;++c)s.push_back(*c<128?char(*c):'?');
-    while(!s.empty()&&(s.back()==' '||s.back()=='\t'))s.pop_back();
-    while(!s.empty()&&(s.front()==' '||s.front()=='\t'))s.erase(s.begin());
-    return s;
-}
-bool ler_publico(const std::filesystem::path& ini,Settings& requested,std::string& error) {
+bool parse(const Document& doc,Settings& requested,std::string& error) {
     Settings candidate{};
-    const auto pre=valor_publico(ini,L"PreUpscaleNR",L"");
-    if(!pre.empty()){if(pre!="0"&&pre!="1"){error="1";return false;}candidate.pre_upscale=pre=="1";}
-    const auto escala=valor_publico(ini,L"NeuralResolutionScale",L"");
-    if(!escala.empty()&&!parse_percent(escala,candidate.percent)){error="2";return false;}
-    requested=candidate;return true;
+    std::string section; bool seen_pre=false,seen_scale=false;
+    for(const auto& line:doc.lines) {
+        if(header(line,section) || section!=section_name) continue;
+        auto kv=key_value(line);
+        if(kv.first=="preupscalenr") {
+            if(seen_pre || (kv.second!="0" && kv.second!="1")) { error="Invalid or duplicate PreUpscaleNR (expected 0 or 1)"; return false; }
+            seen_pre=true; candidate.pre_upscale=kv.second=="1";
+        } else if(kv.first=="neuralresolutionscale") {
+            if(seen_scale || !parse_percent(kv.second,candidate.percent)) { error="Invalid or duplicate NeuralResolutionScale (expected supported finite scale)"; return false; }
+            seen_scale=true;
+        }
+    }
+    requested=candidate; return true;
 }
-bool gravar_publico(const std::filesystem::path& ini,Settings value,std::string& error) {
+std::string serialize(Document doc,Settings value) {
+    std::string newline="\r\n";
+    for(const auto& line:doc.lines) if(!line.ending.empty()) { newline=line.ending; break; }
     const auto index=static_cast<std::size_t>(std::find(percentages.begin(),percentages.end(),value.percent)-percentages.begin());
-    wchar_t escala[8]{};for(std::size_t i=0;texts[index][i]&&i<7;++i)escala[i]=wchar_t(texts[index][i]);
-    if(!NRCFG_ESCREVER(L"DlssNrOnAmd",L"PreUpscaleNR",value.pre_upscale?L"1":L"0",ini.c_str())||
-       !NRCFG_ESCREVER(L"DlssNrOnAmd",L"NeuralResolutionScale",escala,ini.c_str())){error="3";return false;}
-    return true;
+    const std::array<std::string,2> replacements{std::string("PreUpscaleNR=")+(value.pre_upscale?"1":"0"),std::string("NeuralResolutionScale=")+texts[index]};
+    std::string section; bool found_section=false,pre=false,scale=false;
+    std::size_t insert=doc.lines.size();
+    for(std::size_t i=0;i<doc.lines.size();++i) {
+        if(header(doc.lines[i],section)) { if(section==section_name) { found_section=true; insert=i+1; } continue; }
+        if(section!=section_name) continue;
+        insert=i+1;
+        auto key=key_value(doc.lines[i]).first;
+        if(key=="preupscalenr") { doc.lines[i].body=replacements[0]; pre=true; }
+        if(key=="neuralresolutionscale") { doc.lines[i].body=replacements[1]; scale=true; }
+    }
+
+    bool emitted_pre=false,emitted_scale=false;
+    std::vector<Line> output;
+    auto append=[&](const std::string& body) {
+        if(!output.empty() && output.back().ending.empty()) output.back().ending=newline;
+        output.push_back({body,newline});
+    };
+    section.clear();
+    for(std::size_t i=0;i<=doc.lines.size();++i) {
+        if(i==insert) {
+            if(!found_section) append("[DlssNrOnAmd]");
+            if(!pre) append(replacements[0]);
+            if(!scale) append(replacements[1]);
+        }
+        if(i==doc.lines.size()) break;
+        auto line=doc.lines[i];
+        if(!header(line,section) && section==section_name) {
+            auto key=key_value(line).first;
+            if(key=="preupscalenr") { if(emitted_pre) continue; emitted_pre=true; }
+            if(key=="neuralresolutionscale") { if(emitted_scale) continue; emitted_scale=true; }
+        }
+        output.push_back(std::move(line));
+    }
+    std::string bytes=doc.bom;
+    for(const auto& line:output) { bytes+=line.body; bytes+=line.ending; }
+    return bytes;
+}
+bool persist(const std::filesystem::path& selected,const std::string& bytes,std::string& error) {
+    static std::atomic<unsigned long long> counter{0};
+    std::filesystem::path temp;
+    HANDLE file=INVALID_HANDLE_VALUE;
+    for(unsigned attempt=0;attempt<100;++attempt) {
+        temp=selected;
+        temp+=L".nr-tmp-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(++counter);
+        file=CreateFileW(temp.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+        if(file!=INVALID_HANDLE_VALUE) break;
+        if(GetLastError()!=ERROR_FILE_EXISTS && GetLastError()!=ERROR_ALREADY_EXISTS) break;
+    }
+    if(file==INVALID_HANDLE_VALUE) { error="INI not persisted: cannot create adjacent temporary file (Windows " + std::to_string(GetLastError())+")"; return false; }
+    bool okay=true; std::size_t offset=0; DWORD failure=ERROR_SUCCESS;
+    while(offset<bytes.size()) {
+        DWORD count=static_cast<DWORD>(std::min<std::size_t>(bytes.size()-offset,1024*1024));
+        DWORD written=0;
+        if(!WriteFile(file,bytes.data()+offset,count,&written,nullptr) || written!=count) { failure=GetLastError(); okay=false; break; }
+        offset+=written;
+    }
+    if(okay && !FlushFileBuffers(file)) { failure=GetLastError(); okay=false; }
+    if(!CloseHandle(file) && okay) { failure=GetLastError(); okay=false; }
+    if(okay && !MoveFileExW(temp.c_str(),selected.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)) { failure=GetLastError(); okay=false; }
+    if(!okay) {
+        DeleteFileW(temp.c_str());
+        error="INI not persisted: atomic replacement failed (Windows " + std::to_string(failure)+")";
+    }
+    return okay;
 }
 }
 
@@ -80,8 +196,8 @@ Operation SettingsStore::request_locked(Settings value) {
     if(!valid(value.percent)) { state_.diagnostic="Unsupported resolution percent"; return {false,false,false,state_.diagnostic}; }
     if(value==state_.requested) return {true,false,false,{}};
     if(state_.generation==std::numeric_limits<std::uint64_t>::max()) { state_.diagnostic="Request generation exhausted"; return {false,false,false,state_.diagnostic}; }
-    std::string error;
-    if(!gravar_publico(selected_ini_,value,error)) {
+    Document doc; std::string error;
+    if(!load(selected_ini_,doc,error,true) || !persist(selected_ini_,serialize(std::move(doc),value),error)) {
         state_.diagnostic=error; return {false,false,false,error};
     }
     accept_locked(value); return {true,true,true,{}};
@@ -104,8 +220,8 @@ Operation SettingsStore::control(Control control,Key key) {
 }
 Operation SettingsStore::reload() {
     std::lock_guard<std::mutex> lock(mutex_);
-    Settings value; std::string error;
-    if(!ler_publico(selected_ini_,value,error)) {
+    Document doc; Settings value; std::string error;
+    if(!load(selected_ini_,doc,error,false) || !parse(doc,value,error)) {
         state_.diagnostic=error; return {false,false,false,error}; }
     bool changed=value!=state_.requested;
     if(changed && state_.generation==std::numeric_limits<std::uint64_t>::max()) { state_.diagnostic="Request generation exhausted"; return {false,false,false,state_.diagnostic}; }

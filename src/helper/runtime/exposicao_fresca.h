@@ -81,7 +81,7 @@ inline std::atomic<std::uint64_t> contagem[MotivoN]{};
 inline std::atomic<std::uint64_t> trocas_import{0},trocas_razao{0},trocas_compor{0},importes{0},reprojecoes{0};
 inline std::atomic<unsigned> linhas{0};
 inline void log(const char* s) noexcept {
-(void)s;
+ FILE* f{};if(fopen_s(&f,"nr_expofresca.log","a")==0&&f){std::fprintf(f,"%s\n",s);std::fclose(f);}
 }
 inline bool ligado() noexcept {return fresca.load(std::memory_order_relaxed)||historico.load(std::memory_order_relaxed);}
 

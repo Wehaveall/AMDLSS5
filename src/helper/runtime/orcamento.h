@@ -50,7 +50,7 @@ struct Medida {
  std::uint64_t outros_ini{};
  std::uint64_t outros_pico{};
  std::uint64_t folga{256*MB};
- unsigned fracao_outros_pct{90};
+ unsigned fracao_outros_pct{92};
 };
 enum Motivo:unsigned{Cabe=0,GraceMenor=1u,NpcMenor=2u,MenosNpc=4u,SemNpc=8u,Insuficiente=16u,SemMedida=32u};
 enum class FonteOutros:unsigned{Ini=0,Arquivo=1,Uso=2,Fracao=3};

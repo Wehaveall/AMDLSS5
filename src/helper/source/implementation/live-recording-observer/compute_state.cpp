@@ -57,7 +57,16 @@ void predication(List* l,ID3D12Resource* p,UINT64 offset,D3D12_PREDICATION_OP op
  original<void(*)(List*,ID3D12Resource*,UINT64,D3D12_PREDICATION_OP)>(55)(l,p,offset,op);
 }
 void log_predicate(List* l,const State& s)noexcept{
-(void)l;(void)s;
+ static unsigned nonnull_logs{};static unsigned long long captures{},nonnull{};
+ ++captures;if(s.predicate)++nonnull;
+ const bool detail=s.predicate&&nonnull_logs<8;
+ if(!detail&&captures!=1&&(captures%1024)!=0)return;
+ if(detail)++nonnull_logs;
+ wchar_t path[MAX_PATH]{};const DWORD n=GetModuleFileNameW(nullptr,path,MAX_PATH);if(!n||n>=MAX_PATH)return;
+ auto* slash=wcsrchr(path,L'\\');if(!slash)return;
+ if(wcscpy_s(slash+1,MAX_PATH-static_cast<size_t>(slash+1-path),L"nr_predication.log"))return;
+ FILE* f{};if(_wfopen_s(&f,path,L"ab")||!f)return;
+ std::fprintf(f,"pid=%lu captures=%llu nonnull=%llu incoming_predicate=%p command=%p offset=%llu operation=%u capture_suspended=1\n",GetCurrentProcessId(),captures,nonnull,s.predicate.Get(),l,static_cast<unsigned long long>(s.predicate_offset),static_cast<unsigned>(s.predicate_op));std::fclose(f);
 }
 void heaps(List* l,UINT n,ID3D12DescriptorHeap* const* h){
  update(l,[&](State& s){if(n>2||(n&&!h)){s.primed=false;return;}bool changed=n!=s.heaps_count;

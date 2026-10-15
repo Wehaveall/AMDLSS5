@@ -105,13 +105,40 @@ class WindowsHost final:public Host {
     bool ini_jogo_=preparar_ini_jogo(base_);
     static bool preparar_ini_jogo(const void* b)noexcept{nrinijogo::definir(nrinipath::resolve(b,reinterpret_cast<const void*>(&make_windows_host)));return true;}
     bool verified_{};
-    bool debug_probe_=false;
+    bool debug_probe_=GetEnvironmentVariableW(L"NR_D3D12_DIAGNOSTICS",nullptr,0)>0 ||
+        GetFileAttributesW(L"nr_d3d12_diagnostics.flag")!=INVALID_FILE_ATTRIBUTES;
     ULONGLONG trace_flush_tick_{};
     void flush_trace()noexcept{
+        if(!nr::wait_trace::Enabled())return;
+        const auto now=GetTickCount64();if(now-trace_flush_tick_<250)return;
+        trace_flush_tick_=now;wchar_t path[64]{};
+        swprintf_s(path,L"nr_wait_trace_%lu.csv",GetCurrentProcessId());
+        (void)nr::wait_trace::Flush(path);
+
 }
     UINT64 debug_cursor_{};unsigned debug_written_{};bool debug_announced_{};
     void debug_messages(const nractive::Globals& g)noexcept{
-(void)g;
+        if(!debug_probe_||debug_written_>=1000)return;
+        auto* device=reinterpret_cast<ID3D12Device*>(field<std::uint64_t>(g,0x93F38));if(!device)return;
+        try{
+            ComPtr<ID3D12InfoQueue> info;const auto hr=device->QueryInterface(IID_PPV_ARGS(&info));
+            FILE* log=nullptr;if(fopen_s(&log,"nr_d3d12_validation.log","a")||!log)return;
+            if(!debug_announced_){std::fprintf(log,"pid=%lu InfoQueue HRESULT=%08x\n",GetCurrentProcessId(),static_cast<unsigned>(hr));debug_announced_=true;}
+            if(info){
+                const auto count=info->GetNumStoredMessagesAllowedByRetrievalFilter();
+                if(count<debug_cursor_)debug_cursor_=0;
+                for(unsigned scanned=0;debug_cursor_<count&&scanned<128&&debug_written_<1000;++debug_cursor_,++scanned){
+                    SIZE_T bytes=0;if(FAILED(info->GetMessage(debug_cursor_,nullptr,&bytes))||bytes>65536)continue;
+                    alignas(D3D12_MESSAGE) unsigned char storage[65536];auto* message=reinterpret_cast<D3D12_MESSAGE*>(storage);
+                    if(FAILED(info->GetMessage(debug_cursor_,message,&bytes)))continue;
+                    if(message->Severity>D3D12_MESSAGE_SEVERITY_WARNING)continue;
+                    std::fprintf(log,"pid=%lu severity=%u id=%u %s\n",GetCurrentProcessId(),static_cast<unsigned>(message->Severity),static_cast<unsigned>(message->ID),message->pDescription);
+                    ++debug_written_;
+                }
+            }
+            std::fclose(log);
+        }catch(...){debug_probe_=false;}
+
 }
     char verification_message_[256]{"verification_not_started"};
     std::unique_ptr<nrtransition::ThreadProof> threads_;
@@ -166,6 +193,12 @@ public:
          nrsementefixa::ativa.store(semente&&(!temporal||semente_modo==2));
          if(fresca||historico||semente){char l[256];NRLOGF(l,sizeof l,"pid=%lu CHAVES NeuralExposicaoFresca=%d NeuralHistoricoExposicao=%d NeuralSementeFixa=%d Temporal=%d UseGameExposure=%d -> fresca=%d historico=%d semente_fixa=%d",
              GetCurrentProcessId(),fresca?1:0,historico?1:0,semente?1:0,temporal?1:0,game_exposure?1:0,nrexpofresca::fresca.load()?1:0,nrexpofresca::historico.load()?1:0,nrsementefixa::ativa.load()?1:0);nrexpofresca::log(l);}}
+
+FILE* exposure_log{};
+        if(fopen_s(&exposure_log,"nr_exposure.log","a")==0&&exposure_log){
+            std::fprintf(exposure_log,"pid=%lu UseGameExposure=%u neural_capture_only=1 restart_required=1\n",GetCurrentProcessId(),game_exposure?1u:0u);
+            std::fclose(exposure_log);
+        }
 
         verified_=true;
         return verified_;
@@ -334,7 +367,18 @@ public:
         return true;
     }
     void age_log(const std::string& text)noexcept override{
-(void)text;
+        try{const auto path=helper_folder()/L"nr_idade.log";FILE* f{};
+            if(_wfopen_s(&f,path.c_str(),L"ab")==0&&f){std::fwrite(text.data(),1,text.size(),f);
+
+                if(continuous_on_>0){
+                    std::fprintf(f,"CONTINUO pid=%lu modo=%d esperas=%u por_evento=%u prazos=%u recuos_sleep=%u sleep_com_job=%u espera_ms=%.3f\n",GetCurrentProcessId(),
+                        continuous_on_,continuous_.waits,continuous_.event_wakes,continuous_.timeouts,continuous_.fallbacks,continuous_.job_sleeps,continuous_.ms);
+                    continuous_={};
+                }
+                if(espera_diag_on_==1){const auto l=espera_diag_.linha(GetCurrentProcessId(),continuous_on_<0?0:continuous_on_);std::fwrite(l.data(),1,l.size(),f);}
+                std::fclose(f);}
+        }catch(...){}
+
 }
     std::uint64_t now()const noexcept override{return GetTickCount64();}
     bool describe(void* object,NrResourceDesc& out)noexcept override{
@@ -466,6 +510,8 @@ public:
         });
         if(result==nrstate::PreserveResult::Skipped)reprojection_.invalidate();
 
+if(result==nrstate::PreserveResult::Skipped){FILE* log{};if(fopen_s(&log,"nr_capture_state.log","a")==0&&log){std::fprintf(log,"pid=%lu readiness=%u\n",GetCurrentProcessId(),nrstate::readiness(r.command_list));std::fclose(log);}}
+
         nr::wait_trace::Record(result==nrstate::PreserveResult::Skipped?nr::wait_trace::Event::CaptureStateSkipped:nr::wait_trace::Event::CaptureStateRestored,0,0,0,reinterpret_cast<std::uint64_t>(r.command_list),result==nrstate::PreserveResult::RestoreFailed?1u:0u);
         if(result==nrstate::PreserveResult::RestoreFailed)throw std::runtime_error("capture_state_restore_failed");
     }
@@ -522,6 +568,7 @@ public:
             if(preservado==nrstate::PreserveResult::Skipped){
 
                 reprojection_.refuse_post("post_unsupported_list_state_fallback_pre");
+                FILE* log{};if(fopen_s(&log,"nr_capture_state.log","a")==0&&log){std::fprintf(log,"pid=%lu post readiness=%u\n",GetCurrentProcessId(),nrstate::readiness(command));std::fclose(log);}
                 return 1;
             }
             return result==nrreproject::Result::Composed?0u:result==nrreproject::Result::Failed?2u:1u;
@@ -592,6 +639,7 @@ public:
                 _InterlockedExchange8(reinterpret_cast<volatile char*>(base_+0x94710),static_cast<char>(value));
             }
         }
+        FILE* log{};if(fopen_s(&log,"nr_mode.log","a")==0&&log){std::fprintf(log,"pid=%lu inline_commit=%u retired=%u ini_persisted=%u\n",GetCurrentProcessId(),value,ok?1u:0u,persisted?1u:0u);std::fclose(log);}
         return unlock()&&ok&&persisted;
     }
     bool set_pending_reset()noexcept override{if(!verified_)return false;_InterlockedExchange8(reinterpret_cast<volatile char*>(base_+0x94B78),1);return true;}
@@ -637,7 +685,15 @@ public:
     bool stop_producers(std::uint64_t gen)noexcept override{
         nractive::Globals g{};bool sampled=false;DWORD proof_error=ERROR_INVALID_DATA;
         const auto log=[&](bool ok,const char* phase)noexcept{
-(void)ok;(void)phase;
+            FILE* f{};if(fopen_s(&f,"nr_mode.log","a")||!f)return;
+            std::fprintf(f,"pid=%lu generation=%llu stop_producers=%u phase=%s sampled=%u inline=%u worker=%llx worker_id=%lu watchdog=%llx watchdog_id=%lu stop_before=%u proof_error=%lu\n",
+                GetCurrentProcessId(),static_cast<unsigned long long>(gen),ok?1u:0u,phase,sampled?1u:0u,
+                sampled?unsigned(field<std::uint8_t>(g,0x94711)):~0u,
+                static_cast<unsigned long long>(field<std::uint64_t>(g,0x949A8)),field<DWORD>(g,0x949B0),
+                static_cast<unsigned long long>(field<std::uint64_t>(g,0x948E0)),field<DWORD>(g,0x948E8),
+                sampled?unsigned(field<std::uint8_t>(g,0x949B8)):~0u,proof_error);
+            std::fclose(f);
+
 };
         if(!verified_||!gen||!lock()){log(false,"admission_or_lock");return false;}
         bool ok=false;

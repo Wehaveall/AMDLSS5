@@ -76,7 +76,8 @@ struct Rosto {
   rosto_us.fetch_add((unsigned long long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-t).count(),std::memory_order_relaxed);}
 };
 }
-#define NR_R6_DENTRO false
+#include "rj_r6_sonda.h"
+#define NR_R6_DENTRO (nrr6::dentro)
 inline std::filesystem::path folder;
 inline std::vector<unsigned char> module_image;
 inline std::vector<unsigned char> layout_image;
@@ -301,7 +302,7 @@ inline void colher() noexcept {
 }
 }
 inline void log(const char* text) noexcept {
- (void)text;
+ try {FILE* f=nullptr;if(_wfopen_s(&f,(folder/L"nr_reg_swin32.log").c_str(),L"a")==0&&f){std::fprintf(f,"pid=%lu %s\n",GetCurrentProcessId(),text);std::fclose(f);}}catch(...){}
 }
 
 inline void register_hook(void* hook) noexcept {
@@ -1686,6 +1687,7 @@ inline int launch_r6(const void* f,Dim g,Dim b,void** args,std::size_t shared,vo
 inline int launch_corpo(const void* f,Dim g,Dim b,void** args,std::size_t shared,void* stream);
 inline int launch_handshake(const void* f,Dim g,Dim b,void** args,std::size_t shared,void* stream){return launch_corpo(f,g,b,args,shared,stream);}
 inline int launch(const void* f,Dim g,Dim b,void** args,std::size_t shared,void* stream) {
+ if(nrr6::modo)return launch_r6(f,g,b,args,shared,stream);
  if(rjsync::ligado.load(std::memory_order_relaxed)){
   const char* img=installed_image.load();
   if(img&&(f==img+0x62260||f==img+0x62268||f==img+0x62270)){
@@ -1705,7 +1707,23 @@ inline int launch_corpo(const void* f,Dim g,Dim b,void** args,std::size_t shared
  if(streamq::cada&&!e)streamq::depois(f,stream,installed_image.load());
  return e;
 }
-inline int launch_r6(const void* f,Dim g,Dim b,void** args,std::size_t shared,void* stream){return launch(f,g,b,args,shared,stream);}
+
+inline int launch_r6(const void* f,Dim g,Dim b,void** args,std::size_t shared,void* stream) {
+ const int m=nrr6::modo;nrr6::modo=0;
+ nrr6::Reg r{};r.f=f;r.gx=g.x;r.gy=g.y;r.gz=g.z;r.bx=b.x*b.y*b.z;
+ const auto& h=nrr6::hipf();
+ if(m==3&&h.consulta)r.idle=h.consulta(stream)==0?1:0;
+ if(m==2&&h.marcar){r.e0=nrr6::evento();if(r.e0)h.marcar(r.e0,stream);}
+ nrtimeline::replaced=false;nrr6::dentro=true;
+ r.t_in=nrr6::agora();
+ const int e=launch(f,g,b,args,shared,stream);
+ r.t_out=nrr6::agora();
+ nrr6::dentro=false;r.novo=nrtimeline::replaced;nrtimeline::replaced=false;
+ if(m==2&&h.marcar&&r.e0){r.e1=nrr6::evento();if(r.e1)h.marcar(r.e1,stream);}
+ try{nrr6::regs.push_back(r);}catch(...){}
+ nrr6::modo=m;
+ return e;
+}
 
 namespace hostcopy {
 inline constexpr unsigned slot_copy=0x86be8u;

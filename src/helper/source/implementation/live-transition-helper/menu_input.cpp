@@ -105,7 +105,7 @@ HRESULT STDMETHODCALLTYPE data_hook(void* device,DWORD bytes,DIDEVICEOBJECTDATA*
     return hr;
 }
 void log(const char* status) noexcept {
-(void)status;
+    FILE* f{};if(fopen_s(&f,"nr_menu_input.log","a")==0&&f){std::fprintf(f,"pid=%lu status=%s visible=%u block=%u state_blocked=%llu data_blocked=%llu raw_blocked=%llu msg_blocked=%llu pad_blocked=%llu\n",GetCurrentProcessId(),status,unsigned(visible()),unsigned(block()),blocked_state.load(),blocked_data.load(),blocked_raw.load(),blocked_messages.load(),blocked_pad.load());std::fclose(f);}
 }
 bool patch(void** slot,void* before,void* after) noexcept {
     DWORD old{};if(!VirtualProtect(slot,sizeof(void*),PAGE_READWRITE,&old))return false;
@@ -260,9 +260,6 @@ void tick(void* base) noexcept {
         log(next?"f10_enabled":"f10_disabled");
         persist_enabled(next);
     }
-
-    static detail::ToggleKey print_key;
-    if(print_key.update((GetAsyncKeyState(VK_F11)&0x8000)!=0,foreground_pid==GetCurrentProcessId())){nrprint::pedir();log("f11_print");}
 
     static bool imports_attempted{};
     if(!imports_attempted){imports_attempted=true;install_game_imports();}

@@ -29,6 +29,9 @@ bool Backend::Impl::alocar_cena_npc(const D3D12_UNORDERED_ACCESS_VIEW_DESC& flag
   if(FAILED(device->CreateCommittedResource(&uh,D3D12_HEAP_FLAG_NONE,&zd,D3D12_RESOURCE_STATE_GENERIC_READ,nullptr,IID_PPV_ARGS(&g.zeros)))||FAILED(g.zeros->Map(0,&nada,&m))||!m)return false;
   std::memset(m,0,cnpc_bytes);g.zeros->Unmap(0,nullptr);nrorc_vram::registrar(nrorc::Api::Recurso,0,"cena_npc_zeros");}
  g.zerado=false;
+ {D3D12_HEAP_PROPERTIES rh{};rh.Type=D3D12_HEAP_TYPE_READBACK;D3D12_RESOURCE_DESC r2=bd;r2.Flags=D3D12_RESOURCE_FLAG_NONE;
+  if(FAILED(device->CreateCommittedResource(&rh,D3D12_HEAP_FLAG_NONE,&r2,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&g.leitura))))g.leitura.Reset();
+  else nrorc_vram::registrar(nrorc::Api::Recurso,0,"cena_npc_leitura");}
  D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,6,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
  if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&g.heap))))return false;
  nrorc_vram::registrar(nrorc::Api::Heap,0,"cena_npc");
@@ -90,6 +93,22 @@ bool Backend::Impl::cena_npc(ID3D12GraphicsCommandList* c,ID3D12Resource* dst,DX
  c->SetComputeRootDescriptorTable(2,gpu(g.heap.Get(),0));c->SetComputeRootDescriptorTable(3,gpu(g.heap.Get(),3));
  c->SetPipelineState(g.mede.Get());c->Dispatch(cnpc_ent,1,1);
  order_uav(c,g.estado.Get());order_uav(c,dst);
+
+ if(g.leitura){
+  if(g.leit_q&&g.usados>=g.leit_q+8u){
+   void* m=nullptr;const D3D12_RANGE r{0,cnpc_bytes};
+   if(SUCCEEDED(g.leitura->Map(0,&r,&m))&&m){const auto* f=static_cast<const float*>(m);const auto* u=static_cast<const unsigned*>(m);
+    char l[1400]{};int n=std::snprintf(l,sizeof l,"pid=%lu CENA_NPC usados=%llu zg=%.5g",GetCurrentProcessId(),static_cast<unsigned long long>(g.usados),double(f[1]));
+    for(unsigned e2=1;e2<cnpc_ent&&n>0&&n<int(sizeof l)-260;++e2){const unsigned o=e2*32u;if(!u[o])continue;
+     n+=std::snprintf(l+n,sizeof l-size_t(n)," | e%u n=%u zh=%.5g peso=%.0f",e2,u[o],double(f[o+1]),double(f[o+2]));
+     for(unsigned z=0;z<cnpc_cfg.zonas&&z<6u;++z)n+=std::snprintf(l+n,sizeof l-size_t(n)," z%u r=%.3f ref=%.3f F=%.3f",z,double(f[o+16+z]),double(f[o+4+z]),double(f[o+10+z]));}
+    const D3D12_RANGE w0{0,0};g.leitura->Unmap(0,&w0);
+    if(n>0&&n<int(sizeof l)-2){l[n++]='\n';l[n]=0;nrlogfila::linha(L"nr_reproject.log","%s",l);}}
+   g.leit_q=0;}
+  if(!g.leit_q&&(g.usados&63u)==0u){
+   transition(c,g.estado.Get(),write_state,D3D12_RESOURCE_STATE_COPY_SOURCE);c->CopyBufferRegion(g.leitura.Get(),0,g.estado.Get(),0,cnpc_bytes);transition(c,g.estado.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,write_state);
+   g.leit_q=g.usados;if(!g.leit_q)g.leit_q=1u;}
+ }
  c->SetPipelineState(g.compor.Get());
  ++g.usados;
  if(!g.logado){g.logado=true;nrlogfila::linha(L"nr_reproject.log","pid=%lu CENA_NPC ligada fpx=%.1f fatia=%u\n",GetCurrentProcessId(),double(cn.fpx),fatia);}

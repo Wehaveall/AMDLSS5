@@ -14,9 +14,9 @@ bool parse_language(const wchar_t* code,Language& out) noexcept;
 bool parse_language_name(const char* name,Language& out) noexcept;
 
 inline constexpr char language_label[]="Idioma";
-inline constexpr char language_help[]="Idioma do menu: English, Português (BR) ou Español. Vale na hora e fica salvo.";
+inline constexpr char language_help[]="Idioma do menu: English, Português (BR) ou Español. Vale na hora e fica salvo no INI (MenuLanguage).";
 inline constexpr char input_label[]="Entrada do jogo com menu aberto";
-inline constexpr char input_help[]="O que o jogo deixa de receber com o menu aberto. Teclas do menu: setas, Enter, End e F10 não chegam ao jogo; o resto passa (dá para andar e testar). Tudo: teclado, mouse e controle XInput ficam só com o menu. End e F10 nunca chegam ao jogo. Fica salvo.";
+inline constexpr char input_help[]="O que o jogo deixa de receber com o menu aberto. Teclas do menu: setas, Enter, End e F10 não chegam ao jogo; o resto passa (dá para andar e testar). Tudo: teclado, mouse e controle XInput ficam só com o menu. End e F10 nunca chegam ao jogo. Salvo no INI (MenuInputBlock).";
 inline constexpr char input_menu_keys[]="Teclas do menu";
 inline constexpr char input_everything[]="Tudo";
 

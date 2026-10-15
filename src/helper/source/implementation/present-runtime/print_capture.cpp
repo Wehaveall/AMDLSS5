@@ -24,7 +24,19 @@ namespace {
 using Microsoft::WRL::ComPtr;
 constexpr unsigned max_in_flight=3;
 std::mutex& log_mutex(){static auto* m=new std::mutex;return *m;}
-template<class... A> void log(const std::wstring&,const char*,A&&...) noexcept {}
+void log(const std::wstring& folder,const char* format,...) noexcept {
+    try{
+        char text[768]{};va_list args;va_start(args,format);std::vsnprintf(text,sizeof text,format,args);va_end(args);
+        SYSTEMTIME t{};GetLocalTime(&t);
+        std::lock_guard<std::mutex> lock(log_mutex());
+        FILE* f{};
+        if(_wfopen_s(&f,(std::filesystem::path(folder)/L"nr_print.log").c_str(),L"a")==0&&f){
+            std::fprintf(f,"%04u-%02u-%02u %02u:%02u:%02u.%03u pid=%lu %s\n",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond,
+                         t.wMilliseconds,GetCurrentProcessId(),text);
+            std::fclose(f);
+        }
+    }catch(...){}
+}
 std::string narrow(const std::wstring& w){
     std::string out;
     const int n=WideCharToMultiByte(CP_UTF8,0,w.c_str(),int(w.size()),nullptr,0,nullptr,nullptr);
@@ -228,17 +240,10 @@ bool encode_png(const std::wstring& path,const unsigned char* rgba,unsigned widt
     }catch(...){error="exception";return false;}
 }
 void capture_to(void* swapchain,void* queue,const std::wstring& folder) noexcept {
-    if(pedido.load(std::memory_order_relaxed)==0||pedido.exchange(0)==0)return;
-    try{start(swapchain,queue,folder);}
-    catch(const std::exception& e){fail(folder,"exception",e.what());}
-    catch(...){fail(folder,"exception");}
+ (void)swapchain;(void)queue;(void)folder;
 }
 void capture(void* swapchain,void* queue) noexcept {
-    if(pedido.load(std::memory_order_relaxed)==0)return;
-    std::wstring folder;
-    try{folder=game_folder();}catch(...){}
-    if(folder.empty()){pedido.store(0);ultima_falhou.store(1);return;}
-    capture_to(swapchain,queue,folder);
+ (void)swapchain;(void)queue;
 }
 bool wait_idle(unsigned milliseconds) noexcept {
     const auto end=GetTickCount64()+milliseconds;

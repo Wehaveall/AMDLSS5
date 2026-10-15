@@ -40,25 +40,6 @@ bool read_bytes(const void* source,void* target,SIZE_T bytes) noexcept {
 
 std::recursive_mutex& mutex() noexcept {return reload_mutex;}
 
-bool reler_agora(void* address,unsigned inline_ini) noexcept {
-    try{
-        if(!address||inline_ini>1)return false;
-        auto* b=static_cast<unsigned char*>(address);
-        static constexpr unsigned char prologo[]{0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xec,0xa0,0x00,0x00,0x00};
-        unsigned char atual[sizeof(prologo)]{};
-        if(!read_bytes(b+0x7b90,atual,sizeof(atual))||std::memcmp(atual,prologo,sizeof(prologo)))return false;
-        std::lock_guard<std::recursive_mutex> guard(reload_mutex);
-        std::uint64_t a{},c{},e{};unsigned d{};int bc{};unsigned char lido{};
-        if(!read_bytes(b+0x949A8,&a,8)||!read_bytes(b+0x948E0,&c,8)||!read_bytes(b+0x949DC,&d,4)||
-           !read_bytes(b+0x949BC,&bc,4)||!read_bytes(b+0x949D0,&e,8)||!read_bytes(b+0x94BD0,&lido,1))return false;
-        if(a||c||d||bc!=-1||e||lido!=1)return false;
-        _InterlockedExchange8(reinterpret_cast<volatile char*>(b+0x94710),static_cast<char>(inline_ini));
-        using Reload=std::uintptr_t(__cdecl*)();
-        (void)reinterpret_cast<Reload>(b+0x7b90)();
-        return true;
-    }catch(...){return false;}
-}
-
 bool install(void* address) noexcept {
     if(!address)return false;
     if(completed_base.load(std::memory_order_acquire)==address)return true;

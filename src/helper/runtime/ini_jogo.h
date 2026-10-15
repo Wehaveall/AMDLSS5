@@ -17,7 +17,6 @@ inline std::atomic<bool>& pronto() noexcept { static std::atomic<bool> p{false};
 inline void definir(const std::wstring& caminho) noexcept {
     if(caminho.empty()||pronto().load(std::memory_order_acquire))return;
     try{guardado()=caminho;pronto().store(true,std::memory_order_release);}catch(...){}
-    ::nrcfg::definir_ini(caminho.c_str());
 }
 inline const wchar_t* caminho() noexcept {
     return pronto().load(std::memory_order_acquire)?guardado().c_str():L".\\dlssnr_on_amd.ini";
@@ -112,8 +111,24 @@ struct Lote {
 
 inline bool ler_texto(const wchar_t* chave,wchar_t* out,unsigned n) noexcept {
     if(!out||!n)return false;out[0]=L'\0';
+    try{
+        auto& c=detalhe::cache();std::lock_guard<std::mutex> trava(c.m);
+        if(!detalhe::lote_profundidade||!detalhe::lote_conferido){
+            detalhe::conferir(c);if(detalhe::lote_profundidade)detalhe::lote_conferido=true;
+        }
+        auto it=c.chaves.find(chave);
+        if(it==c.chaves.end()){
+            wchar_t texto[256]{};
+            const DWORD k=NRCFG_STR(L"DlssNrOnAmd",chave,L"",texto,256,caminho());++c.est.leituras_api;
+            it=c.chaves.emplace(chave,std::make_pair(k>0,std::wstring(texto,k<256?k:255))).first;
+        }else ++c.est.acertos;
+        const auto& t=it->second.second;const std::size_t copia=t.size()<n-1?t.size():n-1;
+        if(copia)std::wmemcpy(out,t.data(),copia);out[copia]=L'\0';
+        return copia>0;
+    }catch(...){
 
-    return NRCFG_STR(L"DlssNrOnAmd",chave,L"",out,n,caminho())>0;
+        return NRCFG_STR(L"DlssNrOnAmd",chave,L"",out,n,caminho())>0;
+    }
 }
 
 inline bool ler_double(const wchar_t* chave,double& v) noexcept {

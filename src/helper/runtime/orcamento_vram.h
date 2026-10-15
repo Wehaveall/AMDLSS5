@@ -28,10 +28,13 @@ inline const std::wstring& pasta() noexcept {
 inline std::atomic<int> job_visto{0};
 
 inline void log(const char* fmt,...) noexcept {
- (void)fmt;
+ static std::atomic<unsigned> n{0};if(n.fetch_add(1,std::memory_order_relaxed)>=4000u)return;
+ char t[700]{};va_list a;va_start(a,fmt);std::vsnprintf(t,sizeof t,fmt,a);va_end(a);
+ static const std::wstring arq=pasta()+L"nr_orcamento.log";
+ nrlogfila::linha(arq.c_str(),"pid=%lu tick=%llu %s\n",GetCurrentProcessId(),static_cast<unsigned long long>(GetTickCount64()),t);
 }
 inline int env_int(const char* k,int padrao) noexcept {
- (void)k;
+ char b[16]{};std::size_t n=0;if(getenv_s(&n,b,sizeof b,k)==0&&n>1)return std::atoi(b);
  return padrao;}
 inline bool ctx_separado() noexcept {return env_int("NR_ORC_CTX_SEPARADO",0)==1;}
 
@@ -104,9 +107,15 @@ inline bool hip_mem(std::uint64_t& livre,std::uint64_t& total) noexcept {
 inline std::wstring arq_calib(){return pasta()+L"nr_orcamento.ini";}
 inline nrorc::Calib ler_calib() noexcept {
  nrorc::Calib c{};
+ try{const auto a=arq_calib();
+  c.outros_pico=std::uint64_t(GetPrivateProfileIntW(L"Orcamento",L"OutrosPicoMb",0,a.c_str()))*nrorc::MB;
+  c.budget=std::uint64_t(GetPrivateProfileIntW(L"Orcamento",L"BudgetMb",0,a.c_str()))*nrorc::MB;}catch(...){}
  return c;}
 inline void gravar_calib(const nrorc::Calib& c) noexcept {
- (void)c;
+ try{const auto a=arq_calib();wchar_t v[32]{};
+  swprintf_s(v,L"%llu",static_cast<unsigned long long>(c.outros_pico/nrorc::MB));WritePrivateProfileStringW(L"Orcamento",L"OutrosPicoMb",v,a.c_str());
+  swprintf_s(v,L"%llu",static_cast<unsigned long long>(c.budget/nrorc::MB));WritePrivateProfileStringW(L"Orcamento",L"BudgetMb",v,a.c_str());
+  swprintf_s(v,L"%lu",GetCurrentProcessId());WritePrivateProfileStringW(L"Orcamento",L"Pid",v,a.c_str());}catch(...){}
 }
 
 inline void configurar(int modo,unsigned folga_mb,unsigned outros_mb) noexcept {
