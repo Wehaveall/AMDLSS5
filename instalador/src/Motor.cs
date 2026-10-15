@@ -49,7 +49,7 @@ namespace Amdlss5.Instalador
         public const string NomePesos = "dlssnr_on_amd_weights.bin";
         public static readonly string[] ArquivosNvidia = { NomeNvngx, NomePesos };
         // 1.1.0: arquivos que o mod cria ao jogar (nao vem no pacote); a desinstalacao devolve a pasta como era.
-        public static readonly string[] ArquivosDoMod = { NomeIni, "amdlss5.dat" };
+        public static readonly string[] ArquivosDoMod = { NomeIni, "amdlss5.dat", "nr_orcamento.ini" };   // 1.3.0: calibracao da VRAM que o mod grava ao jogar
 
         public static string Sha256(string caminho)
         {
@@ -642,7 +642,8 @@ namespace Amdlss5.Instalador
                         s.Progresso(30 + ++feito * 70 / total);
                     }
                     if (iniOrigem != null) InstalarIni(s, iniOrigem, Path.Combine(alvo, Util.NomeIni), o.Idioma);
-                    else foreach (string n in Util.ArquivosDoMod) GuardarArquivoDoMod(s, Path.Combine(alvo, n));
+                    foreach (string n in Util.ArquivosDoMod)   // 1.3.0: com INI no pacote, os outros arquivos que o mod cria tambem
+                        if (iniOrigem == null || !n.Equals(Util.NomeIni, StringComparison.OrdinalIgnoreCase)) GuardarArquivoDoMod(s, Path.Combine(alvo, n));
                     s.Progresso(30 + ++feito * 70 / total);
                 }
                 if (refDll != null) InstalarReframework(s, refDll, Path.Combine(j.PastaMod, "dinput8.dll"));

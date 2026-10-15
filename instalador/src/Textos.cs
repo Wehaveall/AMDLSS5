@@ -1,5 +1,5 @@
-// Textos do instalador em português (Brasil), inglês e espanhol. O idioma segue o do Windows
-// (CurrentUICulture: pt -> pt, es -> es, resto -> en); --idioma pt|en|es força.
+// Textos do instalador em ingles (padrao), portugues (Brasil) e espanhol. 1.3.0: o padrao e sempre ingles;
+// --idioma pt|en|es escolhe outro.
 // Arquivo em UTF-8: o Build-Instalador.ps1 compila com /codepage:65001.
 using System;
 using System.Collections.Generic;
@@ -9,7 +9,7 @@ namespace Amdlss5.Instalador
 {
     public static class T
     {
-        public static int Indice = Escolher(CultureInfo.CurrentUICulture.TwoLetterISOLanguageName);
+        public static int Indice = 1;   // 1.3.0: ingles por padrao (antes seguia o idioma do Windows)
         public static string Codigo { get { return Indice == 0 ? "pt" : Indice == 2 ? "es" : "en"; } }
 
         static int Escolher(string iso)
