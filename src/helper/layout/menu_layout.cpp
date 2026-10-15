@@ -22,6 +22,7 @@
 #include "menu_i18n.h"
 #include "menu_frame.h"
 #include "menu_compacto.h"
+#include "../runtime/painel_rede.h"
 #include "live_image.h"
 #include "../source/implementation/compat-diag/compat.h"
 #include "../runtime/overlay_amd.h"
@@ -116,6 +117,11 @@ Vertex* __cdecl rebuild(NativeVector* native) noexcept {
         if(!cw||!ch||!aw||!ah||cw>128||ch>128)return native->begin;
         const std::string status=native_text(base,0x923e8,1024);
         if(!status.empty())f.status=nrmenu::status(status,lang);
+
+        if(const int med=nrpainel::mediana_ms.load(std::memory_order_relaxed);med>=0&&!f.status.empty()){
+            const auto sp=network_ms_span(f.status);
+            if(sp.end>sp.begin+3)f.status=f.status.substr(0,sp.begin)+std::to_string(med)+f.status.substr(sp.end-3);
+        }
 
         if(*reinterpret_cast<const volatile std::uint8_t*>(base+0x94A8C)!=0){
             const auto motivo=nrcompat::last_reason();

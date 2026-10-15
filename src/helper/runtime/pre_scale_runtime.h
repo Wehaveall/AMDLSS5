@@ -9,9 +9,8 @@ struct Buffers {
  double percent=100;bool initialized{};int device=-1;void* owner{};bool guided{};void* guided_kernel{};
 };
 inline Buffers& buffers(){static auto* b=new Buffers;return *b;}
-inline bool evaluate(Eval eval,void* primary,void* source,int input_pitch,int input_format,int height,int width,
- void* destination,int output_pitch,int output_format,int tone,void* metadata,unsigned request,float* controls,bool& chained,unsigned& effective){
- chained=false;effective=request;
+
+inline bool inicializar(void* primary,int width,int height){
  auto& b=buffers();
  if(!b.initialized){
 
@@ -39,13 +38,43 @@ inline bool evaluate(Eval eval,void* primary,void* source,int input_pitch,int in
 
   }
  }
+ return true;
+}
 
- const bool post=::nrprescale::rede_na_saida(unsigned(width),unsigned(height),::nrprescale::quadro.load(std::memory_order_acquire));
- const std::uint64_t alvo=post?0:(::nrprescale::auto_alvo.load(std::memory_order_relaxed));
- const unsigned chave_post=::nrprescale::post_chave.load(std::memory_order_relaxed);
- const double pedido=::nrprescale::pedido_percent(post,chave_post,b.percent,alvo,width,height);
+struct Plano {bool post{};std::uint64_t alvo{};unsigned chave_post{};double pedido{100.},pct{100.};unsigned w{},h{};};
+inline Plano planejar(int width,int height,unsigned request){
+ Plano p{};
+ p.post=::nrprescale::rede_na_saida(unsigned(width),unsigned(height),::nrprescale::quadro.load(std::memory_order_acquire));
+ p.alvo=p.post?0:(::nrprescale::auto_alvo.load(std::memory_order_relaxed));
+ p.chave_post=::nrprescale::post_chave.load(std::memory_order_relaxed);
+ p.pedido=::nrprescale::pedido_percent(p.post,p.chave_post,buffers().percent,p.alvo,width,height);
+ p.pct=::nrmpprescale::multipass_cap_percent(width,height,p.pedido,request);
 
- const double pct=::nrmpprescale::multipass_cap_percent(width,height,pedido,request);
+ const unsigned alinha=p.post?::nrprescale::post_alinhamento(p.chave_post):2u;
+ p.w=::nrprescale::extensao_rede(width,p.pct,alinha);p.h=::nrprescale::extensao_rede(height,p.pct,alinha);
+ if(p.post){const int c=::nrprescale::campo128.load(std::memory_order_relaxed);p.w=::nrprescale::campo_eixo(p.w,c,unsigned(width));p.h=::nrprescale::campo_eixo(p.h,c,unsigned(height));}
+ return p;
+}
+
+inline bool aquecer_tamanho(void* primary,int width,int height,unsigned request,unsigned& w,unsigned& h,double& pct){
+ if(!inicializar(primary,width,height))return false;
+ const Plano p=planejar(width,height,request);
+ if(p.pct==100||width<256||height<256||width>4096||height>4096||p.w<32||p.h<32)return false;
+ if(!p.post&&::nrprescale::geometry.load(std::memory_order_acquire)!=::nrprescale::pack(unsigned(width),unsigned(height)))return false;
+ w=p.w;h=p.h;pct=p.pct;return true;
+}
+inline bool evaluate(Eval eval,void* primary,void* source,int input_pitch,int input_format,int height,int width,
+ void* destination,int output_pitch,int output_format,int tone,void* metadata,unsigned request,float* controls,bool& chained,unsigned& effective){
+ chained=false;effective=request;
+ auto& b=buffers();
+ if(!inicializar(primary,width,height))return false;
+
+ const Plano plano=planejar(width,height,request);
+ const bool post=plano.post;
+ const std::uint64_t alvo=plano.alvo;
+ const double pedido=plano.pedido;
+
+ const double pct=plano.pct;
  {static std::atomic<unsigned> cap_logs{0};static double ultimo_pct=-1,ultimo_pedido=-1;static unsigned ultimo_request=0;static int cw=0,ch=0;
   if(::nrmpprescale::prescale_chains(request)&&(pct!=ultimo_pct||pedido!=ultimo_pedido||request!=ultimo_request||width!=cw||height!=ch)&&cap_logs.fetch_add(1)<64){
    ultimo_pct=pct;ultimo_pedido=pedido;ultimo_request=request;cw=width;ch=height;
@@ -92,9 +121,7 @@ inline bool evaluate(Eval eval,void* primary,void* source,int input_pitch,int in
   ::nrprescale::efetivo.store(100.);return false;
  }
 
- const unsigned alinha=post?::nrprescale::post_alinhamento(chave_post):2u;
- unsigned w=::nrprescale::extensao_rede(width,pct,alinha),h=::nrprescale::extensao_rede(height,pct,alinha);
- if(post){const int c=::nrprescale::campo128.load(std::memory_order_relaxed);w=::nrprescale::campo_eixo(w,c,unsigned(width));h=::nrprescale::campo_eixo(h,c,unsigned(height));}
+ const unsigned w=plano.w,h=plano.h;
  if(w<32 || h<32){::nrprescale::efetivo.store(100.);return false;}
  ::nrprescale::efetivo.store(pct);
  Hip hip;int device{};check(hip.device(&device));

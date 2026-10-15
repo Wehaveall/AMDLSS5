@@ -74,7 +74,22 @@ foreach(entry Capture Warp Reduzir Compose ComposePost ComposePostCR ComposePost
   list(APPEND NR_REPROJECT_HEADERS "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h")
 endforeach()
 
-foreach(entry HaloPostMomentos HaloPostRef HaloPostAplicar)
+foreach(entry ComposePostNpc NpcMede)
+  string(TOLOWER "${entry}" lower)
+  if(entry STREQUAL "ComposePostNpc")
+    set(function main)
+  else()
+    set(function ${entry})
+  endif()
+  add_custom_command(OUTPUT "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
+    COMMAND "${NR_REPROJECT_DXC}" -E ${function} -T cs_6_0 -O3 -WX -Ges -D NR_GRADE_CG2R=1 -D NR_POST_NPC=1
+      -Vn "g_nr_reproject_${lower}" -Fh "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
+      -Fo "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.cso" "${NR_REPROJECT_DIR}/compose_post.hlsl"
+    DEPENDS "${NR_REPROJECT_DIR}/compose_post.hlsl" "${CMAKE_CURRENT_SOURCE_DIR}/../../../../nr-controls-complete/shader/compose.hlsl" VERBATIM)
+  list(APPEND NR_REPROJECT_HEADERS "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h")
+endforeach()
+
+foreach(entry HaloPostMomentos HaloPostMomentosP HaloPostRef HaloPostAplicar)
   string(TOLOWER "${entry}" lower)
   add_custom_command(OUTPUT "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
     COMMAND "${NR_REPROJECT_DXC}" -E ${entry} -T cs_6_0 -O3 -WX -Ges
@@ -100,13 +115,23 @@ foreach(entry QMapa)
   list(APPEND NR_REPROJECT_HEADERS "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h")
 endforeach()
 
-foreach(entry RjRecorte RjCompor RjComporR)
+foreach(entry RjRecorte RjCompor RjComporR RjRostoImg)
   string(TOLOWER "${entry}" lower)
   add_custom_command(OUTPUT "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
     COMMAND "${NR_REPROJECT_DXC}" -E ${entry} -T cs_6_0 -O3 -WX -Ges
       -Vn "g_nr_reproject_${lower}" -Fh "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
       -Fo "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.cso" "${NR_REPROJECT_DIR}/rosto_jogador.hlsl"
     DEPENDS "${NR_REPROJECT_DIR}/rosto_jogador.hlsl" VERBATIM)
+  list(APPEND NR_REPROJECT_HEADERS "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h")
+endforeach()
+
+foreach(entry RjCaminho)
+  string(TOLOWER "${entry}" lower)
+  add_custom_command(OUTPUT "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
+    COMMAND "${NR_REPROJECT_DXC}" -E ${entry} -T cs_6_0 -O3 -WX -Ges
+      -Vn "g_nr_reproject_${lower}" -Fh "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
+      -Fo "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.cso" "${NR_REPROJECT_DIR}/rosto_caminho.hlsl"
+    DEPENDS "${NR_REPROJECT_DIR}/rosto_caminho.hlsl" VERBATIM)
   list(APPEND NR_REPROJECT_HEADERS "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h")
 endforeach()
 
@@ -119,6 +144,17 @@ foreach(entry RjGrade)
     DEPENDS "${NR_REPROJECT_DIR}/rosto_grade.hlsl" VERBATIM)
   list(APPEND NR_REPROJECT_HEADERS "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h")
 endforeach()
+
+foreach(entry RjCabeca)
+  string(TOLOWER "${entry}" lower)
+  add_custom_command(OUTPUT "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
+    COMMAND "${NR_REPROJECT_DXC}" -E ${entry} -T cs_6_0 -O3 -WX -Ges
+      -Vn "g_nr_reproject_${lower}" -Fh "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
+      -Fo "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.cso" "${NR_REPROJECT_DIR}/rosto_cabeca.hlsl"
+    DEPENDS "${NR_REPROJECT_DIR}/rosto_cabeca.hlsl" VERBATIM)
+  list(APPEND NR_REPROJECT_HEADERS "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h")
+endforeach()
+
 foreach(entry Croma CromaLds)
   string(TOLOWER "${entry}" lower)
   add_custom_command(OUTPUT "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
@@ -150,7 +186,7 @@ foreach(entry Suave)
 endforeach()
 add_library(nr_reproject_backend STATIC "${NR_REPROJECT_DIR}/backend.cpp" ${NR_REPROJECT_HEADERS})
 
-set_source_files_properties("${NR_REPROJECT_DIR}/backend.cpp" PROPERTIES OBJECT_DEPENDS "${NR_REPROJECT_DIR}/halo_post.inl;${NR_REPROJECT_DIR}/q_post.inl;${NR_REPROJECT_DIR}/rosto_jogador_d3d.inl;${CMAKE_CURRENT_SOURCE_DIR}/../../../runtime/rosto_jogador_state.h")
+set_source_files_properties("${NR_REPROJECT_DIR}/backend.cpp" PROPERTIES OBJECT_DEPENDS "${NR_REPROJECT_DIR}/halo_post.inl;${NR_REPROJECT_DIR}/q_post.inl;${NR_REPROJECT_DIR}/rosto_jogador_d3d.inl;${CMAKE_CURRENT_SOURCE_DIR}/../../../runtime/rosto_jogador_state.h;${NR_REPROJECT_DIR}/cena_npc.inl;${CMAKE_CURRENT_SOURCE_DIR}/../../../runtime/cena_npc.h")
 
 target_include_directories(nr_reproject_backend PRIVATE "${NR_REPROJECT_GENERATED}")
 target_compile_features(nr_reproject_backend PUBLIC cxx_std_17)

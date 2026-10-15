@@ -500,6 +500,9 @@ float3 ComposeControls(float3 original,float3 proxy,float3 model,float detail,fl
             e=max(ComposeControls(s,proxy,model,detail,color,guard),0.0)/expo;
         }else e=saturate(ComposeControls(c.rgb,c.rgb,NR_GRADE(saturate(c.rgb+d)),detail,color,guard));
     }
+#ifdef NR_POST_NPC
+    e=NpcAjustar(id.xy,c.rgb,e);
+#endif
     outp[id.xy]=float4(e,c.a);
 #ifdef NR_GANHO_HISTORICO
     if((gp1&1u)!=0u)ganhoAtual[id.xy]=ganhoLog;

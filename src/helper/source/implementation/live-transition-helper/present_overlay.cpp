@@ -23,6 +23,7 @@
 #include "../present-runtime/print_capture.h"
 #include "../present-runtime/rec_aviso.h"
 #include "../../../runtime/overlay_amd.h"
+#include "../../../runtime/painel_rede.h"
 namespace {
 
 int observe(unsigned code,void* address,const char* where) noexcept {
@@ -49,6 +50,7 @@ __declspec(noinline) void native_overlay(void* base,void* swapchain,void* actual
 
 extern "C" __declspec(dllexport) void NRPresent_v1(void* base,void* swapchain){
     (void)nrpresentintegration::selected(base);
+    if(nrpainel::sonda.load(std::memory_order_relaxed)){LARGE_INTEGER q{};QueryPerformanceCounter(&q);nrpainel::no_present(q.QuadPart);}
     nrpresent::Scope scope(base,swapchain);
     auto& trace=nrpresenttrace::state();
     const auto n=trace.presents.fetch_add(1,std::memory_order_relaxed)+1;

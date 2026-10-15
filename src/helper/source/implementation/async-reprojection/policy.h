@@ -28,6 +28,12 @@ struct Policy {
         if(j.id!=job||!j.frame||j.frame>frame)return -1;
         return int(frame-j.frame);
     }
+
+    int age_frame(std::uint64_t f) const noexcept {
+        if(!captured||!f||f>frame||frame-f>=history_count)return -1;
+        for(auto g=f;g<=frame;++g)if(frames[g%history_count]!=g)return -1;
+        return int(frame-f);
+    }
     unsigned mask() const noexcept {unsigned m=0;for(unsigned i=0;i<history_count;++i)if(frames[i]&&frames[i]<=frame&&frame-frames[i]<history_count)m|=1u<<i;return m;}
 };
 }

@@ -217,7 +217,7 @@ public:
 struct TitleLayout { float x,y,scale,bold,split_x; };
 inline constexpr char title_text[]="AMDLSS5 MOD";
 
-inline constexpr char mod_version[]="v1.2.1";
+inline constexpr char mod_version[]="v1.3.0";
 inline Color title_color(std::size_t index) {
 
     return index<2?palette::brand_red:index<7?palette::brand_green:palette::title_neutral;

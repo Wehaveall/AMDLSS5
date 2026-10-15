@@ -1,6 +1,7 @@
 #include "../../../runtime/nr_publico.h"
 #include "../../../runtime/custo_perfil.h"
 #include "backend.h"
+#include "../../../runtime/rosto_jogador_state.h"
 #include "policy.h"
 #include "late_compose.h"
 #include "formatos.h"
@@ -10,6 +11,7 @@
 #include "../../../runtime/pre_scale_state.h"
 #include "../../../runtime/ini_jogo.h"
 #include "../../../runtime/log_fila.h"
+#include "../../../runtime/orcamento_vram.h"
 #include "../../../runtime/post_teto.h"
 #include "../../../runtime/exposicao_fresca.h"
 #include "post_historico.h"
@@ -243,9 +245,11 @@ bool root(ID3D12Device* d,unsigned constants,unsigned srvs,unsigned uavs,ComPtr<
  for(unsigned i=0;i<2;++i){p[i+1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;p[i+1].DescriptorTable={1,&ranges[i]};}
  D3D12_STATIC_SAMPLER_DESC s{};s.Filter=D3D12_FILTER_MIN_MAG_MIP_LINEAR;s.AddressU=s.AddressV=s.AddressW=D3D12_TEXTURE_ADDRESS_MODE_CLAMP;s.MaxLOD=D3D12_FLOAT32_MAX;s.ComparisonFunc=D3D12_COMPARISON_FUNC_ALWAYS;
  D3D12_ROOT_SIGNATURE_DESC rd{3,p,1,&s,D3D12_ROOT_SIGNATURE_FLAG_NONE};ComPtr<ID3DBlob>b,e;
- return SUCCEEDED(D3D12SerializeRootSignature(&rd,D3D_ROOT_SIGNATURE_VERSION_1,&b,&e))&&SUCCEEDED(d->CreateRootSignature(0,b->GetBufferPointer(),b->GetBufferSize(),IID_PPV_ARGS(&result)));
+ const bool ok=SUCCEEDED(D3D12SerializeRootSignature(&rd,D3D_ROOT_SIGNATURE_VERSION_1,&b,&e))&&SUCCEEDED(d->CreateRootSignature(0,b->GetBufferPointer(),b->GetBufferSize(),IID_PPV_ARGS(&result)));
+ if(ok)nrorc_vram::registrar(nrorc::Api::Raiz,0,"raiz");
+ return ok;
 }
-template<class T,std::size_t N>bool pipeline(ID3D12Device* d,ID3D12RootSignature* r,const T(&bytes)[N],ComPtr<ID3D12PipelineState>& p){D3D12_COMPUTE_PIPELINE_STATE_DESC q{};q.pRootSignature=r;q.CS={bytes,sizeof(bytes)};return SUCCEEDED(d->CreateComputePipelineState(&q,IID_PPV_ARGS(&p)));}
+template<class T,std::size_t N>bool pipeline(ID3D12Device* d,ID3D12RootSignature* r,const T(&bytes)[N],ComPtr<ID3D12PipelineState>& p){D3D12_COMPUTE_PIPELINE_STATE_DESC q{};q.pRootSignature=r;q.CS={bytes,sizeof(bytes)};const bool ok=SUCCEEDED(d->CreateComputePipelineState(&q,IID_PPV_ARGS(&p)));if(ok)nrorc_vram::registrar(nrorc::Api::Pso,0,"pso");return ok;}
 
 void registrar_realce(const char* modo,unsigned antes,unsigned depois,float luz,float detalhe){
 (void)modo;(void)antes;(void)depois;(void)luz;(void)detalhe;
@@ -391,6 +395,7 @@ struct Backend::Impl {
  float preenchimento{ler_preenchimento()};
 
  bool rj_sem_job{};int rj_slot{-1};int rj_grade{-1};
+ int rj_slotn[nrrj::npc_slots]{-1,-1,-1,-1,-1,-1,-1};
  bool pontual{ler_pontual()};
 
  bool portao_exposicao=[]{double v=1.;const bool desligado=ler_ini(L"NeuralReprojectExposureGate",v)&&v==0.;
@@ -485,13 +490,37 @@ struct Backend::Impl {
  struct Pendente{bool ativo{};void* command{};int job{};float exposure{1};unsigned tone{};} post;
  bool post_recusado{},post_formato_logado{};std::uint64_t post_composed{},post_refused{},post_lost{};
 
- struct HaloPost{ComPtr<ID3D12RootSignature> root;ComPtr<ID3D12PipelineState> mom_pso,ref_pso,apl_pso;ComPtr<ID3D12DescriptorHeap> heap,post_heap;
+ struct HaloPost{ComPtr<ID3D12RootSignature> root;ComPtr<ID3D12PipelineState> mom_pso,momp_pso,ref_pso,apl_pso;ComPtr<ID3D12DescriptorHeap> heap,post_heap;
   ComPtr<ID3D12Resource> mom,ref,saida;unsigned qw{},qh{};std::uint64_t quadros{};bool logado{};
-  void soltar(){root.Reset();mom_pso.Reset();ref_pso.Reset();apl_pso.Reset();heap.Reset();post_heap.Reset();mom.Reset();ref.Reset();saida.Reset();qw=qh=0;}} hpost;
+  void soltar(){root.Reset();mom_pso.Reset();momp_pso.Reset();ref_pso.Reset();apl_pso.Reset();heap.Reset();post_heap.Reset();mom.Reset();ref.Reset();saida.Reset();qw=qh=0;}} hpost;
  float halo_post_forca=[]{double v=0;return ler_ini(L"NeuralHaloTetoPost",v)&&v>0.?float(std::min(v,1.)):0.f;}();
  double halo_post_raio=[]{double v=16;return ler_ini(L"NeuralHaloTetoPostRaio",v)&&v>=2.&&v<=30.?v:16.;}();
+
+ float halo_post_salto=[]{double v=0;return ler_ini(L"NeuralHaloTetoPostSalto",v)&&v>0.&&v<=.5?float(v):0.f;}();
  bool alocar_halo_post(const D3D12_UNORDERED_ACCESS_VIEW_DESC& flags_view);
  bool halo_post(ID3D12GraphicsCommandList* c,float exposure,unsigned tone);
+
+ struct CenaNpcCfg{unsigned modo{},inicio{6},zonas{1},ref_n{10};float fixo{1.f},fmin{.4f},fmax{1.3f},alfa_f{.25f},alfa_ref{0.f},prof_a{1.5f},prof_b{3.f};bool viz{};};
+ CenaNpcCfg cnpc_cfg=[]{CenaNpcCfg c{};double v=0.;
+
+  if(ler_ini(L"NeuralCenaNpcNormaliza",v)&&v>=.5&&v<2.5){c.modo=v<1.5?1u:2u;if(c.modo==2u){c.fmin=.7f;c.fmax=1.5f;c.zonas=2u;c.alfa_f=.08f;}}
+  else if(ler_ini(L"NeuralCenaNpcForca",v)&&v>=0.&&v<=2.){c.modo=3u;c.fixo=float(v);}
+  auto f=[](const wchar_t* k,float& x,double lo,double hi){double t=0.;if(ler_ini(k,t)&&t>=lo&&t<=hi)x=float(t);};
+  f(L"NeuralCenaNpcMin",c.fmin,0.,1.);f(L"NeuralCenaNpcMax",c.fmax,1.,4.);f(L"NeuralCenaNpcSuave",c.alfa_f,.01,1.);
+
+  {double q=0.;if(ler_ini(L"NeuralCenaNpcRefLenta",q)&&q>=1.&&q<=100000.)c.alfa_ref=float(1./q);}
+  {double q=0.;if(ler_ini(L"NeuralCenaNpcRefFixo",q)&&q>.5)c.alfa_ref=-1.f;}
+  {double q=0.;if(ler_ini(L"NeuralCenaNpcRefMedia",q)&&q>=64.&&q<=960.)c.ref_n=unsigned(q/64.+.5);}
+  {double q=0.;if(ler_ini(L"NeuralCenaNpcInicio",q)&&q>=1.&&q<=200.)c.inicio=unsigned(q+.5);}
+  {double q=0.;if(ler_ini(L"NeuralCenaNpcZonas",q)&&q>=.5&&q<=6.5){const unsigned z=unsigned(q+.5);c.zonas=z>=6u?6u:z>=4u?4u:z>=2u?2u:1u;}}
+  f(L"NeuralCenaNpcProfA",c.prof_a,.1,50.);f(L"NeuralCenaNpcProfB",c.prof_b,.2,100.);if(!(c.prof_b>c.prof_a))c.prof_b=c.prof_a+.5f;
+  {double q=0.;c.viz=ler_ini(L"NeuralCenaNpcViz",q)&&q>.5;}
+  return c;}();
+ struct CenaNpc{ComPtr<ID3D12RootSignature> root;ComPtr<ID3D12PipelineState> mede,compor;ComPtr<ID3D12DescriptorHeap> heap;ComPtr<ID3D12Resource> estado,leitura,zeros;
+  bool logado{},zerado{};std::uint64_t quadros{},usados{},leit_q{};std::uint64_t ger[8]{};bool on_ant[8]{};float cx_ant[8]{},cy_ant[8]{},t_ant[8]{};
+  void soltar(){root.Reset();mede.Reset();compor.Reset();heap.Reset();estado.Reset();leitura.Reset();zeros.Reset();zerado=false;}} cnpc;
+ bool alocar_cena_npc(const D3D12_UNORDERED_ACCESS_VIEW_DESC& flags_view);
+ bool cena_npc(ID3D12GraphicsCommandList* c,ID3D12Resource* dst,DXGI_FORMAT fmt,const void* k);
 
  unsigned trace_restantes=[]{double v=0;return ler_ini(L"NeuralCenaTrace",v)&&v>=1.&&v<=200000.?unsigned(v):0u;}();
  float trace_expo{};long long trace_qpc{};
@@ -536,8 +565,9 @@ struct Backend::Impl {
   drop(luz_mom);drop(luz_base);drop(luz_ab);drop(luz_coef);drop(luz_hist[0]);drop(luz_hist[1]);luz_ok=luz_valido=false;luz_cur=0;
   drop(luz_prox_pso);drop(luz_halo_pso);drop(luz_prox);drop(luz_halo);
   drop(capture_pso);drop(warp_pso);drop(compose_pso);drop(post_pso);drop(post_heap);perder_post("post_lost_realocacao");
-  drop(hpost.root);drop(hpost.mom_pso);drop(hpost.ref_pso);drop(hpost.apl_pso);drop(hpost.heap);drop(hpost.post_heap);drop(hpost.mom);drop(hpost.ref);drop(hpost.saida);hpost.qw=hpost.qh=0;
+  drop(hpost.root);drop(hpost.mom_pso);drop(hpost.momp_pso);drop(hpost.ref_pso);drop(hpost.apl_pso);drop(hpost.heap);drop(hpost.post_heap);drop(hpost.mom);drop(hpost.ref);drop(hpost.saida);hpost.qw=hpost.qh=0;
   drop(qpost.root);drop(qpost.pso);drop(qpost.heap);drop(qpost.post_heap);drop(qpost.saida);
+  drop(cnpc.root);drop(cnpc.mede);drop(cnpc.compor);drop(cnpc.heap);drop(cnpc.estado);drop(cnpc.leitura);drop(cnpc.zeros);cnpc.zerado=false;
   drop(fill_heap);drop(fill_root);drop(fill_pso);drop(fill_copia);
   drop(res_reduzido);drop(reduzir_pso);drop(reduzir_heap);res_reduzido_read=false;reduzido=false;comp_w=comp_h=0;
   drop(est_heap);drop(est_root);drop(est_pso);drop(est[0]);drop(est[1]);est_valido=false;
@@ -580,6 +610,7 @@ struct Backend::Impl {
  }
  bool allocation(unsigned w,unsigned h,unsigned cw,unsigned ch){
   if(ready&&width==w&&height==h&&comp_w==cw&&comp_h==ch)return true;
+  nrorc_vram::registrar(nrorc::Api::RecriaCena,std::uint64_t(w)*h*por_pixel,"backend_allocation");
 
   const std::uint64_t custo=std::uint64_t(w)*h*por_pixel;
 
@@ -615,6 +646,7 @@ struct Backend::Impl {
 
   if(halo_post_forca>0.f&&post_pso&&post_heap&&!alocar_halo_post(bv))hpost.soltar();
   if(q_mapa.ligado&&post_pso&&post_heap&&!alocar_q_post(bv))qpost.soltar();
+  if(cnpc_cfg.modo&&reduzido&&post_pso&&post_heap&&!alocar_cena_npc(bv))cnpc.soltar();
   srv(temporal_heap.Get(),6,nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT);srv(temporal_heap.Get(),7,nullptr,DXGI_FORMAT_R32_FLOAT);
 
   if(preenchimento>0&&!alocar_preenchimento()){preenchimento=0.f;fill_heap.Reset();fill_root.Reset();fill_pso.Reset();fill_copia.Reset();}
@@ -1239,7 +1271,9 @@ void Backend::invalidate() noexcept {if(p_){p_->policy.invalidate();p_->est_vali
 void Backend::invalidate_suave() noexcept {if(p_){p_->policy.invalidate();p_->perder_post("post_lost_invalidate_suave");for(auto& a:p_->late.armed)a=0;}}
 
 void Backend::reset() noexcept {nrinijogo::Lote lote;p_.reset(new(std::nothrow) Impl);}
-void Backend::accepted(int job) noexcept {if(p_){p_->policy.accepted(job);rj_aceito(job);}}
+void Backend::accepted(int job) noexcept {if(p_){p_->policy.accepted(job);rj_aceito(job);
+ if(nrrj::npc2.load(std::memory_order_relaxed))for(int kn=1;kn<=nrrj::npc_n();++kn){nrrj::Inst i1(kn);rj_aceito(job);}
+}}
 bool Backend::post_pending() const noexcept {return p_&&p_->post.ativo;}
 
 void Backend::refuse_post(const char* reason) noexcept {
@@ -1427,6 +1461,7 @@ bool Backend::begin(const NrCaptureRecord& r){
  for(auto& h:p.history)transition(c,h.Get(),write_state,read_state);p.histories_read=true;
 
  rj_recorte(r.command_list,color,unsigned(cor_vista),post);
+ if(nrrj::npc2.load(std::memory_order_relaxed))for(int kn=1;kn<=nrrj::npc_n();++kn){nrrj::Inst i1(kn);rj_recorte(r.command_list,color,unsigned(cor_vista),post);}
  for(unsigned i=0;i<(exposure?4u:3u);++i)transition(c,inputs[i],read_state,state(states[i]));p.captured_command=r.command_list;return true;
 }
 Result Backend::compose(void* command,void* destination,unsigned destination_state,void* residual,int job,float exposure,unsigned tone){
@@ -1580,10 +1615,13 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
   transition(c,dst,D3D12_RESOURCE_STATES(destination_state),write_state);
   ComposeConstants k=p.constantes_compose(teto_unico(tone)&~6u,p.comp_w,p.comp_h,exposure);
   if(p.q_post_ganho!=1.f)std::memcpy(&k.p2,&p.q_post_ganho,sizeof k.p2);
-  p.bind(c,ph,p.post_root.Get(),p.post_pso.Get(),12,&k,2);
+
+  const bool npc_cena=ph==p.post_heap.Get()&&p.cnpc_cfg.modo&&p.cena_npc(c,dst,dd.Format,&k);
+  if(!npc_cena)p.bind(c,ph,p.post_root.Get(),p.post_pso.Get(),12,&k,2);
   c->Dispatch((p.comp_w+7)/8,(p.comp_h+7)/8,1);order_uav(c,dst);
 
   if(!segurar)rj_compor(c,dst,unsigned(dd.Format),job,age,exposure,tone);
+  if(!segurar&&nrrj::npc2.load(std::memory_order_relaxed))for(int kn=1;kn<=nrrj::npc_n();++kn){nrrj::Inst i1(kn);rj_compor(c,dst,unsigned(dd.Format),job,age,exposure,tone);}
   transition(c,dst,write_state,D3D12_RESOURCE_STATES(destination_state));
   nrcusto::marca(c,nrcusto::ComposeFim);
   p.composed_frame=true;++p.composed;nrreproject::idade_composta.store(age);
@@ -1768,7 +1806,7 @@ Buffers alocar_lote(ID3D12Device* dev,const UINT64* total,const bool* lado,DWORD
  for(unsigned k=0;k<lados_final;++k){if(!lado[k])continue;
   D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=total[k];bd.Height=1;bd.DepthOrArraySize=1;bd.MipLevels=1;bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
   (GetCurrentThreadId()==chamadora?reserva_aloc_chamadora:reserva_aloc_fundo).fetch_add(1);
-  if(SUCCEEDED(dev->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&b.leitura[k])))){b.tamanho[k]=total[k];bytes+=total[k];}}
+  if(SUCCEEDED(dev->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&b.leitura[k])))){b.tamanho[k]=total[k];bytes+=total[k];{nrorc::EscopoOrigem eo(nrorc::Origem::F9);nrorc_vram::registrar(nrorc::Api::Recurso,0,"f9_readback");}}}
  return b;
 }
 
@@ -1930,3 +1968,4 @@ void despejo_final_tick() noexcept{
 #include "halo_post.inl"
 #include "q_post.inl"
 #include "rosto_jogador_d3d.inl"
+#include "cena_npc.inl"

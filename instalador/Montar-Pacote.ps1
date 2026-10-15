@@ -16,7 +16,7 @@
 #   -Saida       <pasta-mae do repositorio>\AMDLSS5-release
 # O trabalho de copiar/conferir e feito por ferramentas\MontarPacote.cs (compilado aqui com o csc do .NET Framework).
 param(
-    [string]$Versao = '1.2.0',
+    [string]$Versao = '1.3.0',
     [string]$Pacote = '',
     [string]$Helper = '',
     [string]$Ini = '',

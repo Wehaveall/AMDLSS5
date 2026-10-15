@@ -57,7 +57,9 @@ std::int32_t Coordinator::dispatch(NrFfxDispatch original,void* context,void* de
   }
   nrffx::Descriptor decoded{};if(!nrffx::decode(descriptor,decoded)){diagnostic_.store("scale_descriptor_unsupported",std::memory_order_release);refuse_decode(descriptor);
 
-    if(nrrj::ativo()&&nrffx::host_reset(descriptor))nrrj::cortar();
+    if(nrrj::ativo()&&nrffx::host_reset(descriptor)){nrrj::cortar();
+     if(nrrj::npc2.load(std::memory_order_relaxed))for(int kn=1;kn<=nrrj::npc_slots;++kn){nrrj::Inst i1(kn);nrrj::cortar();}
+    }
     return original(context,descriptor);}
 
   if(decode_reported_){decode_reported_=nullptr;nrcompat::unblock(nrcompat::Origem::Descritor);}

@@ -29,22 +29,33 @@ PUBLICO = {"NeuralPostPercent": "75", "NeuralMenuCompacto": "2", "NeuralMenuAuto
            "NeuralOverlayAmdRiscoDvr": "0", "NeuralCustoReduzirCache": "1", "NeuralCustoCromaLds": "1",
 
 
-           "NeuralRedeCadaQuadros": "4",
+           "NeuralRedeCadaQuadros": "6",
 
 
-           "NeuralRostoJogador": "1024", "NeuralRostoJogadorFora": "1", "NeuralRostoJogadorDetThread": "1",
+           "NeuralRostoJogador": "1536", "NeuralRostoJogadorFora": "1", "NeuralRostoJogadorDetThread": "1",
            "NeuralRostoJogadorThreadRede": "1",
-           "NeuralRostoJogadorCorte": "27", "NeuralRostoJogadorZoom": "23",
+           "NeuralRostoJogadorCorte": "27", "NeuralRostoJogadorZoom": "55",
 
-           "NeuralPassoExtraContinuoEscala": "33", "NeuralPassoExtraContinuoForca": "1.0"}
+           "NeuralPassoExtraContinuoForca": "1.0",
 
 
-PROXY_PUBLICO = {"Enabled": "0", "PredSlice": "8192"}
+
+           "NeuralPassoExtraContinuoEscala": "67", "NeuralPassoExtraContinuoMovPx": "4", "NeuralPassoExtraProtegeSessao": "1",
+           "NeuralSemDiagMov": "1", "NeuralRostoJogadorCadaQuadros": "4", "NeuralRostoJogadorSemJob": "1",
+
+
+           "NeuralGradeExposure": "0.00", "NeuralGradeContrast": "0.00", "NeuralGradeSaturation": "0.00"}
+
+
+PROXY_PUBLICO = {"Enabled": "0", "PredSlice": "8192", "LocalStructure": "1.450"}
 
 FORA = {"NeuralDumpGain", "NeuralDumpAfterFrames", "NeuralDumpEveryFrames", "NeuralContractTraceBytes",
         "NeuralKernelTraceJobs", "NeuralLogTetoMB", "NeuralGravarF9Quadros", "NeuralAgeLogFrames", "NeuralGravarTeto",
         "NeuralCaptureKernel", "NeuralCaptureArgBytes", "NeuralCaptureSkip", "NeuralCaptureMode",
-        "NeuralConv2LaunchTraceLimit", "NeuralMeasurementFamily"}
+        "NeuralConv2LaunchTraceLimit", "NeuralMeasurementFamily",
+
+        "MenuLanguage", "NeuralRostoJogadorDetector", "NeuralRostoJogadorDetectorThreads", "NeuralRostoJogadorDetectorInteira",
+        "NeuralRostoJogadorDetectorFaixa", "NeuralRostoJogadorOrcamentoOutrosMb"}
 
 POR_JOGO = {"Cyberpunk2077.exe": {"NeuralSementeFixa": "1", "NeuralRostoJogador": "0"}}
 PROXY_CYBERPUNK = {"Temporal": "0"}

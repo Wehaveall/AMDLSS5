@@ -261,14 +261,6 @@ void tick(void* base) noexcept {
         persist_enabled(next);
     }
 
-    static bool f9_down{};
-
-    const bool f9=((GetAsyncKeyState(VK_SCROLL)&0x8000)!=0||(nrreproject::gravar_f9.load(std::memory_order_relaxed)&&(GetAsyncKeyState(VK_F9)&0x8000)!=0))&&foreground_pid==GetCurrentProcessId();
-
-    if(f9&&!f9_down&&nrreproject::despejo_final.load()==0){const unsigned n=nrreproject::gravar_quadros.load(std::memory_order_relaxed);
-        char t[40]{};std::snprintf(t,sizeof t,"scroll_gravar_%u",n);nrtela::disparar();log(nrreproject::pedir_gravacao(n,GetTickCount64())?t:"gravar_recusado_teto");}
-    f9_down=f9;
-
     static detail::ToggleKey print_key;
     if(print_key.update((GetAsyncKeyState(VK_F11)&0x8000)!=0,foreground_pid==GetCurrentProcessId())){nrprint::pedir();log("f11_print");}
 

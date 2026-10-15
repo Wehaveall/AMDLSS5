@@ -49,6 +49,24 @@ float3 tmi3(float3 v) { return float3(tmi(v.r), tmi(v.g), tmi(v.b)); }
     compartilhado.Store2(offEnt + (id.y * n + id.x) * 8u, uint2(f32tof16(soma.r) | (f32tof16(soma.g) << 16), f32tof16(soma.b) | (f32tof16(1.0) << 16)));
 }
 
+[numthreads(8,8,1)] void RjRostoImg(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= fw || id.y >= fh) return;
+
+    const float2 orig = lado > 0u ? float2(rx, ry) : float2(0, 0);
+    const float2 tam = lado > 0u ? float2(lado, n > 0u ? n : lado) : float2(w, h);
+    const float2 passo = tam / float2(fw, fh);
+    const uint2 m = clamp(uint2(ceil(passo - 1e-3)), uint2(1, 1), uint2(8, 8));
+    float3 soma = 0;
+    for (uint b = 0; b < m.y; ++b) for (uint a = 0; a < m.x; ++a) {
+        const float2 f = orig + (float2(id.xy) + (float2(a, b) + .5) / float2(m)) * passo;
+        const int2 p = clamp(int2(floor(f)), int2(0, 0), int2(int(w) - 1, int(h) - 1));
+        const float3 c = saidaFsr.Load(int3(p, 0)).rgb;
+        soma += all(isfinite(c)) ? c : float3(0, 0, 0);
+    }
+    soma /= float(m.x * m.y);
+    compartilhado.Store2(offEnt + (id.y * fw + id.x) * 8u, uint2(f32tof16(soma.r) | (f32tof16(soma.g) << 16), f32tof16(soma.b) | (f32tof16(1.0) << 16)));
+}
+
 float3 celula(uint off, uint nn, int2 t) {
     t = clamp(t, int2(0, 0), int2(int(nn) - 1, int(nn) - 1));
     const uint2 a = compartilhado.Load2(off + (uint(t.y) * nn + uint(t.x)) * 8u);

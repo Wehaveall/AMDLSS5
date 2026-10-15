@@ -1,4 +1,6 @@
 cbuffer K : register(b0) { uint w, h, fatia, tone; float expo, forca, raio; uint qw, qh, pad0, pad1, pad2; }
+
+float RampaOclusor(float s) { const float a = asfloat(pad0); return a > 0.0 ? smoothstep(a, min(2.0 * a, 1.0), s) : smoothstep(0.02, 0.08, s); }
 Texture2D<float4> residuo : register(t0);
 Texture2DArray<float4> cor : register(t1);
 Texture2DArray<float> prof : register(t2);
@@ -90,11 +92,53 @@ static const float RAIOS[9] = { 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0 };
                 if (!isfinite(zq)) continue;
                 const float zp = zc + dot(g2, float2(o));
                 const float s = (zq - zp) / max(max(abs(zq), abs(zp)), 1e-9);
-                f = max(f, smoothstep(0.02, 0.08, s) * saturate((Rt + 1.0 - float(r) * passo) / max(Rt, 1e-4)));
+                f = max(f, RampaOclusor(s) * saturate((Rt + 1.0 - float(r) * passo) / max(Rt, 1e-4)));
             }
         }
     }
     momOut[id.xy] = float4(media, f, 0.0, 0.0);
+}
+
+groupshared float mpG[64], mpW[64], mpT[64], mpN[64];
+[numthreads(8, 8, 1)] void HaloPostMomentosP(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID) {
+    const uint2 p = gid.xy * 8u + tid.xy; const uint i = tid.y * 8u + tid.x;
+    const uint2 qp = p / 4u;
+    float g = 0.0, wv = 0.0, n = 0.0;
+    if (p.x < w && p.y < h && qp.x < qw && qp.y < qh) {
+        g = LnG(p); n = 1.0;
+        wv = PesoProf(ProfTexel(int2(qp)), prof.Load(int4(p, fatia, 0)));
+    }
+    mpG[i] = wv > 0.0 ? wv * g : 0.0; mpW[i] = wv > 0.0 ? wv : 0.0; mpT[i] = g; mpN[i] = n;
+    GroupMemoryBarrierWithGroupSync();
+    if (i >= 4u) return;
+    const uint2 lt = uint2(i & 1u, i >> 1u);
+    const int2 q = int2(gid.xy * 2u + lt);
+    if (q.x >= int(qw) || q.y >= int(qh)) return;
+    float sg = 0.0, sw = 0.0, st = 0.0, nn = 0.0;
+    [unroll] for (uint y = 0; y < 4u; ++y) [unroll] for (uint x = 0; x < 4u; ++x) {
+        const uint j = (lt.y * 4u + y) * 8u + lt.x * 4u + x;
+        sg += mpG[j]; sw += mpW[j]; st += mpT[j]; nn += mpN[j];
+    }
+    const float media = sw > 0.0 ? sg / sw : (nn > 0.0 ? st / nn : 0.0);
+    const float zc = ProfTexel(q);
+    const float Rt = raio / 4.0;
+    float f = 0.0;
+    if (Rt > 0.0 && isfinite(zc)) {
+        const float2 g2 = GradTexel(q, zc);
+        [unroll] for (int k = 0; k < 8; ++k) {
+            const float passo = k < 4 ? 1.0 : 1.41421356;
+            [loop] for (int r = 1; float(r) * passo <= Rt + 0.5; ++r) {
+                const int2 o = D8I[k] * r, t = q + o;
+                if (any(t < 0) || t.x >= int(qw) || t.y >= int(qh)) break;
+                const float zq = ProfTexel(t);
+                if (!isfinite(zq)) continue;
+                const float zp = zc + dot(g2, float2(o));
+                const float s = (zq - zp) / max(max(abs(zq), abs(zp)), 1e-9);
+                f = max(f, RampaOclusor(s) * saturate((Rt + 1.0 - float(r) * passo) / max(Rt, 1e-4)));
+            }
+        }
+    }
+    momOut[q] = float4(media, f, 0.0, 0.0);
 }
 [numthreads(8, 8, 1)] void HaloPostRef(uint3 id : SV_DispatchThreadID) {
     if (id.x >= qw || id.y >= qh) return;
@@ -102,6 +146,12 @@ static const float RAIOS[9] = { 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0 };
     const float proprio = mom.Load(int3(q, 0)).x;
     const float zc = ProfTexel(q);
     if (!isfinite(zc) || !(raio > 0.0)) { refOut[id.xy] = float4(proprio, proprio, 0.0, 0.0); return; }
+
+    if (asfloat(pad0) > 0.0) {
+        float fm = 0.0; const int2 mq = qn - 1;
+        [unroll] for (int dy = -2; dy <= 2; ++dy) [unroll] for (int dx = -2; dx <= 2; ++dx) fm = max(fm, mom.Load(int3(clamp(q + int2(dx, dy), int2(0, 0), mq), 0)).y);
+        if (!(fm > 0.0)) { refOut[id.xy] = float4(proprio, proprio, 0.0, 0.0); return; }
+    }
     const float2 g2 = GradTexel(q, zc);
     float v[32], pv[32]; float W = 0.0;
     [unroll] for (int k = 0; k < 8; ++k) {
@@ -137,6 +187,12 @@ static const float RAIOS[9] = { 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0 };
     const float z0 = ProfPixel(p);
     if (!isfinite(z0)) return;
 
+    if (asfloat(pad0) > 0.0) {
+        const int2 q0 = p / 4, mq = int2(qw, qh) - 1; float fm = 0.0;
+        [unroll] for (int dy = -1; dy <= 1; ++dy) [unroll] for (int dx = -1; dx <= 1; ++dx) fm = max(fm, mom.Load(int3(clamp(q0 + int2(dx, dy), int2(0, 0), mq), 0)).y);
+        if (!(fm > 0.0)) return;
+    }
+
     const float2 g = GradPixel(p, z0);
     float f = 0.0;
     [loop] for (int k = 0; k < 8; ++k) {
@@ -151,7 +207,7 @@ static const float RAIOS[9] = { 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0 };
             if (!isfinite(zq)) continue;
             const float zp = z0 + dot(g, float2(o));
             const float s = (zq - zp) / max(max(abs(zq), abs(zp)), 1e-9);
-            f = max(f, smoothstep(0.02, 0.08, s) * saturate((raio + 1.0 - dist) / raio));
+            f = max(f, RampaOclusor(s) * saturate((raio + 1.0 - dist) / raio));
         }
     }
     if (!(f > 0.0)) return;

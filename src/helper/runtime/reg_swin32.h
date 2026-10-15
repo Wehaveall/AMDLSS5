@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include "nr_publico.h"
 #include "reg_swin32_policy.h"
 #include "native_ini_path.h"
@@ -31,6 +32,7 @@
 #include "exposicao_fresca.h"
 #include "cena_mascara.h"
 #include "hist_mov.h"
+#include "orcamento_vram.h"
 #include <string>
 #include "../../v040-port/kernels/reg_swin_mh_contract.h"
 #include "../../v043-port/1d/reg1d43_contract.h"
@@ -65,6 +67,14 @@ namespace rjsync {
 inline std::atomic<bool> ligado{false};
 inline std::recursive_mutex& trava(){static std::recursive_mutex* m=new std::recursive_mutex;return *m;}
 inline std::atomic<unsigned long long> flag_set_n{0};
+
+inline std::atomic<unsigned long long> rosto_us{0},rosto_n{0};inline std::atomic<int> rosto_dentro{0};
+struct Rosto {
+ std::lock_guard<std::recursive_mutex> l;std::chrono::steady_clock::time_point t;
+ Rosto():l(trava()),t(std::chrono::steady_clock::now()){rosto_dentro.fetch_add(1,std::memory_order_relaxed);}
+ ~Rosto(){rosto_dentro.fetch_sub(1,std::memory_order_relaxed);rosto_n.fetch_add(1,std::memory_order_relaxed);
+  rosto_us.fetch_add((unsigned long long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-t).count(),std::memory_order_relaxed);}
+};
 }
 #define NR_R6_DENTRO false
 inline std::filesystem::path folder;
@@ -1433,7 +1443,7 @@ inline void configure(const std::wstring& ini) noexcept {
  if(!hip){log("REUSO recusado: amdhip64_7.dll ausente");return;}
  memcpy_async=reinterpret_cast<decltype(memcpy_async)>(GetProcAddress(hip,"hipMemcpyAsync"));
  memcpy_sync=reinterpret_cast<decltype(memcpy_sync)>(GetProcAddress(hip,"hipMemcpy"));
- malloc_=reinterpret_cast<decltype(malloc_)>(GetProcAddress(hip,"hipMalloc"));
+ malloc_=reinterpret_cast<decltype(malloc_)>(nrorc::modo()>0?reinterpret_cast<FARPROC>(&nrorc_vram::hip_malloc_contado):GetProcAddress(hip,"hipMalloc"));
  stream_sync=reinterpret_cast<decltype(stream_sync)>(GetProcAddress(hip,"hipStreamSynchronize"));
  by_symbol=reinterpret_cast<decltype(by_symbol)>(GetProcAddress(hip,"hipGetFuncBySymbol"));
  name_ref=reinterpret_cast<decltype(name_ref)>(GetProcAddress(hip,"hipKernelNameRef"));
@@ -1738,6 +1748,60 @@ inline void install(char* image,const std::wstring& ini) noexcept {
  log("HOSTCOPY INSTALLED (diagnostico, NeuralHostCopyLog=1)");
 }
 }
+
+namespace orcmalloc {
+inline constexpr unsigned slot_malloc=0x86be0u,slot_free=0x86ba8u;
+using Malloc=int(*)(void**,std::size_t);using Free=int(*)(void*);
+inline Malloc native{};inline Free native_free{};
+inline std::atomic<bool> pool_on{false};
+inline int hook(void** p,std::size_t n) noexcept {
+ if(pool_on.load(std::memory_order_acquire)&&nrorc::rede_rosto_tl>0&&p&&n){
+  auto& P=nrorc_vram::pool_rede();
+  {std::lock_guard<std::mutex> l(P.m);if(void* b=P.p.servir(n)){*p=b;return 0;}}
+  const int r=native(p,n);
+  if(!r&&*p){const bool tarde=nrorc::estado().guarda.selado.load(std::memory_order_acquire);
+   {std::lock_guard<std::mutex> l(P.m);P.p.registrar(*p,n);if(tarde)++P.reais_pos_selo;}
+   nrorc_vram::registrar(nrorc::Api::HipMallocProxy,n,"proxy_pool",nrorc::Origem::RedeRosto);}
+  return r;}
+ const int r=native(p,n);if(!r&&n){nrorc_vram::registrar(nrorc::Api::HipMallocProxy,n,"proxy");nrorc_vram::vivo_criar(*p,n,nrorc::origem_tl);}return r;}
+
+inline int hook_free(void* p) noexcept {
+ if(p&&pool_on.load(std::memory_order_acquire)){auto& P=nrorc_vram::pool_rede();std::lock_guard<std::mutex> l(P.m);if(P.p.devolver(p))return 0;}
+ nrorc_vram::vivo_soltar(p);
+ return native_free(p);}
+inline bool trocar(void** slot,void* novo) noexcept {
+ DWORD old{},unused{};if(!VirtualProtect(slot,sizeof(void*),PAGE_READWRITE,&old))return false;
+ InterlockedExchangePointer(reinterpret_cast<void* volatile*>(slot),novo);VirtualProtect(slot,sizeof(void*),old,&unused);return true;}
+}
+inline void orc_contar(char* image) noexcept {
+ static std::atomic<bool> feito{false};if(!image||nrorc::modo()==0||feito.exchange(true))return;
+ if(v05::malloc_fn)v05::malloc_fn=&nrorc_vram::hip_malloc_contado;
+ if(reuso::malloc_)reuso::malloc_=&nrorc_vram::hip_malloc_contado;
+ if(v05::free_fn)v05::free_fn=&nrorc_vram::hip_free_contado;
+ char v[4]{};
+ if(GetEnvironmentVariableA("NR_MEMORY_DIAGNOSTICS",v,sizeof v)==1&&v[0]=='1'){log("ORCAMENTO hipMalloc do proxy nao contado aqui (e sem pool da rede do rosto): NR_MEMORY_DIAGNOSTICS=1 (o nr_memory.log conta)");return;}
+ const auto hip=GetModuleHandleW(L"amdhip64_7.dll");const auto expected=hip?GetProcAddress(hip,"hipMalloc"):nullptr;
+ const auto expected_free=hip?GetProcAddress(hip,"hipFree"):nullptr;
+ const auto slot=reinterpret_cast<void**>(image+orcmalloc::slot_malloc);const auto slot_f=reinterpret_cast<void**>(image+orcmalloc::slot_free);
+ if(!expected||*slot!=reinterpret_cast<void*>(expected)){log("ORCAMENTO hipMalloc do proxy nao contado: slot do IAT diferente do export");return;}
+
+ const bool quer_pool=nrorc::modo()==1;
+ const bool free_ok=expected_free&&*slot_f==reinterpret_cast<void*>(expected_free);
+ if(quer_pool&&!free_ok)log("ORCAMENTO pool da rede do rosto recusado: slot do hipFree (0x86ba8) diferente do export; so a contagem");
+ orcmalloc::native=reinterpret_cast<orcmalloc::Malloc>(expected);
+
+ bool free_ligado=false;
+ if(free_ok){orcmalloc::native_free=reinterpret_cast<orcmalloc::Free>(expected_free);
+  if(!orcmalloc::trocar(slot_f,reinterpret_cast<void*>(&orcmalloc::hook_free))){log(quer_pool?"ORCAMENTO pool da rede do rosto recusado: VirtualProtect do hipFree":"ORCAMENTO hipFree do proxy nao descontado: VirtualProtect");}
+  else{free_ligado=true;
+   if(quer_pool){orcmalloc::pool_on.store(true,std::memory_order_release);{auto& P=nrorc_vram::pool_rede();std::lock_guard<std::mutex> l(P.m);P.ligado=true;}
+
+    if(v05::range&&v05::range!=&nrorc_vram::range_pool){nrorc_vram::range_real=v05::range;v05::range=&nrorc_vram::range_pool;}}}}
+ if(!free_ligado&&!quer_pool)log("ORCAMENTO hipFree do proxy nao descontado (slot 0x86ba8 diferente do export): rosto_mb soma so os hipMalloc");
+ if(!orcmalloc::trocar(slot,reinterpret_cast<void*>(&orcmalloc::hook))){orcmalloc::pool_on.store(false,std::memory_order_release);log("ORCAMENTO hipMalloc do proxy nao contado: VirtualProtect");return;}
+ log(orcmalloc::pool_on.load()?"ORCAMENTO hipMalloc do proxy contado e pool da rede do rosto ligado (hipMalloc 0x86be0 + hipFree 0x86ba8 conferidos com o export)":
+     "ORCAMENTO hipMalloc do proxy contado (NeuralRostoJogadorOrcamento)");
+}
 inline bool install(char* image) noexcept {
  try {
   std::lock_guard<std::mutex> lock(install_mutex);
@@ -1965,10 +2029,10 @@ inline bool install(char* image) noexcept {
   {
    const int v=!ini.empty()?int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralV05Tokens",0,ini.c_str())):0;
    if(!nrv05::menu_escreveu.load())nrv05::ligado.store(v==1);
-   v05::malloc_fn=reinterpret_cast<int(*)(void**,std::size_t)>(GetProcAddress(hip,"hipMalloc"));
+   v05::malloc_fn=reinterpret_cast<int(*)(void**,std::size_t)>(nrorc::modo()>0?reinterpret_cast<FARPROC>(&nrorc_vram::hip_malloc_contado):GetProcAddress(hip,"hipMalloc"));
    v05::memset_async=reinterpret_cast<int(*)(void*,int,std::size_t,void*)>(GetProcAddress(hip,"hipMemsetAsync"));
    v05::range=reinterpret_cast<int(*)(void**,std::size_t*,void*)>(GetProcAddress(hip,"hipMemGetAddressRange"));
-   v05::free_fn=reinterpret_cast<int(*)(void*)>(GetProcAddress(hip,"hipFree"));
+   v05::free_fn=reinterpret_cast<int(*)(void*)>(nrorc::modo()>0?reinterpret_cast<FARPROC>(&nrorc_vram::hip_free_contado):GetProcAddress(hip,"hipFree"));
    v05::installed=v05::malloc_fn&&v05::memset_async&&!nrcapture::requested;
    r1d::memcpy_async=reinterpret_cast<decltype(r1d::memcpy_async)>(GetProcAddress(hip,"hipMemcpyAsync"));
    r1d::on=v05::installed&&r1d::memcpy_async&&!ini.empty()&&NRCFG_INT(L"DlssNrOnAmd",L"NeuralReuso1D",0,ini.c_str())==1;

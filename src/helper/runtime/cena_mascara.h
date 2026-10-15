@@ -59,6 +59,8 @@ struct Config {
  int fade_sobe=0;
 
  int protege=0;
+
+ int protege_sessao=0;
  int protege_ini_s=20;
  float protege_frac=.002f;
  int fade_curva=0;

@@ -19,6 +19,7 @@
 #include "../../../runtime/exposicao_fresca.h"
 #include "../../../runtime/rede_cada.h"
 #include "../../../runtime/pre_scale_state.h"
+#include "../../../runtime/diag_mov.h"
 #include "../live-recording-observer/compute_state.h"
 #include "../live-recording-observer/preserve_capture.h"
 #include "../live-recording-observer/recording_table.h"
@@ -147,6 +148,11 @@ public:
 
         const auto ini=nrinipath::resolve(base_,reinterpret_cast<const void*>(&make_windows_host));
         nrinijogo::definir(ini);
+
+        if(NRCFG_INT(L"DlssNrOnAmd",L"NeuralSemDiagMov",0,ini.c_str())==1){
+            const bool ok=nrdiagmov::desligar(base_);
+            nrlogfila::linha(L"nr_reproject.log","pid=%lu DIAG_MOV NeuralSemDiagMov=1 -> %s\n",GetCurrentProcessId(),ok?"desligado (cmp job%100==50 -> 127)":"FALHOU (bytes do proxy diferentes): diagnostico segue");
+        }
         const bool game_exposure=NRCFG_INT(L"DlssNrOnAmd",L"UseGameExposure",1,ini.c_str())!=0;
         nrffx::set_use_game_exposure(game_exposure);
 
@@ -432,6 +438,13 @@ public:
             nrcusto::marca(r.command_list,nrcusto::BeginFim);
             if(previsto>0){nrcapt::marcar(r.command_list,previsto,nrcapt::AntesNativa);carimbo_job_=previsto;}
             struct FimCarimbo{int& j;~FimCarimbo(){j=0;}}fim_carimbo{carimbo_job_};
+
+            if(*reinterpret_cast<volatile std::uint8_t*>(base_+0x948B0)==0)
+                if(const auto aquecer=nrprescale::aquecer_job1.load(std::memory_order_acquire)){
+
+                    ComPtr<ID3D12Resource> cor;
+                    if(r.color&&SUCCEEDED(static_cast<IUnknown*>(r.color)->QueryInterface(IID_PPV_ARGS(&cor)))){const auto d=cor->GetDesc();
+                        if(d.Width&&d.Height&&d.Width<=16384u)(void)aquecer(base_,int(d.Width),int(d.Height));}}
             {
                 nrredecada::Trava trava;
                 if(sem_job&&trava.armar(reinterpret_cast<volatile long*>(base_+0x949D8),field<int>(before,0x949BC),

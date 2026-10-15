@@ -698,7 +698,11 @@ int PinnedBinding::dispatch(NrFfxDispatch original,void* context,void* descripto
                 x.camera_near=d.camera_near;x.camera_far=d.camera_far;x.camera_fov=d.camera_fov;
 
                 if(nrrj::ativo()){const auto& q=nrrj::quadro_render();x.rj_on=q.on;x.rj_nivel=q.nivel;x.rj_ganho=q.ganho;x.rj_cx=q.cx;x.rj_cy=q.cy;x.rj_lado=q.lado;
-                    x.rj_rx=q.recorte_x;x.rj_ry=q.recorte_y;x.rj_rl=q.recorte_l;x.rj_composto=q.composto;x.rj_job=q.job;}else x.rj_on=-1;}
+                    x.rj_rx=q.recorte_x;x.rj_ry=q.recorte_y;x.rj_rl=q.recorte_l;x.rj_composto=q.composto;x.rj_job=q.job;x.rj_idade=q.idade;}else x.rj_on=-1;
+                for(int kn=0;kn<nrrj::npc_slots&&kn<7;++kn){nrrj::Inst i1(1+kn);x.rjn_on[kn]=-1;
+                 if(nrrj::ativo()){const auto& q=nrrj::quadro_render();x.rjn_on[kn]=q.on;x.rjn_nivel[kn]=q.nivel;x.rjn_ganho[kn]=q.ganho;x.rjn_cx[kn]=q.cx;x.rjn_cy[kn]=q.cy;x.rjn_lado[kn]=q.lado;
+                    x.rjn_rx[kn]=q.recorte_x;x.rjn_ry[kn]=q.recorte_y;x.rjn_rl[kn]=q.recorte_l;x.rjn_composto[kn]=q.composto;x.rjn_job[kn]=q.job;}}
+                }
             if(faltam){
                 if(decodificado&&
                    p.host->dump_final(d.command,d.input,d.input_state,d.output,d.output_state,modo,despachos_ffx))

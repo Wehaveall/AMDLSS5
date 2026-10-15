@@ -169,7 +169,9 @@ struct FinalExtras {
     std::uint32_t render_w{},render_h{},output_w{},output_h{};
 
     float camera_near{},camera_far{},camera_fov{};
-    int rj_on{-1};float rj_nivel{},rj_ganho{},rj_cx{},rj_cy{},rj_lado{};int rj_rx{},rj_ry{},rj_rl{},rj_composto{},rj_job{};
+    int rj_on{-1};float rj_nivel{},rj_ganho{},rj_cx{},rj_cy{},rj_lado{};int rj_rx{},rj_ry{},rj_rl{},rj_composto{},rj_job{};int rj_idade{-1};
+
+    int rjn_on[7]{-1,-1,-1,-1,-1,-1,-1};float rjn_nivel[7]{},rjn_ganho[7]{},rjn_cx[7]{},rjn_cy[7]{},rjn_lado[7]{};int rjn_rx[7]{},rjn_ry[7]{},rjn_rl[7]{},rjn_composto[7]{},rjn_job[7]{};
     bool valido{};
 };
 inline FinalExtras final_extras{};

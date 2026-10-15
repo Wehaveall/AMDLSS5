@@ -24,9 +24,11 @@
 #include "cena_mascara.h"
 #include "reuso_state.h"
 #include "rede_cada.h"
+#include "painel_rede.h"
 
 #include "rosto_jogador_state.h"
 #include "rosto_jogador_detecta.h"
+#include "yunet.h"
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -180,6 +182,9 @@ struct Hip {
         if(!h)throw std::runtime_error("HIP unavailable");
 #endif
         allocate=symbol<decltype(allocate)>(h,"hipMalloc");release=symbol<decltype(release)>(h,"hipFree");
+#ifndef NRMP_CPU_TEST
+        if(nrorc::modo()>0){allocate=&nrorc_vram::hip_malloc_contado;release=&nrorc_vram::hip_free_contado;}
+#endif
         copy=symbol<decltype(copy)>(h,"hipMemcpy");sync=symbol<decltype(sync)>(h,"hipDeviceSynchronize");
         error=symbol<decltype(error)>(h,"hipGetLastError");device=symbol<decltype(device)>(h,"hipGetDevice");
         set=symbol<decltype(set)>(h,"hipMemset");
@@ -199,6 +204,10 @@ struct Hip {
     }
 };
 }
+
+namespace nrmpsessao {inline std::atomic<unsigned long long> t0{0};
+inline void carimba() noexcept {unsigned long long z=0;if(!t0.load(std::memory_order_relaxed))t0.compare_exchange_strong(z,GetTickCount64());}
+inline unsigned long long inicio(unsigned long long falta) noexcept {const unsigned long long v=t0.load(std::memory_order_relaxed);return v?v:falta;}}
 static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int width,void* destination,
     int output_pitch,int output_format,void* metadata,unsigned request,float* controls,bool publish) noexcept(false);
 namespace {
@@ -261,7 +270,7 @@ const nrcena::Config& cena_config(char* base) {
         c.ret_raio=inteiro(L"NeuralPassoExtraRetRaio",c.ret_raio);
         c.alinha=inteiro(L"NeuralPassoExtraAlinha",c.alinha);c.ret_v1=inteiro(L"NeuralPassoExtraRetV1",c.ret_v1);
         c.fade=inteiro(L"NeuralPassoExtraFade",c.fade);c.fade_sobe=inteiro(L"NeuralPassoExtraFadeSobe",c.fade_sobe);
-        c.protege=inteiro(L"NeuralPassoExtraProtege",c.protege);c.protege_ini_s=inteiro(L"NeuralPassoExtraProtegeInicioS",c.protege_ini_s);c.protege_frac=real(L"NeuralPassoExtraProtegeFrac",c.protege_frac);c.fade_curva=inteiro(L"NeuralPassoExtraFadeCurva",c.fade_curva);
+        c.protege=inteiro(L"NeuralPassoExtraProtege",c.protege);c.protege_sessao=inteiro(L"NeuralPassoExtraProtegeSessao",c.protege_sessao);c.protege_ini_s=inteiro(L"NeuralPassoExtraProtegeInicioS",c.protege_ini_s);c.protege_frac=real(L"NeuralPassoExtraProtegeFrac",c.protege_frac);c.fade_curva=inteiro(L"NeuralPassoExtraFadeCurva",c.fade_curva);
 
         c.comp=real(L"NeuralPassoExtraCompensa",c.comp);c.comp_max=real(L"NeuralPassoExtraCompensaMax",c.comp_max);
         c.comp_ini=real(L"NeuralPassoExtraCompensaIni",c.comp_ini);c.comp_mascara=inteiro(L"NeuralPassoExtraCompensaMascara",c.comp_mascara);
@@ -609,6 +618,58 @@ void acknowledge(char* base,unsigned value) {
 }
 }
 
+#ifndef NRMP_CPU_TEST
+
+constexpr int job1_teto_padrao=1;
+static void job1_log(const char* linha) noexcept {
+    (void)linha;
+}
+extern "C" bool NRAquecerJob1_v1(void* proxy_base,int width,int height) noexcept {
+    auto base=static_cast<char*>(proxy_base);
+    if(!base)return false;
+    volatile auto& feito=*reinterpret_cast<volatile std::uint8_t*>(base+0x948B0);
+    if(feito)return false;
+    static int chave=-1;
+    if(chave<0){chave=job1_teto_padrao;try{const auto ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&job1_log));
+        if(!ini.empty())chave=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralCenaJob1Teto",job1_teto_padrao,ini.c_str()));}catch(...){}
+        if(chave!=1){char l[160];std::snprintf(l,sizeof l,"PRE_SCALE_AQUECE pid=%lu desligado NeuralCenaJob1Teto=%d (o proxy aquece no tamanho da captura)",GetCurrentProcessId(),chave);job1_log(l);}}
+    if(chave!=1)return false;
+    void* primary=base+0x93f48;
+    const unsigned request=nrmp::valid_config(unsigned(InterlockedCompareExchange(reinterpret_cast<volatile LONG*>(base+0x71d090),0,0)));
+    unsigned w{},h{};double pct{};
+    try{if(!nrprescale_runtime::aquecer_tamanho(primary,width,height,request,w,h,pct)){
+        static bool avisado=false;
+        if(!avisado){avisado=true;char l[160];std::snprintf(l,sizeof l,"PRE_SCALE_AQUECE pid=%lu proxy captura=%dx%d (o job nao reduziria: o proxy aquece como sempre)",GetCurrentProcessId(),width,height);job1_log(l);}
+        return false;}}
+    catch(...){return false;}
+
+    std::unique_lock<std::recursive_mutex> trava_rj(nrregswin::rjsync::trava(),std::defer_lock);
+    if(nrregswin::rjsync::ligado.load(std::memory_order_relaxed))trava_rj.lock();
+    void* in{};void* out{};bool chamou=false;const auto t0=std::chrono::steady_clock::now();int profile=0;
+    try{
+        Hip hip;const size_t bytes=size_t(w)*h*8;
+        check(hip.allocate(&in,bytes));check(hip.allocate(&out,bytes));check(hip.set(in,0,bytes));
+        feito=1;
+        profile=read<int>(base,0x9487C)!=0?2:0;*reinterpret_cast<volatile int*>(static_cast<char*>(primary)+0x98)=profile;
+        chamou=true;
+        native<Eval>(base,0x2a080)(primary,in,int(w*8),0,int(h),int(w),out,int(w*8),0,read<int>(base,0x94698),nullptr);
+        *reinterpret_cast<volatile int*>(static_cast<char*>(primary)+0x38)=0;
+        *reinterpret_cast<volatile std::uint8_t*>(static_cast<char*>(primary)+0x120)=0;
+        hip.completed("aquecer_job1");
+        check(hip.release(in));in=nullptr;check(hip.release(out));out=nullptr;
+    }catch(...){
+        try{Hip hip;if(in)hip.release(in);if(out)hip.release(out);}catch(...){}
+        if(!chamou)feito=0;
+        char l[160];std::snprintf(l,sizeof l,"PRE_SCALE_AQUECE pid=%lu falhou captura=%dx%d neural=%ux%u eval=%d",GetCurrentProcessId(),width,height,w,h,chamou?1:0);job1_log(l);
+        return chamou;
+    }
+    const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
+    char l[200];std::snprintf(l,sizeof l,"PRE_SCALE_AQUECE pid=%lu captura=%dx%d neural=%ux%u percent=%.4g request=%u profile=%d ms=%.1f (no lugar do aquecimento do proxy na captura inteira)",
+        GetCurrentProcessId(),width,height,w,h,pct,request,profile,ms);job1_log(l);
+    return true;
+}
+#endif
+
 extern "C" bool NRMultipassInstall_v1(void* proxy_base) noexcept {
     if(!proxy_base)return false;
     auto base=static_cast<char*>(proxy_base);
@@ -625,6 +686,9 @@ extern "C" bool NRMultipassInstall_v1(void* proxy_base) noexcept {
 #endif
     InterlockedExchangePointer(reinterpret_cast<void* volatile*>(base+0x71d0a0),
         reinterpret_cast<void*>(&NRMultipassEval_v1));
+#ifndef NRMP_CPU_TEST
+    nrprescale::aquecer_job1.store(&NRAquecerJob1_v1,std::memory_order_release);
+#endif
     return true;
 }
 
@@ -640,7 +704,8 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
         Hip::async_on=cena_config(base).copia_async!=0;
         const unsigned passes=request&255u;
 
-        static const unsigned long long t_sessao=GetTickCount64();
+        static const unsigned long long t_sessao_mp=GetTickCount64();
+        const unsigned long long t_sessao=cena_config(base).protege_sessao?nrmpsessao::inicio(t_sessao_mp):t_sessao_mp;
         nrlento::marca(1);
         if(passes==1)return done(request);
 
@@ -1110,6 +1175,14 @@ static void run_multipass_eval(void* primary,void* source,int input_pitch,int in
 #endif
     unsigned request=nrmp::valid_config(unsigned(InterlockedCompareExchange(
         reinterpret_cast<volatile LONG*>(base+0x71d090),0,0)));
+#if NR_LOG_ATIVO && !defined(NRMP_CPU_TEST)
+
+    {static const std::vector<std::pair<unsigned,unsigned>> plano=[]{std::vector<std::pair<unsigned,unsigned>> v;char b[256]{};size_t n=0;
+         if(getenv_s(&n,b,sizeof b,"NR_TESTE_PASSOS")==0&&n){char* ctx=nullptr;for(char* t=strtok_s(b,";",&ctx);t;t=strtok_s(nullptr,";",&ctx)){unsigned j=0,x=0;if(sscanf_s(t,"%u:%u",&j,&x)==2)v.emplace_back(j,x);}}
+         return v;}();
+     static std::atomic<unsigned> avaliacoes{0};const unsigned a=avaliacoes.fetch_add(1);
+     for(const auto& p:plano)if(a>=p.first)request=nrmp::valid_config(p.second);}
+#endif
     nrprescale::passos_pedidos.store(request&255u,std::memory_order_relaxed);
 #ifndef NRMP_CPU_TEST
 
@@ -1168,8 +1241,37 @@ static void run_multipass_eval(void* primary,void* source,int input_pitch,int in
     (void)extra_passes(eval,base,primary,height,width,destination,output_pitch,output_format,metadata,request,controls,true);
 }
 
+namespace nrpico {
+inline int ligado=-1;inline std::string buf;inline unsigned long long ru0{},rn0{},re0{},ch0{},fo0{};
+inline bool ativo(char* base) noexcept {
+ (void)base;return false;
+}
+inline double ms(std::int64_t a,std::int64_t b) noexcept {return nrjob::timeline().ms(b-a);}
+
+inline std::int64_t a_top{},a_d{},a_fim{},a_cerca{},a_subm{},a_capt{};inline int a_job{},a_flush{};
+struct Fim {bool on{false};~Fim(){if(on)a_fim=nrjob::qpc();}};
+
+inline void gravar(std::string&&) noexcept {}
+}
+
+namespace nrpainel {
+inline void no_eval(char* base) noexcept {
+ int n=jobs.load(std::memory_order_relaxed);
+ if(n<0){n=0;try{const auto ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&no_eval));
+  if(!ini.empty())n=std::clamp(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralPainelRedeJobs",0,ini.c_str())),0,31);}catch(...){n=0;}
+  jobs.store(n,std::memory_order_relaxed);}
+ if(n<=0)return;
+ const int pj=read<int>(base,0x94b98);const unsigned long long pm=read<unsigned long long>(base,0x94b90);
+ if(pj<=0||pm>100000ull)return;
+ mediana_ms.store(janela().empurra(pj,std::uint32_t(pm),unsigned(n)),std::memory_order_relaxed);
+}
+}
 extern "C" __declspec(dllexport) void NRMultipassEval_v1(void* primary,void* source,int input_pitch,int input_format,
     int height,int width,void* destination,int output_pitch,int output_format,int tone,void* metadata) noexcept(false) {
+    const std::int64_t pc_top=nrjob::qpc();nrpico::Fim pc_fim;
+#ifndef NRMP_CPU_TEST
+    nrmpsessao::carimba();
+#endif
     nrmptiming::Scope timing{width,height,input_pitch,output_pitch,input_format,output_format,tone,metadata};
     auto* base=static_cast<char*>(primary)-0x93f48;
 
@@ -1188,7 +1290,13 @@ extern "C" __declspec(dllexport) void NRMultipassEval_v1(void* primary,void* sou
         nrmode::async_completed_job.store(job,std::memory_order_release);
         nrjob::signal_completion();
     };
-    if(job>0)nrjob::timeline().stamp(job,nrjob::EvalInicio,nrjob::qpc());
+
+    const bool pico=job>0&&nrpico::ativo(base);const std::int64_t pc_e=pico?nrjob::qpc():0;
+    pc_fim.on=pico;if(pico)nrpainel::sonda.store(true,std::memory_order_relaxed);
+    if(job>0)nrpainel::no_eval(base);
+    const unsigned long long pc_painel=pico?read<unsigned long long>(base,0x94b90):0;const int pc_pjob=pico?read<int>(base,0x94b98):0;
+    const bool inicio_depois_da_trava=nrrj::sj_q()>0;
+    if(job>0&&!inicio_depois_da_trava)nrjob::timeline().stamp(job,nrjob::EvalInicio,nrjob::qpc());
 
     if(job>0){nrrj_runtime::ler_ini(base);if(nrrj::ativo())nrcena::quer_mv.store(true,std::memory_order_relaxed);}
 
@@ -1197,7 +1305,10 @@ extern "C" __declspec(dllexport) void NRMultipassEval_v1(void* primary,void* sou
     nrhipprio::Scope priority_scope(nrhipprio::active());
 
     std::unique_lock<std::recursive_mutex> trava_rj(nrregswin::rjsync::trava(),std::defer_lock);
+    const int pc_dentro=pico?nrregswin::rjsync::rosto_dentro.load(std::memory_order_relaxed):0;const std::int64_t pc_t0=pico?nrjob::qpc():0;
     if(nrregswin::rjsync::ligado.load(std::memory_order_relaxed))trava_rj.lock();
+    const std::int64_t pc_t1=pico?nrjob::qpc():0;
+    if(job>0&&inicio_depois_da_trava)nrjob::timeline().stamp(job,nrjob::EvalInicio,nrjob::qpc());
     try {
         if(nrneuraltone::failed||nrregswin::dispatch.failure.load(std::memory_order_acquire))
             throw std::runtime_error("Neural replacement dispatch previously failed");
@@ -1221,9 +1332,11 @@ extern "C" __declspec(dllexport) void NRMultipassEval_v1(void* primary,void* sou
         if(nrneuraltone::failed||nrregswin::dispatch.failure.load(std::memory_order_acquire))
             throw std::runtime_error("Neural replacement dispatch failed; result not published");
         if(job>0)nrjob::timeline().stamp(job,nrjob::EvalFim,nrjob::qpc());
+        const std::int64_t pc_f=pico?nrjob::qpc():0;
         if(job>0&&nrredecada::cam::par.load(std::memory_order_relaxed)>1)cadencia_camera();
 
         if(job>0)nrrj_runtime::antes_do_publish(base,primary,job,destination,width,height,output_pitch,output_format);
+        const std::int64_t pc_a=pico?nrjob::qpc():0;
 #endif
         if(timing.active){timing.sample.effective_config=read<unsigned>(base,0x71d094);timing.sample.effective_config_known=true;}
 #ifndef NRMP_CPU_TEST
@@ -1232,8 +1345,21 @@ extern "C" __declspec(dllexport) void NRMultipassEval_v1(void* primary,void* sou
             Hip hip;hip.completed("async_completion",1);
 
             nrlate::publish(job);
+            const std::int64_t pc_c=pico?nrjob::qpc():0;
             publish(0);
+            const std::int64_t pc_p=pico?nrjob::qpc():0;
             nrrj_runtime::depois_do_publish();
+            if(pico){const std::int64_t pc_d=nrjob::qpc();namespace R=nrregswin::rjsync;namespace D=nrregswin::r1d;
+                const auto ru=R::rosto_us.load(std::memory_order_relaxed),rn=R::rosto_n.load(std::memory_order_relaxed);
+                char l[400];std::snprintf(l,sizeof l,"PICO job=%d t=%.3f painel_job=%d painel_ms=%llu trava=%.2f rosto_dentro=%d eval=%.2f antes=%.2f compl=%.2f publ=%.2f depois=%.2f total=%.2f rosto_ms=%.2f rosto_n=%llu reuso=%llu cheio=%llu forcado=%llu mov=%.2f movfrac=%.1f ant_job=%d ant_cerca_top=%.2f ant_subm_top=%.2f ant_d_fim=%.2f ant_flush=%d ant_capt_fim=%.2f painel_med=%d quadro_max=%.2f\n",
+                    job,double(pc_e)/double(nrjob::qpc_frequency()),pc_pjob,pc_painel,nrpico::ms(pc_t0,pc_t1),pc_dentro,nrpico::ms(pc_t1,pc_f),nrpico::ms(pc_f,pc_a),nrpico::ms(pc_a,pc_c),nrpico::ms(pc_c,pc_p),nrpico::ms(pc_p,pc_d),nrpico::ms(pc_e,pc_d),
+                    double(ru-nrpico::ru0)/1000.0,rn-nrpico::rn0,D::reusos-nrpico::re0,D::cheios-nrpico::ch0,D::mov::forcados-nrpico::fo0,double(D::mov::ult.media),double(D::mov::ult.frac),
+                    nrpico::a_job,nrpico::a_cerca?nrpico::ms(nrpico::a_cerca,nrpico::a_top):-1.0,nrpico::a_subm?nrpico::ms(nrpico::a_subm,nrpico::a_top):-1.0,nrpico::ms(nrpico::a_d,nrpico::a_fim),nrpico::a_flush,nrpico::a_capt?nrpico::ms(nrpico::a_capt,nrpico::a_fim):-1.0,
+                    nrpainel::mediana_ms.load(std::memory_order_relaxed),nrjob::timeline().ms(nrpainel::present_max.exchange(0,std::memory_order_relaxed)));
+                nrpico::ru0=ru;nrpico::rn0=rn;nrpico::re0=D::reusos;nrpico::ch0=D::cheios;nrpico::fo0=D::mov::forcados;nrpico::buf+=l;
+                nrpico::a_flush=0;if(nrpico::buf.size()>8192){nrpico::a_flush=1;nrpico::gravar(std::move(nrpico::buf));nrpico::buf=std::string{};}
+                nrpico::a_job=job;nrpico::a_top=pc_top;nrpico::a_d=pc_d;nrpico::a_cerca=nrjob::timeline().when(job,nrjob::CercaPronta);
+                nrpico::a_subm=nrjob::timeline().when(job,nrjob::Submetido);nrpico::a_capt=nrjob::timeline().when(job,nrjob::Capturado);}
         }
     }catch(const HipFailure& failure){
         publish(failure.status ? failure.status : -1);

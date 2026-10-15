@@ -146,4 +146,7 @@ inline double pedido_percent(bool post,unsigned chave,double percent_ini,std::ui
 
 inline std::atomic<std::uint64_t> auto_alvo{0};
 inline std::atomic<bool> auto_menu_escreveu{false};
+
+using AquecerJob1=bool(*)(void* base,int largura,int altura) noexcept;
+inline std::atomic<AquecerJob1> aquecer_job1{nullptr};
 }

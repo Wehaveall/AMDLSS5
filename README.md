@@ -38,6 +38,10 @@ Outros jogos DirectX 12 com FSR 3.1 e a RX 9070 (sem XT) podem funcionar, mas n�
 - Menu no jogo em português, inglês e espanhol.
 - Instalador com detecção do jogo, backup e desinstalação completa.
 
+## Novidades da 1.3.0
+
+- Melhorias de qualidade de imagem e da rede.
+
 ## Novidades da 1.2.1
 
 - Correção de bug na rede.
@@ -63,6 +67,7 @@ Visual Studio 2022, CMake, Windows SDK e os headers do HIP SDK da AMD. Helper: `
 - **NVIDIA** — DLSS e a rede do DLSS Neural Rendering. NVIDIA e DLSS são marcas da NVIDIA Corporation. Este projeto não
   é afiliado, patrocinado nem endossado pela NVIDIA nem pela AMD.
 - **praydog** — [REFramework](https://github.com/praydog/REFramework) (licença MIT).
+- **YuNet** — detector de rostos do [OpenCV Zoo](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (licença MIT, © 2020 Shiqi Yu).
 - AMD FidelityFX / FSR 3.1 — do próprio jogo; nada da AMD é redistribuído aqui.
 
 ## Licença
@@ -111,6 +116,10 @@ Other DirectX 12 games with FSR 3.1 and the RX 9070 (non-XT) may work, but were 
 - In-game menu in Portuguese, English and Spanish.
 - Installer with game detection, backup and a complete uninstall.
 
+### What's new in 1.3.0
+
+- Image quality and network improvements.
+
 ### What's new in 1.2.1
 
 - Network bug fix.
@@ -135,6 +144,7 @@ Visual Studio 2022, CMake, the Windows SDK and the headers from AMD's HIP SDK. H
 - **NVIDIA** — DLSS and the DLSS Neural Rendering network. NVIDIA and DLSS are trademarks of NVIDIA Corporation. This
   project is not affiliated with, sponsored or endorsed by NVIDIA or AMD.
 - **praydog** — [REFramework](https://github.com/praydog/REFramework) (MIT license).
+- **YuNet** — face detector from [OpenCV Zoo](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT license, © 2020 Shiqi Yu).
 - AMD FidelityFX / FSR 3.1 — comes with the game; nothing from AMD is redistributed here.
 
 ### License

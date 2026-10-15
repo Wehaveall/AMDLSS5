@@ -53,4 +53,7 @@ target_sources(nr_live_adapter PRIVATE "${NR_PRESENT_DIR}/rec_aviso.cpp")
 
 target_sources(nr_live_adapter PRIVATE "${NR_MULTIPASS_DIR}/overlay_amd.cpp")
 
+if(NOT NR_PUBLICO)
+
+endif()
 target_link_libraries(nr_live_adapter PRIVATE windowscodecs ole32)

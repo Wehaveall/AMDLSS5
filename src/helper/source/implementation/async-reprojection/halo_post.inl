@@ -1,4 +1,5 @@
 #include "nr_reproject_halopostmomentos.h"
+#include "nr_reproject_halopostmomentosp.h"
 #include "nr_reproject_halopostref.h"
 #include "nr_reproject_halopostaplicar.h"
 namespace nrreproject {
@@ -10,6 +11,7 @@ bool Backend::Impl::alocar_halo_post(const D3D12_UNORDERED_ACCESS_VIEW_DESC& fla
  auto& g=hpost;
  if(!width||!height||!warped||!history[0]||!history[2]||!flags_buffer)return false;
  if(!root(device.Get(),12,5,3,g.root)||!pipeline(device.Get(),g.root.Get(),g_nr_reproject_halopostmomentos,g.mom_pso)||
+    (halo_post_salto>0.f&&!pipeline(device.Get(),g.root.Get(),g_nr_reproject_halopostmomentosp,g.momp_pso))||
     !pipeline(device.Get(),g.root.Get(),g_nr_reproject_halopostref,g.ref_pso)||!pipeline(device.Get(),g.root.Get(),g_nr_reproject_halopostaplicar,g.apl_pso))return false;
  g.qw=(width+3u)/4u;g.qh=(height+3u)/4u;
  D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
@@ -39,10 +41,24 @@ bool Backend::Impl::halo_post(ID3D12GraphicsCommandList* c,float exposure,unsign
  if(!std::isfinite(exposure)||!(exposure>0.f))return false;
 
  const double pct=pct_raio();const double r=(pct>0.&&pct<100.)?halo_post_raio*100./pct:halo_post_raio;
- HaloPostK k{width,height,constants.slice%Policy::history_count,tone&1u,exposure,halo_post_forca,float(std::min(30.,r)),g.qw,g.qh,0u,0u,0u};
+ unsigned salto_u=0u;{const float sv=halo_post_salto;std::memcpy(&salto_u,&sv,sizeof salto_u);}
+ HaloPostK k{width,height,constants.slice%Policy::history_count,tone&1u,exposure,halo_post_forca,float(std::min(30.,r)),g.qw,g.qh,salto_u,0u,0u};
  if(!g.logado){g.logado=true;{
-  nrlogfila::linha(L"nr_reproject.log","pid=%lu HALO_TETO_POST forca=%.3f raio_rede=%.1f raio_hist=%.1f historico=%ux%u saida=%ux%u reduzido=%u tone=%u\n",GetCurrentProcessId(),
-   double(halo_post_forca),halo_post_raio,double(k.raio),width,height,comp_w,comp_h,reduzido?1u:0u,tone&1u);}}
+  nrlogfila::linha(L"nr_reproject.log","pid=%lu HALO_TETO_POST forca=%.3f raio_rede=%.1f raio_hist=%.1f historico=%ux%u saida=%ux%u reduzido=%u tone=%u salto=%.3f\n",GetCurrentProcessId(),
+   double(halo_post_forca),halo_post_raio,double(k.raio),width,height,comp_w,comp_h,reduzido?1u:0u,tone&1u,double(halo_post_salto));}}
+ if(halo_post_salto>0.f&&g.momp_pso){
+
+  auto tr=[](ID3D12Resource* r,D3D12_RESOURCE_STATES a,D3D12_RESOURCE_STATES b){D3D12_RESOURCE_BARRIER v{};v.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;v.Transition={r,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,a,b};return v;};
+  const D3D12_RESOURCE_BARRIER ini[3]{tr(g.mom.Get(),read_state,write_state),tr(g.ref.Get(),read_state,write_state),tr(g.saida.Get(),read_state,write_state)};
+  c->ResourceBarrier(3,ini);
+  bind(c,g.heap.Get(),g.root.Get(),g.momp_pso.Get(),12,&k,5);c->Dispatch((width+7)/8,(height+7)/8,1);
+  transition(c,g.mom.Get(),write_state,read_state);
+  c->SetPipelineState(g.ref_pso.Get());c->Dispatch((g.qw+7)/8,(g.qh+7)/8,1);
+  transition(c,g.ref.Get(),write_state,read_state);
+  c->SetPipelineState(g.apl_pso.Get());c->Dispatch((width+7)/8,(height+7)/8,1);
+  transition(c,g.saida.Get(),write_state,read_state);
+  ++g.quadros;return true;
+ }
  transition(c,g.mom.Get(),read_state,write_state);
  bind(c,g.heap.Get(),g.root.Get(),g.mom_pso.Get(),12,&k,5);c->Dispatch((g.qw+7)/8,(g.qh+7)/8,1);
  transition(c,g.mom.Get(),write_state,read_state);
