@@ -29,6 +29,11 @@
 #include "nr_reproject_cromalds.h"
 #include "nr_reproject_suave.h"
 #include "nr_reproject_luzgrossa.h"
+#include "nr_reproject_tlmederef.h"
+#include "nr_reproject_tlmedesai.h"
+#include "nr_reproject_tlrazao.h"
+#include "nr_reproject_tlaplica.h"
+#include "../../../runtime/expo_trava.h"
 #include "suave_config.h"
 #include "nr_reproject_fill.h"
 #include "nr_reproject_bilaterallumafonte.h"
@@ -175,7 +180,8 @@ static_assert(sizeof(LuzConstants)==80);
 constexpr unsigned compose_variante=12,compose_uavs=6;
 
 constexpr unsigned luz_variante=19,luz_uavs=10;
-D3D12_RESOURCE_STATES state(unsigned s){switch(s){
+
+D3D12_RESOURCE_STATES state(unsigned s){if((s&1u)&&s!=1u)s&=~1u;switch(s){
  case 1:return D3D12_RESOURCE_STATE_COMMON;case 2:return write_state;case 4:return read_state;
  case 8:return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;case 12:return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE|read_state;
  case 16:return D3D12_RESOURCE_STATE_COPY_SOURCE;case 32:return D3D12_RESOURCE_STATE_COPY_DEST;
@@ -252,15 +258,7 @@ bool root(ID3D12Device* d,unsigned constants,unsigned srvs,unsigned uavs,ComPtr<
 template<class T,std::size_t N>bool pipeline(ID3D12Device* d,ID3D12RootSignature* r,const T(&bytes)[N],ComPtr<ID3D12PipelineState>& p){D3D12_COMPUTE_PIPELINE_STATE_DESC q{};q.pRootSignature=r;q.CS={bytes,sizeof(bytes)};const bool ok=SUCCEEDED(d->CreateComputePipelineState(&q,IID_PPV_ARGS(&p)));if(ok)nrorc_vram::registrar(nrorc::Api::Pso,0,"pso");return ok;}
 
 void registrar_realce(const char* modo,unsigned antes,unsigned depois,float luz,float detalhe){
-    static std::atomic<unsigned long long> ultimo{~0ull};
-    const unsigned long long chave=(static_cast<unsigned long long>(depois>>8)<<24)^(static_cast<unsigned long long>(antes>>8))^
-                                   (static_cast<unsigned long long>(modo[4])<<56)^(static_cast<unsigned long long>(modo[0])<<48);
-    if(ultimo.exchange(chave)==chave)return;
-    FILE* f{};if(fopen_s(&f,"nr_realce.log","a")!=0||!f)return;
-    std::fprintf(f,"pid=%lu REALCE modo=%s luz=%.2f detalhe=%.2f teto_ini=%.2f teto=%.2f detalhe_forca=%.2f cor=%.2f%s\n",GetCurrentProcessId(),modo,
-                 double(luz),double(detalhe),((antes>>21)&255u)/20.,((depois>>21)&255u)/20.,((depois>>8)&63u)/20.,((depois>>14)&127u)/20.,
-                 ((depois>>8)&63u)==20u&&((depois>>14)&127u)==20u&&((depois>>21)&255u)==40u?" (formula do Daniel, sem teto)":"");
-    std::fclose(f);
+(void)modo;(void)antes;(void)depois;(void)luz;(void)detalhe;
 }
 
 unsigned teto_unico(unsigned tone){
@@ -431,9 +429,105 @@ struct Backend::Impl {
  unsigned lg_raio=[]{double v=3.;if(!ler_ini(L"NeuralLuzGrossaRaio",v)||!(v>=1.&&v<=8.))v=3.;return unsigned(v+.5);}();
  unsigned lg_passo=[]{double v=6.;if(!ler_ini(L"NeuralLuzGrossaPasso",v)||!(v>=1.&&v<=32.))v=6.;return unsigned(v+.5);}();
  float lg_limite=[]{double v=.15;if(!ler_ini(L"NeuralLuzGrossaLimite",v)||!(v>0.&&v<=2.))v=.15;return float(v);}();
+ float lg_teto=[]{double v=0.;if(!ler_ini(L"NeuralLuzGrossaTeto",v)||!(v>0.&&v<=4.))v=0.;return float(v);}();
+ float lg_piso=[]{double v=0.;if(!ler_ini(L"NeuralLuzGrossaPiso",v)||!(v>0.&&v<=4.))v=0.;return float(v);}();
+ float lg_cor=[]{double v=0.;if(!ler_ini(L"NeuralLuzGrossaCor",v))v=0.;return v>.5?1.f:0.f;}();
  bool lg_ligado()const{return lg_alfa<1.f;}
  ComPtr<ID3D12RootSignature> lg_root;ComPtr<ID3D12PipelineState> lg_pso;ComPtr<ID3D12DescriptorHeap> lg_heap;
  ComPtr<ID3D12Resource> lg[2],lg_out;D3D12_RESOURCE_STATES lg_estado[2]{},lg_out_estado{};unsigned lg_cur{};bool lg_valido{};std::uint64_t lg_quadro{},lg_quadros{};
+
+ float tl_forca=[]{double v=0.;if(!ler_ini(L"NeuralTravaLuz",v)||!(v>0.&&v<=1.))v=0.;return float(v);}();
+ float tl_cima=[]{double v=.03;if(!ler_ini(L"NeuralTravaLuzCima",v)||!(v>=0.&&v<=4.))v=.03;return float(v);}();
+ float tl_baixo=[]{double v=.03;if(!ler_ini(L"NeuralTravaLuzBaixo",v)||!(v>=0.&&v<=4.))v=.03;return float(v);}();
+ unsigned tl_bloco=[]{double v=8.;if(!ler_ini(L"NeuralTravaLuzBloco",v)||!(v>=4.&&v<=32.))v=8.;return unsigned(v+.5);}();
+ unsigned tl_raio=[]{double v=2.;if(!ler_ini(L"NeuralTravaLuzRaio",v)||!(v>=0.&&v<=8.))v=2.;return unsigned(v+.5);}();
+ unsigned tl_cor=[]{double v=0.;if(!ler_ini(L"NeuralTravaLuzCor",v))v=0.;return v>.5?1u:0u;}();
+ ComPtr<ID3D12RootSignature> tl_root;ComPtr<ID3D12PipelineState> tl_pso[4];ComPtr<ID3D12DescriptorHeap> tl_heap;ComPtr<ID3D12Resource> tl_tex[3];
+ unsigned tl_w{},tl_h{},tl_cl{},tl_ch{};bool tl_falhou{},tl_medido{};ID3D12Resource* tl_dst{};std::uint64_t tl_quadros{};
+
+ float tl_media=[]{double v=0.;if(!ler_ini(L"NeuralExposicaoMedia",v)||!(v>0.&&v<1.))v=0.;return float(v);}();
+
+ float tl_tela=[]{double v=0.;if(!ler_ini(L"NeuralExposicaoTela",v)||!(v>0.&&v<4.))v=0.;return float(v);}();
+ float tl_media_fator=[]{double v=1.2;if(!ler_ini(L"NeuralExposicaoMediaFator",v)||!(v>.1&&v<10.))v=1.2;return float(v);}();
+ ComPtr<ID3D12Resource> tl_rb[4];std::uint64_t tl_rb_n{};unsigned tl_rb_pitch{};std::uint64_t tl_medidas{};
+ static float tl_enc(float v){v=v/(1.f+v);return v<=.0031308f?v*12.92f:1.055f*std::pow(v,1.f/2.4f)-.055f;}
+ void tl_ler_media(unsigned slot){
+  void* m=nullptr;const D3D12_RANGE r{0,SIZE_T(tl_rb_pitch)*tl_ch};if(FAILED(tl_rb[slot]->Map(0,&r,&m))||!m)return;
+  constexpr int NB=144;unsigned h[NB]{};unsigned n=0;
+  for(unsigned y=0;y<tl_ch;y+=2){const float* l=reinterpret_cast<const float*>(static_cast<const char*>(m)+SIZE_T(y)*tl_rb_pitch);
+   for(unsigned x=0;x<tl_cl;x+=2){const float v=l[4*x+3];if(!(v>=0.f)||!std::isfinite(v))continue;const float l2=std::log2((std::max)(v,1e-8f));
+    const int b=std::clamp(int((l2+24.f)*4.f),0,NB-1);++h[b];++n;}}
+  const D3D12_RANGE nada{0,0};tl_rb[slot]->Unmap(0,&nada);
+  if(n<64)return;
+  auto media=[&](float e){double s=0;for(int b=0;b<NB;++b)if(h[b])s+=double(h[b])*tl_enc(std::exp2((float(b)+.5f)/4.f-24.f)*e);return s/n;};
+  float alvo=tl_media,tm=0.f;
+  if(tl_tela>0.f){tm=nrexpotrava::tela_media.load(std::memory_order_relaxed);const auto tms=nrexpotrava::tela_ms.load(std::memory_order_relaxed);
+   if(tm>0.f&&GetTickCount64()-tms<1500)alvo=std::clamp(tl_tela*tm,.02f,.6f);}
+  float lo=1e-4f,hi=1e4f;for(int i=0;i<40;++i){const float mid=std::sqrt(lo*hi);if(media(mid)<alvo)lo=mid;else hi=mid;}
+  const float e=std::sqrt(lo*hi)*tl_media_fator;
+  if(std::isfinite(e)&&e>0.f){nrexpotrava::medida_expo.store(e,std::memory_order_relaxed);nrexpotrava::medida_ms.store(GetTickCount64(),std::memory_order_relaxed);}
+  if((tl_medidas++&255u)==0)nrlogfila::linha(L"nr_reproject.log","pid=%lu EXPO_MEDIDA exposicao=%.4f alvo=%.3f tela=%.3f fator=%.2f blocos=%u medidas=%llu\n",GetCurrentProcessId(),double(e),double(alvo),double(tm),double(tl_media_fator),n,static_cast<unsigned long long>(tl_medidas));
+ }
+ void tl_copiar_media(ID3D12GraphicsCommandList* c){
+  if(tl_tela>0.f&&tl_media>0.f)nrexpotrava::tela_ligada.store(1,std::memory_order_relaxed);
+  if(!(tl_media>0.f)||(tl_rb_n++&3u))return;
+  const std::uint64_t k=tl_rb_n>>2;const unsigned slot=unsigned(k&3u);
+  if(!tl_rb[slot]){D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_READBACK;tl_rb_pitch=(tl_cl*16u+255u)&~255u;
+   D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=UINT64(tl_rb_pitch)*tl_ch;bd.Height=1;bd.DepthOrArraySize=1;bd.MipLevels=1;bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+   if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&tl_rb[slot]))))return;}
+  else if(k>=4)tl_ler_media(slot);
+  transition(c,tl_tex[0].Get(),write_state,D3D12_RESOURCE_STATE_COPY_SOURCE);
+  D3D12_TEXTURE_COPY_LOCATION de{};de.pResource=tl_rb[slot].Get();de.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+  de.PlacedFootprint.Footprint={DXGI_FORMAT_R32G32B32A32_FLOAT,tl_cl,tl_ch,1,tl_rb_pitch};
+  D3D12_TEXTURE_COPY_LOCATION fo{};fo.pResource=tl_tex[0].Get();fo.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;fo.SubresourceIndex=0;
+  c->CopyTextureRegion(&de,0,0,0,&fo,nullptr);
+  transition(c,tl_tex[0].Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,write_state);
+ }
+ struct TlK{unsigned largura,altura,cl,ch,bloco,raio,p0,p1;float cima,baixo,forca,eps;};
+ bool tl_preparar(ID3D12Resource* dst,DXGI_FORMAT f,unsigned w,unsigned h){
+  if(!(tl_forca>0.f||tl_media>0.f)||tl_falhou||!dst)return false;
+  if(f!=DXGI_FORMAT_R16G16B16A16_FLOAT){tl_falhou=true;nrlogfila::linha(L"nr_reproject.log","pid=%lu TRAVA_LUZ desligada: formato da saida %d (so RGBA16F)\n",GetCurrentProcessId(),int(f));return false;}
+  if(!tl_root){
+   if(!root(device.Get(),sizeof(TlK)/4,1,4,tl_root)||!pipeline(device.Get(),tl_root.Get(),g_nr_reproject_tlmederef,tl_pso[0])||!pipeline(device.Get(),tl_root.Get(),g_nr_reproject_tlmedesai,tl_pso[1])||
+      !pipeline(device.Get(),tl_root.Get(),g_nr_reproject_tlrazao,tl_pso[2])||!pipeline(device.Get(),tl_root.Get(),g_nr_reproject_tlaplica,tl_pso[3])){
+    tl_falhou=true;nrlogfila::linha(L"nr_reproject.log","pid=%lu TRAVA_LUZ desligada: raiz/PSO recusados\n",GetCurrentProcessId());return false;}
+   D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,5,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
+   if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&tl_heap)))){tl_falhou=true;return false;}
+   D3D12_SHADER_RESOURCE_VIEW_DESC sv{};sv.Format=DXGI_FORMAT_R32_FLOAT;sv.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;sv.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;sv.Texture2D.MipLevels=1;
+   device->CreateShaderResourceView(nullptr,&sv,cpu(tl_heap.Get(),0));}
+  if(w!=tl_w||h!=tl_h){
+   tl_cl=(w+tl_bloco-1)/tl_bloco;tl_ch=(h+tl_bloco-1)/tl_bloco;
+   D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;D3D12_RESOURCE_DESC rd{};rd.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;rd.Width=tl_cl;rd.Height=tl_ch;
+   rd.DepthOrArraySize=1;rd.MipLevels=1;rd.Format=DXGI_FORMAT_R32G32B32A32_FLOAT;rd.SampleDesc.Count=1;rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+   for(auto& x:tl_rb)x.Reset();tl_rb_n=0;
+   for(unsigned i=0;i<3;++i){tl_tex[i].Reset();
+    if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,write_state,nullptr,IID_PPV_ARGS(&tl_tex[i])))){tl_falhou=true;return false;}
+    D3D12_UNORDERED_ACCESS_VIEW_DESC v{};v.Format=DXGI_FORMAT_R32G32B32A32_FLOAT;v.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;device->CreateUnorderedAccessView(tl_tex[i].Get(),nullptr,&v,cpu(tl_heap.Get(),2+i));}
+   tl_w=w;tl_h=h;tl_dst=nullptr;
+   nrlogfila::linha(L"nr_reproject.log","pid=%lu TRAVA_LUZ ligada forca=%.3f cima=%.3f baixo=%.3f bloco=%u raio=%u cor=%u %ux%u grade=%ux%u\n",GetCurrentProcessId(),
+    double(tl_forca),double(tl_cima),double(tl_baixo),tl_bloco,tl_raio,tl_cor,w,h,tl_cl,tl_ch);}
+  if(dst!=tl_dst){uav(tl_heap.Get(),1,dst,f);tl_dst=dst;}
+  return true;
+ }
+ void tl_passo(ID3D12GraphicsCommandList* c,unsigned i,unsigned gx,unsigned gy){
+  const TlK k{tl_w,tl_h,tl_cl,tl_ch,tl_bloco,tl_raio,tl_cor,0u,tl_cima,tl_baixo,tl_forca,1e-5f};
+  ID3D12DescriptorHeap* hs[]{tl_heap.Get()};c->SetDescriptorHeaps(1,hs);c->SetComputeRootSignature(tl_root.Get());c->SetPipelineState(tl_pso[i].Get());
+  c->SetComputeRoot32BitConstants(0,sizeof(TlK)/4,&k,0);c->SetComputeRootDescriptorTable(1,gpu(tl_heap.Get(),0));c->SetComputeRootDescriptorTable(2,gpu(tl_heap.Get(),1));
+  c->Dispatch((gx+7)/8,(gy+7)/8,1);
+ }
+
+ void tl_medir_jogo(ID3D12GraphicsCommandList* c,ID3D12Resource* dst,DXGI_FORMAT f,unsigned w,unsigned h){
+  tl_medido=false;if(!tl_preparar(dst,f,w,h))return;
+  tl_passo(c,0,tl_cl,tl_ch);order_uav(c,dst);order_uav(c,tl_tex[0].Get());tl_medido=tl_forca>0.f;
+  tl_copiar_media(c);
+ }
+
+ void tl_aplicar(ID3D12GraphicsCommandList* c,ID3D12Resource* dst){
+  if(!tl_medido||dst!=tl_dst)return;tl_medido=false;
+  tl_passo(c,1,tl_cl,tl_ch);order_uav(c,tl_tex[1].Get());
+  tl_passo(c,2,tl_cl,tl_ch);order_uav(c,tl_tex[2].Get());
+  tl_passo(c,3,tl_w,tl_h);order_uav(c,dst);++tl_quadros;
+ }
 
  unsigned segura_max=[]{double v=6.;if(!ler_ini(L"NeuralSeguraMax",v)||!(v>=1.&&v<=240.))v=6.;return unsigned(v+.5);}();
  unsigned segura_fade=[]{double v=0.;if(!ler_ini(L"NeuralSeguraFade",v)||!(v>=0.&&v<=240.))v=0.;return unsigned(v+.5);}();
@@ -453,6 +547,12 @@ struct Backend::Impl {
  bool fg_cross=[]{double v=0.;return ler_ini(L"NeuralFgCrossfade",v)&&v>.5;}();
  bool fg_cross_sempre=[]{double v=0.;return ler_ini(L"NeuralFgCrossfadeSempre",v)&&v>.5;}();
  float est_cross{},cross_P{};int cross_job{-1};unsigned cross_j{};
+
+ bool post_estab_rosto=[]{double v=0.;return ler_ini(L"NeuralPostEstabRosto",v)&&v>.5;}();float est_rosto{};
+
+ bool post_det_rampa=[]{double v=0.;return ler_ini(L"NeuralPostEstabDetalheRampa",v)&&v>.5;}();
+ float post_estab_luz=[]{double v=0.;if(!ler_ini(L"NeuralPostEstabLuz",v)||!(v>0.&&v<1.))v=0.;return float(v);}();
+ float post_det_parado=[]{double v=.05;if(!ler_ini(L"NeuralPostEstabDetalheParado",v)||!(v>0.&&v<=4.))v=.05;return float(v);}();
  float post_alfa_mov=[]{double v=.5;if(!ler_ini(L"NeuralPostStabilizeMotion",v)||!(v>0.&&v<=1.))v=.5;return float(v);}();
  Constants constants{};std::uint64_t composed{},skipped{},unsupported{};
 
@@ -522,12 +622,7 @@ struct Backend::Impl {
  unsigned trace_restantes=[]{double v=0;return ler_ini(L"NeuralCenaTrace",v)&&v>=1.&&v<=200000.?unsigned(v):0u;}();
  float trace_expo{};long long trace_qpc{};
  void trace(int job,int age,const char* reason){
-  if(!trace_restantes)return;--trace_restantes;
-  LARGE_INTEGER q{},fq{};QueryPerformanceCounter(&q);QueryPerformanceFrequency(&fq);
-  const double ms=trace_qpc&&fq.QuadPart?double(q.QuadPart-trace_qpc)*1000./double(fq.QuadPart):0.;trace_qpc=q.QuadPart;
-  FILE* f{};if(fopen_s(&f,"nr_cena_trace.log","a")==0&&f){std::fprintf(f,"pid=%lu frame=%llu job=%d age=%d expo=%.6g ms=%.3f segurados=%u composed=%llu skipped=%llu halo_post=%llu reason=%s\n",
-   GetCurrentProcessId(),policy.frame,job,age,double(trace_expo),ms,segurados_seguidos,composed,skipped,hpost.quadros,reason);std::fclose(f);}
-
+(void)job;(void)age;(void)reason;
 }
 
  void perder_post(const char* motivo){if(!post.ativo)return;post.ativo=false;++post_lost;if(post_lost<=3||(post_lost&255)==0)log_post(post.job,motivo,nullptr);}
@@ -575,6 +670,7 @@ struct Backend::Impl {
   drop(est_heap);drop(est_root);drop(est_pso);drop(est[0]);drop(est[1]);est_valido=false;
   drop(cro_heap);drop(cro_root);drop(cro_pso);drop(cro[0]);drop(cro[1]);drop(cro_out);cro_valido=false;
   drop(lg_heap);drop(lg_root);drop(lg_pso);drop(lg[0]);drop(lg[1]);drop(lg_out);lg_valido=false;
+  drop(tl_heap);drop(tl_root);for(auto& x:tl_pso)drop(x);for(auto& x:tl_tex)drop(x);for(auto& x:tl_rb)drop(x);tl_rb_n=0;tl_w=tl_h=0;tl_dst=nullptr;tl_medido=false;
   drop(su_heap);drop(su_root);drop(su_pso);drop(su[0]);drop(su[1]);drop(su_out);su_valido=false;
   drop(bil_heap);drop(bil_root);drop(bil_luma_fonte);drop(bil_luma_atual);drop(bil_prep);drop(bil_fit);drop(bil_apply);drop(bil_features);drop(bil_luma);
   for(auto& t:bil_coef)drop(t);
@@ -904,7 +1000,7 @@ struct Backend::Impl {
   if(k.estilo>2)k.estilo=0;if(!std::isfinite(k.tom))k.tom=1.f;return k;
  }
  bool alocar_estabilizador(){
-  if(!root(device.Get(),15,5,1,est_root)||!(q_chave(L"NeuralQEstabCR")?pipeline(device.Get(),est_root.Get(),g_nr_reproject_estabilizarcr,est_pso):pipeline(device.Get(),est_root.Get(),g_nr_reproject_estabilizar,est_pso)))return false;
+  if(!root(device.Get(),32,5,1,est_root)||!(q_chave(L"NeuralQEstabCR")?pipeline(device.Get(),est_root.Get(),g_nr_reproject_estabilizarcr,est_pso):pipeline(device.Get(),est_root.Get(),g_nr_reproject_estabilizar,est_pso)))return false;
   const auto wd=warped->GetDesc();D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
   for(unsigned i=0;i<2;++i){if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&wd,write_state,nullptr,IID_PPV_ARGS(&est[i]))))return false;est_estado[i]=write_state;}
   D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,12,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
@@ -923,7 +1019,8 @@ struct Backend::Impl {
   transition(c,est[prev].Get(),est_estado[prev],read_state);est_estado[prev]=read_state;
 
   const unsigned historico_n=Policy::history_count,fatia_atual=constants.slice%historico_n,fatia_anterior=(fatia_atual+historico_n-1u)%historico_n;
-  struct K{unsigned w,h,fatia;float alfa;unsigned valido;float ref;unsigned b,d;float profRel,profAbs;unsigned fatiaAnterior;float alfaMov,alfaLuz,limite,alfaLuzMov;}
+  struct K{unsigned w,h,fatia;float alfa;unsigned valido;float ref;unsigned b,d;float profRel,profAbs;unsigned fatiaAnterior;float alfaMov,alfaLuz,limite,alfaLuzMov;
+   float alfaRosto,aspecto;unsigned nRostos;float rostos[12];unsigned detRampa;float detParado;}
    k{width,height,fatia_atual,alfa,est_valido?1u:0u,nrreproject::value(nrreproject::controls,nrreproject::StabilizeStill),
      segurar?2u:(sem_limite_parado&&movimento)?3u:sem_limite_parado?1u:0u,0u,
      constants.depth_relative,constants.depth_absolute,fatia_anterior,post_alfa_mov,
@@ -931,9 +1028,20 @@ struct Backend::Impl {
      std::max(nrreproject::value(nrreproject::controls,nrreproject::GainLimit),0.f),est_luz_mov};
   if(sem_limite_parado&&!segurar)std::memcpy(&k.d,&post_alargar,sizeof k.d);
   if(est_cross>0.f&&!segurar){k.alfa=k.alfaMov=k.alfaLuz=k.alfaLuzMov=est_cross;}
+
+  k.alfaRosto=est_rosto;k.aspecto=comp_h?float(comp_w)/float(comp_h):1.f;k.nRostos=0u;
+  k.detRampa=(post_det_rampa&&est_rosto>0.f&&!segurar)?1u:0u;k.detParado=post_det_parado;
+  if(post_estab_luz>0.f&&!segurar&&sem_limite_parado)k.alfaLuz=post_estab_luz;
+  if(post_estab_rosto&&est_rosto>0.f&&!segurar&&comp_w&&comp_h){
+   auto poe=[&](){const auto& q=nrrj::quadro_render();if(k.nRostos<4u&&q.on>0&&q.lado>1.f){float* r=k.rostos+3u*k.nRostos++;
+    r[0]=q.cx/float(comp_w);r[1]=q.cy/float(comp_h);r[2]=.5f*q.lado/float(comp_h);}};
+   if(nrrj::ativo())poe();
+   if(nrrj::npc2.load(std::memory_order_relaxed))for(int kn=1;kn<=nrrj::npc_n();++kn){nrrj::Inst i1(kn);if(nrrj::ativo())poe();}
+  }
   ID3D12DescriptorHeap* heaps[]{est_heap.Get()};c->SetDescriptorHeaps(1,heaps);
   c->SetComputeRootSignature(est_root.Get());c->SetPipelineState(est_pso.Get());
-  c->SetComputeRoot32BitConstants(0,15,&k,0);
+  static_assert(sizeof(K)==32*4,"estabilizar: 32 constantes");
+  c->SetComputeRoot32BitConstants(0,32,&k,0);
   c->SetComputeRootDescriptorTable(1,gpu(est_heap.Get(),6*cur));c->SetComputeRootDescriptorTable(2,gpu(est_heap.Get(),6*cur+5));
   c->Dispatch((width+7)/8,(height+7)/8,1);
   if(seguinte){
@@ -1052,7 +1160,7 @@ struct Backend::Impl {
   const unsigned historico_n=Policy::history_count,fatia_atual=constants.slice%historico_n,fatia_anterior=(fatia_atual+historico_n-1u)%historico_n;
   struct K{unsigned w,h,fatia,fatiaAnterior,valido,raio,tom,passo;float alfa,alfaMov,delta,expo,profRel,profAbs,refMov,limite,r0,r1,r2,r3;}
    k{width,height,fatia_atual,fatia_anterior,valido?1u:0u,lg_raio,tom&1u,lg_passo,lg_alfa,lg_mov,lg_delta,expo,
-     constants.depth_relative,constants.depth_absolute,lg_ref,lg_limite,0.f,0.f,0.f,0.f};
+     constants.depth_relative,constants.depth_absolute,lg_ref,lg_limite,lg_teto,lg_piso,lg_cor,0.f};
   static_assert(sizeof(K)==80);
   ID3D12DescriptorHeap* heaps[]{lg_heap.Get()};c->SetDescriptorHeaps(1,heaps);
   c->SetComputeRootSignature(lg_root.Get());c->SetPipelineState(lg_pso.Get());
@@ -1133,50 +1241,10 @@ struct Backend::Impl {
  std::uint64_t realocacoes{};
 
  void log_realocacao(unsigned para_w,unsigned para_h){
-  ++realocacoes;
-  if(realocacoes>3&&(realocacoes&255)!=0)return;
-  {
-   if(ready)nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu de=%ux%u para=%ux%u total=%llu reason=capture_realocado\n",
-                         GetCurrentProcessId(),policy.frame,width,height,para_w,para_h,realocacoes);
-   else nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu de=incompleta para=%ux%u total=%llu reason=capture_realocado\n",
-                     GetCurrentProcessId(),policy.frame,para_w,para_h,realocacoes);
-  }
-
+(void)para_w;(void)para_h;
 }
  void log_constants(const Constants& k){
-  if(captures++%256u)return;
-  {
-   nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu CONST jitter_fsr=%.5g,%.5g valido=%u compensar=%g scale=%.8g,%.8g jitter=%.8g,%.8g inverse=%.8g,%.8g"
-                  " clamp=%.4g reference=%.6g divergence=%.4g depth_rel=%.4g color=%.4g rate=%.4g"
-                  " deform=%.4g detail=%.4g occlusion=%.4g bilateral=%.4g tau=%.4g ridge=%.4g celula=%u retencao=%u guia=%u ajustes=%llu"
-                  " limite_ganho=%.2g protecao_suave=%u ganho_limitado=%llu"
-                  " protecao_luz=%.2g protecao_detalhe=%.3g suavizar_luz=%.2g luz_eps=%.3g luz_delta=%.3g luz_raio=%u luz_quadros=%llu luz_filtrados=%llu"
-                  " halo=%u halo_bits=0x%08x halo_quadros=%llu leitura_prof=%u piso_razao=%.6g tardia=%u"
-                  " halo_rede=%u halo_rede_pct=%.4g rede_pct=%.4g luz_prof=%u luz_prof_quadros=%llu"
-                  " halo_exc=%.2g halo_exc_raio=%u halo_exc_quadros=%llu borda=%u borda_raio=%u borda_quadros=%llu"
-                  " corte=%u corte_raio_warp=%u corte_raio=%u corte_quadros=%llu idade_media=%.2f\n",
-                GetCurrentProcessId(),policy.frame,double(nrreproject::jitter_atual_x.load()),double(nrreproject::jitter_atual_y.load()),
-                nrreproject::jitter_valido.load()?1u:0u,double(nrreproject::value(nrreproject::controls,nrreproject::JitterComp)),
-                k.scale_x,k.scale_y,k.jitter_x,k.jitter_y,
-                k.inverse_x,k.inverse_y,k.clamp_strength,k.motion_reference,k.motion_divergence,
-                k.depth_relative,k.color_threshold,k.confidence_rate,k.deform_tolerance,
-                k.detail_motion,k.occlusion_tolerance,bil_apply?bilateral.forca:0.f,bilateral.tau,bilateral.ridge,bilateral.celula,bilateral.retencao,bilateral.guia,
-                static_cast<unsigned long long>(bil_fits),double(nrreproject::value(nrreproject::controls,nrreproject::GainLimit)),
-                nrreproject::value(nrreproject::controls,nrreproject::SoftGuard)>.5f?1u:0u,static_cast<unsigned long long>(ganho_limitados),
-                double(nrreproject::value(nrreproject::controls,nrreproject::LightGuard)),double(nrreproject::value(nrreproject::controls,nrreproject::DetailGuard)),
-                double(nrreproject::value(nrreproject::controls,nrreproject::LightSmooth)),double(luz_eps),double(luz_delta),luz_raio,
-                static_cast<unsigned long long>(luz_quadros),static_cast<unsigned long long>(luz_filtrados),
-                unsigned(nrreproject::value(nrreproject::controls,nrreproject::HaloReduce)+.5f),halo_ultimo,static_cast<unsigned long long>(halo_quadros),
-                (k.flags&1024u)?1u:0u,double(nrreproject::value(nrreproject::controls,nrreproject::RatioFloor)),
-                unsigned(nrreproject::value(nrreproject::controls,nrreproject::LateCompose)+.5f),
-                unsigned(nrreproject::value(nrreproject::controls,nrreproject::HaloNetScale)+.5f),halo_rede_pct,nrprescale::efetivo.load(),
-                unsigned(nrreproject::value(nrreproject::controls,nrreproject::LightGuideDepth)+.5f),static_cast<unsigned long long>(luz_prof_quadros),
-                double(nrreproject::value(nrreproject::controls,nrreproject::HaloExcess)),halo_exc_raio,static_cast<unsigned long long>(halo_exc_quadros),
-                (k.flags&2048u)?1u:0u,(k.pad>>1)&127u,static_cast<unsigned long long>(borda_quadros),
-                unsigned(nrreproject::value(nrreproject::controls,nrreproject::HaloCutMoving)+.5f),corte_raio_warp,corte_raio_comp,
-                static_cast<unsigned long long>(corte_quadros),double(idade_media));
-  }
-
+(void)k;
 }
 
  DespejoPendente reservar_despejo(ID3D12GraphicsCommandList* c){
@@ -1265,115 +1333,10 @@ struct Backend::Impl {
 }
 
  bool escrever_bmp(const DespejoPendente& d){
-  void* mapeado{};
-
-  const D3D12_RANGE leitura{0,d.bytes};
-  if(!d.leitura||FAILED(d.leitura->Map(0,&leitura,&mapeado))||!mapeado)return false;
-  const unsigned pixels=d.largura*d.altura;
-  std::vector<unsigned char> imagem(std::size_t(pixels)*4);
-  std::vector<float> profundidades;
-  float minimo=std::numeric_limits<float>::infinity(),maximo=-std::numeric_limits<float>::infinity();
-  unsigned finitos=0;
-  if(d.profundidade){
-   profundidades.resize(pixels);
-   for(unsigned y=0;y<d.altura;++y){
-
-    std::memcpy(profundidades.data()+std::size_t(y)*d.largura,
-                static_cast<const char*>(mapeado)+std::size_t(y)*d.passo,std::size_t(d.largura)*sizeof(float));
-   }
-   for(const float z:profundidades)if(std::isfinite(z)){minimo=std::min(minimo,z);maximo=std::max(maximo,z);++finitos;}
-  }
-  for(unsigned y=0;y<d.altura;++y){
-   const unsigned short* linha=reinterpret_cast<const unsigned short*>(static_cast<const char*>(mapeado)+std::size_t(y)*d.passo);
-   for(unsigned x=0;x<d.largura;++x){
-    unsigned char* saida=imagem.data()+(std::size_t(y)*d.largura+x)*4;
-    if(d.profundidade) {
-     const float z=profundidades[std::size_t(y)*d.largura+x];
-
-     const double span=double(maximo)-double(minimo);
-     const unsigned char v=std::isfinite(z)&&span>0
-       ?static_cast<unsigned char>(std::clamp((double(z)-minimo)/span,0.,1.)*255.+.5):0;
-     saida[0]=std::isfinite(z)?v:255;saida[1]=v;saida[2]=std::isfinite(z)?v:255;
-    } else if(d.confianca) {
-
-     const float c=meio_para_float(linha[x*4+3]);
-     const unsigned char v=(!std::isfinite(c)||c<=0)?0:(c>=1.f?255:(unsigned char)(c*255.f+.5f));
-     saida[0]=v;saida[1]=v;saida[2]=v;
-    } else if(d.movimento) {
-
-     saida[0]=0;
-     saida[1]=amostra_movimento(linha[x*2+1],float(d.altura));
-     saida[2]=amostra_movimento(linha[x*2+0],float(d.largura));
-    } else {
-     saida[0]=amostra(linha[x*4+2],d.ganho);
-     saida[1]=amostra(linha[x*4+1],d.ganho);
-     saida[2]=amostra(linha[x*4+0],d.ganho);
-    }
-    saida[3]=255;
-   }
-  }
-  bool raw_ok=true;
-  if(d.raw){
-   char nome_raw[80];NRLOGF(nome_raw,sizeof nome_raw,d.antes_fill?"nr_antes_fill_%lu_%u.rgba16f":"nr_residuo_%lu_%u.rgba16f",GetCurrentProcessId(),d.indice);
-   FILE* raw{};raw_ok=fopen_s(&raw,nome_raw,"wb")==0&&raw;
-   if(raw){for(unsigned y=0;y<d.altura;++y){const auto* row=static_cast<const char*>(mapeado)+std::size_t(y)*d.passo;
-     if(std::fwrite(row,1,std::size_t(d.largura)*8,raw)!=std::size_t(d.largura)*8)raw_ok=false;}
-    if(std::fclose(raw)!=0)raw_ok=false;}
-  }
-  const D3D12_RANGE nada{0,0};d.leitura->Unmap(0,&nada);
-  unsigned char cabecalho[54]{};
-  const unsigned dados=std::size_t(pixels)*4>0xffffffffull?0u:unsigned(std::size_t(pixels)*4);
-  const unsigned tamanho=54u+dados;
-  cabecalho[0]='B';cabecalho[1]='M';
-  std::memcpy(cabecalho+2,&tamanho,4);
-  const unsigned offset=54;std::memcpy(cabecalho+10,&offset,4);
-  const unsigned info=40;std::memcpy(cabecalho+14,&info,4);
-  const int largura=int(d.largura),altura=-int(d.altura);
-  std::memcpy(cabecalho+18,&largura,4);std::memcpy(cabecalho+22,&altura,4);
-  const unsigned short planos=1,bits=32;
-  std::memcpy(cabecalho+26,&planos,2);std::memcpy(cabecalho+28,&bits,2);
-  std::memcpy(cabecalho+34,&dados,4);
-  char nome[64];
-  NRLOGF(nome,sizeof nome,d.antes_fill?"nr_antes_fill_%lu_%u.bmp":d.profundidade?"nr_profundidade_%lu_%u.bmp":(d.confianca?"nr_confianca_%lu_%u.bmp":(d.movimento?"nr_movimento_%lu_%u.bmp":(d.fonte?"nr_fonte_%lu_%u.bmp":"nr_residuo_%lu_%u.bmp"))),GetCurrentProcessId(),d.indice);
-  FILE* f{};
-  bool bmp_ok=fopen_s(&f,nome,"wb")==0&&f;
-  if(f){
-   if(std::fwrite(cabecalho,1,sizeof cabecalho,f)!=sizeof cabecalho)bmp_ok=false;
-   if(std::fwrite(imagem.data(),1,imagem.size(),f)!=imagem.size())bmp_ok=false;
-   if(std::fclose(f)!=0)bmp_ok=false;
-  }
-  if(d.profundidade){
-   char raw[64],meta[64];
-   NRLOGF(raw,sizeof raw,"nr_profundidade_%lu_%u.f32",GetCurrentProcessId(),d.indice);
-   NRLOGF(meta,sizeof meta,"nr_profundidade_%lu_%u.json",GetCurrentProcessId(),d.indice);
-   if(fopen_s(&f,raw,"wb")==0&&f){std::fwrite(profundidades.data(),sizeof(float),profundidades.size(),f);std::fclose(f);}
-   if(fopen_s(&f,meta,"wb")==0&&f){
-    std::fprintf(f,"{\"format\":\"R32_FLOAT_LE\",\"origin\":\"top-left\",\"width\":%u,\"height\":%u,"
-                   "\"pid\":%lu,\"index\":%u,\"frame\":%llu,\"slice\":%u,\"age\":%u,"
-                   "\"depth_relative\":%.9g,\"depth_absolute\":%.9g,\"finite_count\":%u,\"min\":",
-                   d.largura,d.altura,GetCurrentProcessId(),d.indice,d.quadro,d.fatia,d.idade,
-                   d.depth_relative,d.depth_absolute,finitos);
-    if(finitos)std::fprintf(f,"%.9g,\"max\":%.9g",minimo,maximo);
-    else std::fprintf(f,"null,\"max\":null");
-    std::fprintf(f,"}\n");std::fclose(f);
-   }
-  }
-
-  nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu DUMP indice=%u %ux%u ganho=%.6g arquivo=%s\n",
-                GetCurrentProcessId(),policy.frame,d.indice,d.largura,d.altura,d.ganho,nome);
-  return raw_ok&&bmp_ok;
-
+(void)d;return false;
 }
  void escrever_par(const DespejoPendente& d){
-  char meta[80];NRLOGF(meta,sizeof meta,"nr_fill_pair_%lu_%u.json",GetCurrentProcessId(),d.indice);
-  FILE* f{};if(fopen_s(&f,meta,"wb")!=0||!f)return;
-  const int count=std::fprintf(f,"{\"format\":\"RGBA16_FLOAT_LE\",\"origin\":\"top-left\",\"width\":%u,\"height\":%u,"
-    "\"pid\":%lu,\"index\":%u,\"frame\":%llu,\"slice\":%u,\"age\":%u,\"point_motion\":%s,\"fill_active\":%s,\"fill_threshold\":%.9g,"
-    "\"before\":\"nr_antes_fill_%lu_%u.rgba16f\",\"after\":\"nr_residuo_%lu_%u.rgba16f\"}\n",
-    d.largura,d.altura,GetCurrentProcessId(),d.indice,d.quadro,d.fatia,d.idade,d.pontual?"true":"false",d.fill_ativo?"true":"false",d.fill_limiar,
-    GetCurrentProcessId(),d.indice,GetCurrentProcessId(),d.indice);
-  const int closed=std::fclose(f);if(count<0||closed!=0)DeleteFileA(meta);
-
+(void)d;
 }
 
  void log_post(int job,const char* reason,const D3D12_RESOURCE_DESC* od){{
@@ -1390,7 +1353,7 @@ void Backend::invalidate() noexcept {if(p_){p_->policy.invalidate();p_->est_vali
 
 void Backend::invalidate_suave() noexcept {if(p_){p_->policy.invalidate();p_->perder_post("post_lost_invalidate_suave");for(auto& a:p_->late.armed)a=0;}}
 
-void Backend::reset() noexcept {nrinijogo::Lote lote;p_.reset(new(std::nothrow) Impl);}
+void Backend::reset() noexcept {nrinijogo::Lote lote;p_.reset(new(std::nothrow) Impl);nrrj::epoca_backend.fetch_add(1,std::memory_order_acq_rel);}
 void Backend::accepted(int job) noexcept {if(p_){p_->policy.accepted(job);rj_aceito(job);
  if(nrrj::npc2.load(std::memory_order_relaxed))for(int kn=1;kn<=nrrj::npc_n();++kn){nrrj::Inst i1(kn);rj_aceito(job);}
 }}
@@ -1577,7 +1540,13 @@ bool Backend::begin(const NrCaptureRecord& r){
   }}
  if(k.slice<Policy::history_count){p.jitter_fatia[k.slice*2]=nrreproject::jitter_atual_x.load();p.jitter_fatia[k.slice*2+1]=nrreproject::jitter_atual_y.load();p.jitter_ok[k.slice]=nrreproject::jitter_valido.load();}
  p.log_constants(k);
+
+ {static const bool nn=[]{double v=0;return ler_ini(L"NeuralReprojectNearNorm",v)&&v==1.;}();static float near_ref=0.f;static unsigned long long trocas=0;static float near_ult=0.f;
+  const float nq=nrreproject::near_atual.load(std::memory_order_relaxed);
+  if(nn&&nq>0.f){if(!(near_ref>0.f))near_ref=nq;const float f=near_ref/nq;if(f!=1.f&&std::isfinite(f)&&f>.01f&&f<100.f)std::memcpy(&k.age,&f,4);
+   if(nq!=near_ult){++trocas;if(trocas<=8||(trocas&255u)==0)nrlogfila::linha(L"nr_reproject.log","pid=%lu NEAR_NORM near=%.5f ref=%.5f fator=%.4f trocas=%llu\n",GetCurrentProcessId(),double(nq),double(near_ref),double(f),trocas);near_ult=nq;}}}
  p.bind(c,p.temporal_heap.Get(),p.temporal_root.Get(),p.capture_pso.Get(),32,&k,8);c->Dispatch((p.width+7)/8,(p.height+7)/8,1);
+ k.age=0;
  for(auto& h:p.history)transition(c,h.Get(),write_state,read_state);p.histories_read=true;
 
  rj_recorte(r.command_list,color,unsigned(cor_vista),post);
@@ -1707,12 +1676,14 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
     nrlogfila::linha(L"nr_reproject.log","pid=%lu FG_TROCA fg_ativo=%d NeuralFgTrocaLuz=%.3f NeuralFgTrocaLuzSempre=%d NeuralPostLuzMov=%.3f NeuralFgCrossfade=%d estabilizador_post=%.3f mov=%.3f quadro=%llu\n",
      GetCurrentProcessId(),int(fg),p.fg_troca_luz,int(p.fg_troca_sempre),p.post_luz_mov,int(p.fg_cross),p.post_estab,p.post_alfa_mov,static_cast<unsigned long long>(p.policy.frame));}}}
 
-  p.est_cross=0.f;
-  if(p.fg_cross&&(p.fg_cross_sempre||nrreproject::fg_ativo())){
+  p.est_cross=0.f;p.est_rosto=0.f;
+  const bool cross_on=p.fg_cross&&(p.fg_cross_sempre||nrreproject::fg_ativo());
+  if(cross_on||((p.post_estab_rosto||p.post_det_rampa)&&alfa>0.f&&alfa<1.f&&sem_limite)){
    if(job!=p.cross_job){if(p.cross_job>0&&p.cross_j>0)p.cross_P=p.cross_P>0.f?p.cross_P+.125f*(float(p.cross_j)-p.cross_P):float(p.cross_j);p.cross_job=job;p.cross_j=0;}
    const float P=std::clamp(p.cross_P>0.f?p.cross_P:2.f,1.f,8.f);
    const float a=1.f/(std::max)(1.f,P-float(p.cross_j));++p.cross_j;
-   p.est_cross=std::clamp(a,.05f,.999f);alfa=p.est_cross;sem_limite=true;
+   if(cross_on){p.est_cross=std::clamp(a,.05f,.999f);alfa=p.est_cross;sem_limite=true;}
+   else p.est_rosto=std::clamp(a,.05f,.999f);
   }
   p.cadeia_fonte=0u;
   if(alfa>0.f&&alfa<1.f&&p.est_pso)p.estabilizar(c,alfa,sem_limite,false,p.est_cross>0.f||(sem_limite&&p.post_filtro_mov),p.cadeia_segue(exposure));else p.est_valido=false;}
@@ -1733,6 +1704,7 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
   ID3D12DescriptorHeap* const ph=p.halo_post(c,exposure,tone)?p.hpost.post_heap.Get():p.q_post(c,exposure,tone)?p.qpost.post_heap.Get():p.post_heap.Get();
   p.uav(ph,2,dst,dd.Format);
   transition(c,dst,D3D12_RESOURCE_STATES(destination_state),write_state);
+  p.tl_medir_jogo(c,dst,dd.Format,p.comp_w,p.comp_h);
   ComposeConstants k=p.constantes_compose(teto_unico(tone)&~6u,p.comp_w,p.comp_h,exposure);
   if(p.q_post_ganho!=1.f)std::memcpy(&k.p2,&p.q_post_ganho,sizeof k.p2);
 
@@ -1742,6 +1714,8 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
 
   if(!segurar)rj_compor(c,dst,unsigned(dd.Format),job,age,exposure,tone);
   if(!segurar&&nrrj::npc2.load(std::memory_order_relaxed))for(int kn=1;kn<=nrrj::npc_n();++kn){nrrj::Inst i1(kn);rj_compor(c,dst,unsigned(dd.Format),job,age,exposure,tone);}
+  rj_camada(c,dst,exposure,tone);
+  p.tl_aplicar(c,dst);
   transition(c,dst,write_state,D3D12_RESOURCE_STATES(destination_state));
   nrcusto::marca(c,nrcusto::ComposeFim);
   p.composed_frame=true;++p.composed;nrreproject::idade_composta.store(age);
@@ -1902,68 +1876,10 @@ unsigned final_maximo_(){const unsigned t=final_teto_sessao.load(std::memory_ord
 std::atomic<unsigned long long> escrita_bytes{0};std::atomic<long long> escrita_t0{0};std::atomic<int> escritores{0},escritores_max{0};
 void escrever_final_(Final f,unsigned long long& bytes);
 void escrever_final(Final f){
-
- {const int a=escritores.fetch_add(1)+1;int m=escritores_max.load();while(a>m&&!escritores_max.compare_exchange_weak(m,a)){}}
- LARGE_INTEGER t{};QueryPerformanceCounter(&t);long long zero=0;escrita_t0.compare_exchange_strong(zero,t.QuadPart);
- unsigned long long bytes=0;escrever_final_(std::move(f),bytes);escritores.fetch_sub(1);
+(void)f;
 }
 void escrever_final_(Final f,unsigned long long& bytes){
- static constexpr const char* lados[lados_final]{"entrada","saida","base","movimento","profundidade","exposicao"};
- bool gpu_pronta=true;
- if(f.seguro){
-
-  gpu_pronta=false;
-  if(f.marca)for(unsigned t=0;t<5000u;++t){if(*f.marca==f.valor){gpu_pronta=true;break;}Sleep(2);}
-  if(!gpu_pronta){
-   char nome[96];NRLOGF(nome,sizeof nome,"nr_final_%lu_%u_sem_gpu.json",GetCurrentProcessId(),f.indice);FILE* arq{};
-   if(fopen_s(&arq,nome,"w")==0&&arq){std::fprintf(arq,"{\"index\":%u,\"frame\":%llu,\"gpu_confirmou\":false,\"marcador\":%d}\n",f.indice,
-    static_cast<unsigned long long>(f.quadro),f.marca?1:0);std::fclose(arq);}
-   std::lock_guard<std::mutex> l(final_cemiterio_mutex);final_cemiterio.push_back(std::move(f.b));return;
-  }
- }
-
- float exposicao=-1.f;
- if(f.exato&&f.b.leitura[5]&&(f.formato[5]==unsigned(DXGI_FORMAT_R32_FLOAT)||f.formato[5]==unsigned(DXGI_FORMAT_R32_TYPELESS))){
-  void* dados{};D3D12_RANGE faixa{0,4};
-  if(SUCCEEDED(f.b.leitura[5]->Map(0,&faixa,&dados))&&dados){std::memcpy(&exposicao,dados,4);D3D12_RANGE nada{0,0};f.b.leitura[5]->Unmap(0,&nada);}
-  if(!std::isfinite(exposicao))exposicao=-1.f;
- }
- for(unsigned k=0;k<lados_final;++k){
-  if(!f.b.leitura[k])continue;
-  void* dados{};D3D12_RANGE faixa{0,SIZE_T(f.fp[k].Footprint.RowPitch)*f.altura[k]};
-
-  if((k>=3||f.seguro)&&faixa.End>SIZE_T(f.b.tamanho[k]))faixa.End=SIZE_T(f.b.tamanho[k]);
-  if(FAILED(f.b.leitura[k]->Map(0,&faixa,&dados))||!dados)continue;
-  char nome[96];NRLOGF(nome,sizeof nome,"nr_final_%lu_%u_%s.raw",GetCurrentProcessId(),f.indice,lados[k]);
-  FILE* arq{};if(fopen_s(&arq,nome,"wb")==0&&arq){bytes+=std::fwrite(dados,1,size_t(faixa.End),arq);std::fclose(arq);}
-  D3D12_RANGE nada{0,0};f.b.leitura[k]->Unmap(0,&nada);
-  NRLOGF(nome,sizeof nome,"nr_final_%lu_%u_%s.json",GetCurrentProcessId(),f.indice,lados[k]);
-  if(fopen_s(&arq,nome,"w")==0&&arq){
-   std::fprintf(arq,"{\"format\":%u,\"width\":%u,\"height\":%u,\"row_pitch\":%u,\"mode\":\"%s\",\"frame\":%llu,\"index\":%u,\"age\":%d",
-    f.formato[k],unsigned(f.fp[k].Footprint.Width),f.altura[k],unsigned(f.fp[k].Footprint.RowPitch),f.modo==2?"sem_nr":"assincrono",
-    static_cast<unsigned long long>(f.quadro),f.indice,f.idade);
-   if(f.exato)std::fprintf(arq,",\"jitter\":[%.9g,%.9g],\"mv_scale\":[%.9g,%.9g],\"render\":[%u,%u],\"output\":[%u,%u],\"exposure\":%.9g,\"qpc_ms\":%.4f",
-    double(f.extras.jitter_x),double(f.extras.jitter_y),double(f.extras.mv_x),double(f.extras.mv_y),f.extras.render_w,f.extras.render_h,
-    f.extras.output_w,f.extras.output_h,double(exposicao),f.qpc_ms);
-
-   if(f.extras.valido)std::fprintf(arq,",\"camera\":{\"near\":%.9g,\"far\":%.9g,\"fov_vertical\":%.9g}",double(f.extras.camera_near),double(f.extras.camera_far),double(f.extras.camera_fov));
-   if(f.extras.valido&&f.extras.rj_on>=0)std::fprintf(arq,",\"rosto\":{\"on\":%d,\"nivel\":%.3f,\"ganho\":%.3f,\"cabeca\":[%.1f,%.1f,%.1f],\"recorte\":[%d,%d,%d],\"composto\":%d,\"job\":%d,\"idade\":%d}",
-    f.extras.rj_on,double(f.extras.rj_nivel),double(f.extras.rj_ganho),double(f.extras.rj_cx),double(f.extras.rj_cy),double(f.extras.rj_lado),f.extras.rj_rx,f.extras.rj_ry,f.extras.rj_rl,f.extras.rj_composto,f.extras.rj_job,f.extras.rj_idade);
-   for(int kn=0;kn<7;++kn)if(f.extras.valido&&f.extras.rjn_on[kn]>=0)std::fprintf(arq,",\"rosto%d\":{\"on\":%d,\"nivel\":%.3f,\"ganho\":%.3f,\"cabeca\":[%.1f,%.1f,%.1f],\"recorte\":[%d,%d,%d],\"composto\":%d,\"job\":%d}",
-    kn+2,f.extras.rjn_on[kn],double(f.extras.rjn_nivel[kn]),double(f.extras.rjn_ganho[kn]),double(f.extras.rjn_cx[kn]),double(f.extras.rjn_cy[kn]),double(f.extras.rjn_lado[kn]),f.extras.rjn_rx[kn],f.extras.rjn_ry[kn],f.extras.rjn_rl[kn],f.extras.rjn_composto[kn],f.extras.rjn_job[kn]);
-   std::fprintf(arq,"}\n");std::fclose(arq);}
- }
- escrita_bytes.fetch_add(bytes);const unsigned g=final_gravados.fetch_add(1)+1;
-
- const unsigned alvo=(std::max)(1u,final_pedido.load());
- if(g%24u==0u||g==alvo){
-  static std::atomic<unsigned> linhas{0};
-  if(linhas.fetch_add(1)<200u){LARGE_INTEGER t{},q{};QueryPerformanceCounter(&t);QueryPerformanceFrequency(&q);const long long t0=escrita_t0.load();
-   const double ms=q.QuadPart&&t0?double(t.QuadPart-t0)*1000.0/double(q.QuadPart):0.;
-   FILE* l{};if(fopen_s(&l,"nr_aviso.log","a")==0&&l){std::fprintf(l,"pid=%lu tick=%llu F9_ESCRITA quadros=%u pedido=%u MB=%.1f ms=%.0f escritores_max=%d\n",GetCurrentProcessId(),
-    GetTickCount64(),g,alvo,double(escrita_bytes.load())/(1024.*1024.),ms,escritores_max.load());std::fclose(l);}}
-  if(g==alvo){escrita_t0.store(0);escrita_bytes.store(0);escritores_max.store(0);}
- }
+(void)f;(void)bytes;
 }
 }
 
@@ -1976,8 +1892,7 @@ bool reserva_gravando{};
 std::atomic<unsigned long long> reserva_aloc_chamadora{0},reserva_aloc_fundo{0},reserva_lancamentos{0},reserva_prontas{0},reserva_descartadas{0};
 unsigned reserva_modo_efetivo(){return reserva_falhas.load(std::memory_order_relaxed)>=3u?0u:final_reserva_modo();}
 void log_reserva(const char* t){
- static std::atomic<unsigned> n{0};if(n.fetch_add(1)>=64u)return;
- FILE* f{};if(fopen_s(&f,"nr_aviso.log","a")==0&&f){std::fprintf(f,"pid=%lu tick=%llu F9_RESERVA %s\n",GetCurrentProcessId(),GetTickCount64(),t);std::fclose(f);}
+(void)t;
 }
 
 Buffers alocar_lote(ID3D12Device* dev,const UINT64* total,const bool* lado,DWORD chamadora,UINT64& bytes){

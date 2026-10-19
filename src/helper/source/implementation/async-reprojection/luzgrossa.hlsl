@@ -3,7 +3,7 @@ cbuffer K : register(b0) {
     uint valido, raio, tonemap, passo;
     float alfa, alfaMov, delta, expo;
     float profRel, profAbs, refMov, limite;
-    float reservado0, reservado1, reservado2, reservado3;
+    float teto, piso, reservado2, reservado3;
 };
 Texture2D<float4> atual : register(t0);
 Texture2D<float4> anterior : register(t1);
@@ -28,6 +28,7 @@ void LuzGrossa(uint3 id : SV_DispatchThreadID) {
     const float4 sem = float4(0.0, 0.0, 0.0, -1.0);
     if (!all(isfinite(d0))) { saida[id.xy] = d0; estado[id.xy] = sem; return; }
     float yb = 0.0, ym = 0.0, n = 0.0;
+    float3 cb = 0.0, cm = 0.0;
     const int r = int(raio), st = int(max(passo, 1u));
     for (int dy = -r; dy <= r; ++dy)
     for (int dx = -r; dx <= r; ++dx) {
@@ -36,8 +37,9 @@ void LuzGrossa(uint3 id : SV_DispatchThreadID) {
         float3 dq = atual.Load(int3(q, 0)).rgb;
         if (!all(isfinite(dq))) dq = float3(0.0, 0.0, 0.0);
         yb += dot(bq, LUMA); ym += max(dot(bq + dq, LUMA), 0.0); n += 1.0;
+        cb += bq; cm += max(bq + dq, 0.0);
     }
-    yb /= n; ym /= n;
+    yb /= n; ym /= n; cb /= n; cm /= n;
     if (!(yb > 1e-3 && ym > 1e-3)) { saida[id.xy] = d0; estado[id.xy] = sem; return; }
     const float g = log2(ym / yb), lb = log2(yb);
     float a = 1.0, gp = g;
@@ -71,10 +73,19 @@ void LuzGrossa(uint3 id : SV_DispatchThreadID) {
         }
     }
     const float gs = lerp(gp, g, a);
-    const float corr = clamp(gs - g, -limite, limite);
+
+    float alvo = teto > 0.0 ? min(gs, teto) : gs;
+    if (piso > 0.0) alvo = max(alvo, -piso);
+    const float corr = clamp(alvo - g, -limite, limite);
     const float3 bc = base_em(int2(id.xy));
     const float3 m = bc + d0.rgb;
-    const float3 d2 = max(m * exp2(corr), 0.0) - bc;
+    float3 k3 = exp2(corr).xxx;
+
+    if (reservado2 > 0.0 && piso > 0.0 && teto > 0.0 && all(cb > 1e-3) && all(cm > 1e-3)) {
+        const float3 gc = log2(cm / cb);
+        k3 = exp2(clamp(clamp(gc, -piso, teto) - gc, -limite, limite));
+    }
+    const float3 d2 = max(m * k3, 0.0) - bc;
     saida[id.xy] = all(isfinite(d2)) ? float4(d2, d0.a) : d0;
     estado[id.xy] = isfinite(gs) ? float4(g + corr, lb, 0.0, 1.0) : sem;
 }

@@ -102,7 +102,7 @@ inline std::string format_window(const Aggregate& a,unsigned index,bool fallback
 
 inline constexpr char boundary_name[]="_Z21k_pre_block_1h_32_fp89PreParams";
 inline constexpr unsigned window_jobs=64;
-inline bool requested=false;
+inline constexpr bool requested=false;
 
 inline thread_local bool replaced=false;
 
@@ -240,5 +240,5 @@ public:
  }
 };
 inline Recorder recorder;
-inline void configure(const std::wstring& ini,const std::filesystem::path& folder) noexcept {requested=recorder.configure(ini,folder);}
+inline void configure(const std::wstring&,const std::filesystem::path&) noexcept {}
 }

@@ -18,7 +18,7 @@ inline constexpr unsigned char prologo[19]={0x40,0x55,0x53,0x56,0x57,0x41,0x57,0
 struct Estado{std::atomic<int> estado{0};Tuning t{0.f,0.f,false,2u,false};Create original=nullptr;Configure configurar=nullptr;std::atomic<unsigned> criados{0};};
 inline Estado& st(){static Estado e;return e;}
 inline void log(const char* s){
-FILE* f{};if(fopen_s(&f,"nr_fg_pacing.log","a")==0&&f){std::fprintf(f,"pid=%lu tick=%llu %s\n",GetCurrentProcessId(),GetTickCount64(),s);std::fclose(f);}
+(void)s;
 }
 inline std::int32_t gancho(void** context,Header* desc,const void* mem){
  auto& e=st();

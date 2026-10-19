@@ -19,12 +19,20 @@ struct Parametros {
     float k_face=1550.f;
     float pos_x=.30f,pos_y=.40f,sig_x=.20f,sig_y=.17f;
     float liga=.55f,desliga=.35f,aceita=.30f;
+    float liga_forte=0.f;
 
     float liga_gen=.80f;
     int perde_n=15;
     float escala_max=2600.f;
     int liga_n=2,desliga_n=4;
     float corte_ok=.25f;int corte_seg=6;
+
+    int rosto_calibra=0,rosto_manda=0;float cal_alfa=.2f;
+
+    int rosto_ancora=0;float ancora_nota=.75f,ancora_centro=.3f;
+
+    float nota_grande=0.f,nota_grande_px=900.f;
+    float nota_para(float base,double cab4k)const{return nota_grande>0.f&&cab4k>=double(nota_grande_px)?(std::min)(base,nota_grande):base;}
 
     bool corte_multi=false;
 
@@ -297,12 +305,20 @@ public:
     };
     Npc2Slot n2s[npc_det_max];
     std::uint64_t gy_versao=0;unsigned long long g_rosto_n=0;
+    bool cal_tem=false;double cal_x=0,cal_y=0,cal_s=1;unsigned long long cal_n=0,manda_n=0;std::uint64_t rm_versao=0;
+    std::uint64_t anc_versao=0;int anc_miss=0;unsigned long long ancorou_n=0;
+    double anc_t_rosto=-1.0;unsigned long long anc_prof_ignorada=0;
     double g_hist[8][3]{};int g_hist_n=0,g_hist_i=0;
     double n2_t_ant=-1.0;std::uint64_t n2_versao=0;unsigned n2_prox_id=0;
     bool n2c_tem=false;double n2c_est[3]{};int n2c_n=0;float n2c_nota=0;double n2c_vel=0,n2c_prof=0,n2c_visto_t=-1,n2c_t0=0,n2c_tl=0;
 
     double t_corte=-1.0;bool corte_t_pend=false;std::uint64_t adq_versao=0;bool adq_pend=false;double adq_p[3]{};
     double adq_el[8][3]{};int adq_el_n=0;bool adq_job=false,adq_sem=false;int adq_outro_n=0;
+    unsigned long long anc_proprio_n=0;
+    double sz_ult[9]{};unsigned long long sz_n=0;
+    double pend_ult[12]{};unsigned long long pend_n=0;
+
+    double ad_ult[10]{};unsigned long long ad_n=0;
     unsigned long long adquiriu_n=0,promovido_n=0,escala_conf_n=0,adocoes_vetadas=0,giros=0;double ok_ant=1.0;
     int giro_desde=999;unsigned long long giro_rosto_n=0;
     int rea_off=0;bool rea_pend=false;double rea_p[3]{};unsigned long long reancorou_n=0;
@@ -401,7 +417,7 @@ public:
             }
 
             const bool voto_fraco=P.caminha_dela>=2&&(okn<.6||cd_dela_ant);
-            if(P.generico&&mv_g>P.sinal_mov&&!perto_ok&&!modo_rosto){
+            if(P.generico&&P.sinal_n>0&&mv_g>P.sinal_mov&&!perto_ok&&!modo_rosto){
                 if(okn>ok+P.sinal_dif&&!voto_fraco)++sinal_votos;else if(ok>okn+P.sinal_dif)sinal_votos=0;
                 if(sinal_votos>=P.sinal_n){sinal=-sinal;sinal_votos=0;reset_corte();R.sinal=sinal;R.ok=float(ok);R.ok_neg=float(okn);R.motivo_off=1;return R;}
             }
@@ -480,10 +496,13 @@ public:
             pred[0]=est[0]-mvx;pred[1]=est[1]-mvy;pred[2]=est[2];tem_pred=true;
         }
         double cx=0,cy=0,lado=0,salto=0;bool tem_caixa=false;[[maybe_unused]] bool cd_dela=false;
+        double raw[3]{};bool tem_raw=false;
         if(tem_meas){R.cd_dbg[0]=float(mx);R.cd_dbg[1]=float(mytop+.625*mwh);R.cd_dbg[2]=float(1.25*mwh);}
         if(tem_pred){R.cd_dbg[3]=float(pred[0]);R.cd_dbg[4]=float(pred[1]);}R.cd_dbg[6]=float(conf);
         if(tem_meas){
             lado=1.25*mwh;cx=mx;cy=mytop+.5*lado;tem_caixa=true;
+            raw[0]=cx;raw[1]=cy;raw[2]=lado;tem_raw=true;
+            if(P.rosto_calibra&&cal_tem){cx+=cal_x*lado;cy+=cal_y*lado;lado*=cal_s;}
             if((P.caminha_dela>=1)&&cd_tem&&!trk_npc&&tem_pred&&tem_est){
                 const double zm=prox_rosto(g,cx,cy,lado),t=lado/(std::max)(est[2],1.0);
                 cd_dela=zm>=cd_z/double(P.cd_tol)&&zm<=cd_z*double(P.cd_tol)&&t>=.75&&t<=1.0/.75;
@@ -504,6 +523,25 @@ public:
                 pred[2]=(std::min)(pred[2]*e,double((std::min)(g.w,g.h)));}
         }
 
+        if((P.rosto_calibra||P.rosto_manda)&&P.npc2&&!modo_rosto&&tem_meas&&tem_raw&&!corte&&g.rostos&&g.rostos_versao!=rm_versao){
+            rm_versao=g.rostos_versao;
+            const double idade_s=(g.t>=0&&g.rostos_t>=0)?g.t-g.rostos_t:double(g.rostos_idade)/60.0;
+            if(idade_s<=P.rosto_idade_max){
+                const double esc=(std::max)(double(g.esc),1e-3),idade=std::clamp(double(g.rostos_idade),0.0,30.0);double dm=1e30,fcx=0,fcy=0,fl=0;
+                for(int i=0;i<g.n_rostos;++i){const auto& f=g.rostos[i];if(!(f.nota>=P.rosto_nota)||!(f.h>0.f))continue;
+                    double fx=(f.x+.5*f.w)/esc,fy=(f.y+.5*f.h)/esc;const double fh=f.h/esc;
+                    double vx,vy;mv_em(g,q,fx,fy,vx,vy);fx-=vx*idade;fy-=vy*idade;
+                    const double l=double(P.rosto_cab)*fh,y=fy-double(P.rosto_dy)*fh,r=l/(std::max)(lado,1.0),d=std::hypot(fx-cx,y-cy)/(std::max)(lado,1.0);
+                    if(d<=P.g_rosto_dist&&r>=.4&&r<=2.5&&d<dm){dm=d;fcx=fx;fcy=y;fl=l;}}
+                if(dm<1e29){
+                    if(P.rosto_calibra){const double ox=(fcx-raw[0])/raw[2],oy=(fcy-raw[1])/raw[2],s=fl/raw[2];
+                        if(s>=.4&&s<=3.0&&std::fabs(ox)<=1.5&&std::fabs(oy)<=1.5){
+                            if(!cal_tem){cal_x=ox;cal_y=oy;cal_s=s;cal_tem=true;}
+                            else{const double a=P.cal_alfa;cal_x+=a*(ox-cal_x);cal_y+=a*(oy-cal_y);cal_s+=a*(s-cal_s);}
+                            ++cal_n;}}
+                    if(P.rosto_manda){cx=fcx;cy=fcy;lado=fl;++manda_n;if(tem_pred)salto=std::hypot(cx-pred[0],cy-pred[1])/(std::max)(pred[2],1.0);}}
+            }
+        }
         bool g_rosto=false;
         if(P.npc2&&!modo_rosto&&!tem_meas&&g.rostos&&g.rostos_versao==gy_versao)R.g_motivo=1;
         if(P.npc2&&!modo_rosto&&!tem_meas&&g.rostos&&g.rostos_versao!=gy_versao){
@@ -532,8 +570,16 @@ public:
             if(idade_s<=P.rosto_idade_max){
                 const double esc=(std::max)(double(g.esc),1e-3),idade=std::clamp(double(g.rostos_idade),0.0,30.0),e4=g.esc*(2160.0/(std::max)(1.f,g.saida_h));
                 double bx=0,by=0,bl=0,bp=-1;float bn=0;double bh=0;
-                for(int i=0;i<g.n_rostos;++i){const auto& f=g.rostos[i];if(!(f.nota>=P.rosto_nota)||!(f.h>0.f))continue;
+                if(!on){int im=-1;for(int i=0;i<g.n_rostos;++i)if(g.rostos[i].h>0.f&&(im<0||g.rostos[i].h>g.rostos[im].h))im=i;
+                    unsigned bits=0;double lm=0,nm=0,xm=0,ym=0;if(im>=0){const auto& f=g.rostos[im];nm=f.nota;const double fh=f.h/esc,l=double(P.rosto_cab)*fh;lm=l*e4;xm=(f.x+.5*f.w)/esc;ym=(f.y+.5*f.h)/esc;
+                     if(!(f.nota>=P.nota_para(P.rosto_nota,l*e4)))bits|=1;if(l*e4<P.adq_min)bits|=2;for(int j=0;j<g.n_rostos;++j)if(j!=im&&g.rostos[j].nota>=P.rosto_baixa&&g.rostos[j].h>=P.adq_unico*f.h){bits|=4;break;}
+                     const double yy=ym-double(P.rosto_dy)*fh,pr=prox_rosto(g,xm,yy,l);if(!(pr>0))bits|=8;else if(!corpo_abaixo(g,xm,yy,l,pr))bits|=16;
+                     if(!(f.nota>=P.nota_para(P.adq_nota1,l*e4)&&l*e4>=P.adq_cab1))bits|=32;if(velha||corte||tem_est||tem_meas)bits|=64;}
+                    int na=0;for(int i=0;i<g.n_rostos;++i)if(g.rostos[i].nota>=P.ancora_nota&&std::fabs((g.rostos[i].x+.5*g.rostos[i].w)/esc/(std::max)(double(g.w),1.0)-.5)<=P.ancora_centro)++na;
+                    const double v[10]{double(g.n_rostos),nm,lm,xm,ym,double(bits),double(na),tem_est?1.0:0.0,tem_meas?1.0:0.0,velha?1.0:0.0};for(int z=0;z<10;++z)ad_ult[z]=v[z];++ad_n;}
+                for(int i=0;i<g.n_rostos;++i){const auto& f=g.rostos[i];if(!(f.h>0.f))continue;
                     double fx=(f.x+.5*f.w)/esc,fy=(f.y+.5*f.h)/esc;const double fh=f.h/esc,l=double(P.rosto_cab)*fh;
+                    if(!(f.nota>=P.nota_para(P.rosto_nota,l*e4)))continue;
                     if(l*e4<P.adq_min)continue;
                     double vx,vy;mv_em(g,q,fx,fy,vx,vy);fx-=vx*idade;fy-=vy*idade;const double y=fy-double(P.rosto_dy)*fh;
                     bool unico=true;for(int j=0;j<g.n_rostos&&unico;++j)if(j!=i&&g.rostos[j].nota>=P.rosto_baixa&&g.rostos[j].h>=P.adq_unico*f.h)unico=false;
@@ -546,7 +592,7 @@ public:
                     {const float rz=R.kf_razao/(std::max)(P.adq_esc_vies,1e-3f);escala_rosto=(P.adquire&4)&&rz>=P.adq_esc_min&&rz<=P.adq_esc_max;}
 
                     if((P.adquire&1)&&!tem_est&&!tem_meas&&!corte&&!velha){
-                        const bool forte=bn>=P.adq_nota1&&bl*e4>=P.adq_cab1;
+                        const bool forte=bn>=P.nota_para(P.adq_nota1,bl*e4)&&bl*e4>=P.adq_cab1;
                         const bool confirma=adq_pend&&std::hypot(bx-adq_p[0],by-adq_p[1])<=P.adq_dist*(std::max)(bl,1.0)&&bl/(std::max)(adq_p[2],1.0)>=.67&&bl/(std::max)(adq_p[2],1.0)<=1.5;
                         if(forte||confirma){adq=true;adq_pend=false;cx=bx;cy=by;lado=bl;tem_meas=true;tem_caixa=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;
                             salto=1.0;conf=(std::max)(conf,double(LIGA));adq_sem=true;adq_outro_n=0;adq_job=true;++adquiriu_n;R.adquiriu=true;
@@ -557,7 +603,7 @@ public:
                     const double rzr=double(R.kf_razao)/(std::max)(double(P.adq_esc_vies),1e-3);
                     const bool cega=!(rzr>=P.adq_esc_min&&rzr<=P.adq_esc_max);
                     if((P.reancora&1)&&tem_est&&!on&&rea_off>=P.rea_jobs&&!corte&&!velha&&!adq&&!(tem_meas&&conf>=LIGA)&&(cega||bp>=double(P.rea_prox)*prox_rosto(g,est[0],est[1],est[2]))){
-                        const bool forte=bn>=P.adq_nota1&&bl*e4>=P.adq_cab1;
+                        const bool forte=bn>=P.nota_para(P.adq_nota1,bl*e4)&&bl*e4>=P.adq_cab1;
                         const bool confirma=rea_pend&&std::hypot(bx-rea_p[0],by-rea_p[1])<=P.adq_dist*(std::max)(bl,1.0)&&bl/(std::max)(rea_p[2],1.0)>=.67&&bl/(std::max)(rea_p[2],1.0)<=1.5;
                         if(forte||confirma){adq=true;rea_pend=false;cx=bx;cy=by;lado=bl;tem_meas=true;tem_caixa=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;g_rosto=false;
                             salto=1.0;conf=(std::max)(conf,double(LIGA));adq_sem=true;adq_outro_n=0;adq_job=true;++reancorou_n;R.reancorou=true;
@@ -585,10 +631,45 @@ public:
             const double l=adq_el[0][2],d=std::hypot(adq_el[0][0]-pred[0],adq_el[0][1]-pred[1])/(std::max)(pred[2],1.0),r=l/(std::max)(pred[2],1.0);
             if(d<=P.giro_rosto_dist&&r>=.6&&r<=1.6){cx=adq_el[0][0];cy=adq_el[0][1];lado=l;g_rosto=true;tem_meas=true;tem_caixa=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;
                 salto=d;conf=(std::max)(conf,double(LIGA));++giro_rosto_n;R.giro_rosto=true;}}
+
+        if(P.rosto_ancora>0&&tem_meas&&!g_rosto&&!adq&&anc_t_rosto>=0&&g.t>=0&&g.t-anc_t_rosto<=.5){tem_meas=false;tem_caixa=false;++anc_prof_ignorada;}
+
+        if(P.rosto_ancora>0&&P.npc2&&!modo_rosto&&!trk_npc&&g.rostos&&g.rostos_versao!=anc_versao){
+            anc_versao=g.rostos_versao;
+            const double esc=(std::max)(double(g.esc),1e-3),idade=std::clamp(double(g.rostos_idade),0.0,30.0);
+            const double e4a=g.esc*(2160.0/(std::max)(1.f,g.saida_h));
+            int ib2=-1;double bh=0,ax=0,ay=0,al=0;
+            for(int i=0;i<g.n_rostos;++i){const auto& f=g.rostos[i];if(!(f.h>0.f))continue;
+                double fx=(f.x+.5*f.w)/esc,fy=(f.y+.5*f.h)/esc;const double fh=f.h/esc;
+                if(!(f.nota>=P.nota_para(P.ancora_nota,double(P.rosto_cab)*fh*e4a)))continue;
+                if(std::fabs(fx/(std::max)(double(g.w),1.0)-.5)>P.ancora_centro)continue;
+                double vx,vy;mv_em(g,q,fx,fy,vx,vy);fx-=vx*idade;fy-=vy*idade;
+                if(fh>bh){bh=fh;ib2=i;ax=fx;ay=fy-double(P.rosto_dy)*fh;al=double(P.rosto_cab)*fh;}}
+            if(ib2>=0){
+                const double* ref=tem_caixa?nullptr:(tem_est?est:nullptr);double rc[3]{cx,cy,lado};if(tem_caixa)ref=rc;
+                bool dentro=ref&&std::hypot(ax-ref[0],ay-ref[1])<=.6*(std::max)(ref[2],1.0)&&al>=.4*ref[2]&&al<=2.5*ref[2];
+
+                if(!dentro&&ref&&on){double mp=1e30;
+                    for(int i=0;i<g.n_rostos;++i){const auto& f=g.rostos[i];if(!(f.h>0.f))continue;
+                        if(!(f.nota>=P.nota_para(P.rosto_nota,double(P.rosto_cab)*(f.h/esc)*e4a)))continue;
+                        double fx=(f.x+.5*f.w)/esc,fy=(f.y+.5*f.h)/esc;const double fh=f.h/esc;double vx,vy;mv_em(g,q,fx,fy,vx,vy);fx-=vx*idade;fy-=vy*idade;
+                        const double y=fy-double(P.rosto_dy)*fh,l=double(P.rosto_cab)*fh,d=std::hypot(fx-ref[0],y-ref[1]);
+                        if(d<=.6*(std::max)(ref[2],1.0)&&l>=.4*ref[2]&&l<=2.5*ref[2]&&d<mp){mp=d;ax=fx;ay=y;al=l;}}
+                    if(mp<1e29){dentro=true;++anc_proprio_n;}}
+                anc_miss=dentro?0:anc_miss+1;
+
+                if(dentro){cx=ax;cy=ay;lado=al;tem_meas=true;tem_caixa=true;g_rosto=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;anc_t_rosto=g.t;
+                    salto=tem_pred?std::hypot(cx-pred[0],cy-pred[1])/(std::max)(pred[2],1.0):1.0;conf=(std::max)(conf,double(LIGA));}
+                else if(anc_miss>=P.rosto_ancora||!on){
+                    cx=ax;cy=ay;lado=al;tem_meas=true;tem_caixa=true;g_rosto=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;salto=1.0;
+                    conf=(std::max)(conf,double(LIGA));tem_prev=false;perto_seg=false;anc_miss=0;++ancorou_n;R.reancorou=true;anc_t_rosto=g.t;}
+            }else anc_miss=0;
+        }
         R.cd_dbg[5]=float(salto);R.cd_dbg[7]=tem_meas?1.f:0.f;
         if(tem_meas){
             tem_prev=true;prev_x=mx/q;prev_ytop=mytop/q;prev_wh=mwh/q;perdido=0;
-            if(tem_pred&&salto<.6){const double a=P.alfa_pos,at=P.alfa_tam;
+
+            if(tem_pred&&salto<.6){const double a=P.alfa_pos,at=(P.rosto_ancora>0&&g_rosto)?(std::max)(double(P.alfa_tam),.7):double(P.alfa_tam);
                 est[0]=pred[0]+a*(cx-pred[0]);est[1]=pred[1]+a*(cy-pred[1]);est[2]=pred[2]+at*(lado-pred[2]);}
             else{est[0]=cx;est[1]=cy;est[2]=lado;}
             tem_est=true;
@@ -620,7 +701,7 @@ public:
         else if(on){cont_off=(!tem_meas||conf<P.desliga)?cont_off+1:0;if(cont_off>=(P.persistente?P.desliga_n_pers:P.desliga_n)){on=false;cont_on=0;}}
         else{cont_on=(tem_meas&&conf>=LIGA2&&(!duvida||modo_rosto))?cont_on+1:0;
             const bool volta=P.persistente&&tem_meas&&ib>=0&&ref_idade>=0&&ref_idade<=P.corte_ref_jobs&&no_ref(cands[size_t(ib)],g);
-            if(cont_on>=(volta?1:P.liga_n)){on=true;cont_off=0;}}
+            if(cont_on>=((volta||(P.liga_forte>0.f&&tem_meas&&conf>=P.liga_forte&&!duvida))?1:P.liga_n)){on=true;cont_off=0;}}
         if((g_rosto||adq)&&!bloqueio&&!on){on=true;cont_off=0;}
         if(P.perto||modo_rosto){
             if(perto_expirou&&!tem_meas){on=false;cont_on=0;}
@@ -710,7 +791,8 @@ public:
     }
     void reset_corte(){
         cd_tem=false;
-        tem_prev=false;tem_est=false;seg_corte=P.corte_seg;tem_recorte=false;tem_escala=false;on=false;cont_on=0;lq_ant.clear();ref_idade=-1;
+
+        tem_prev=false;tem_est=false;seg_corte=(P.corte_modo&2)?0:P.corte_seg;tem_recorte=false;tem_escala=false;on=false;cont_on=0;lq_ant.clear();ref_idade=-1;
         npc_tem=false;npc_tem_rec=false;npc_alvo_ant=false;npc_perdido=0;npc_troca_c=0;
         rf_g_tem=false;rf_g_tem_rec=false;rf_vis=false;rf_vis_n=0;rf_alvo_npc=false;
         n2c_tem=false;n2c_n=0;g_hist_n=0;
@@ -1116,7 +1198,7 @@ private:
             bool oculta=false;
             if(sep&&vis2==-1&&na_zona&&!n.cam_tem&&!corpo_n){oculta=true;if(!n.vida_oculto){n.vida_oculto=true;oc_novo[k]=true;++n.vida_ocultos;}}
             else if(n.vida_oculto&&!corpo_n&&(!na_zona||n.cam_tem)){n.vida_oculto=false;oc_volta[k]=true;}
-            if(!oculta&&((na_zona&&!n.cam_tem)||corpo_n)){m=5;if((P.adquire&2)&&adq_job&&std::hypot(n.est[0]-est[0],n.est[1]-est[1])<=.5*est[2]){m=7;++promovido_n;}}else if(n.conf_t>=segura_de(n)||(!n.visto&&n.roi_falta>=n.roi_falta0+3))m=1;
+            if(!oculta&&((na_zona&&!n.cam_tem)||corpo_n)){m=5;{const double v[9]{est[0],est[1],est[2],n.est[0],n.est[1],n.est[2],double(P.npc2_zona),na_zona?1.0:0.0,corpo_n?1.0:0.0};for(int z=0;z<9;++z)sz_ult[z]=v[z];++sz_n;}if((P.adquire&2)&&adq_job&&std::hypot(n.est[0]-est[0],n.est[1]-est[1])<=.5*est[2]){m=7;++promovido_n;}}else if(n.conf_t>=segura_de(n)||(!n.visto&&n.roi_falta>=n.roi_falta0+3))m=1;
             else if(P.npc_roi_conf>0&&n.roi_ok==n.roi_ok0&&n.roi_falta>=n.roi_falta0+unsigned(P.npc_roi_conf)){m=1;++roi_conf_soltou_n;
                 if(P.npc_roi_veto_s>0.f){int iv=veto_roi_n<8?veto_roi_n++:0;if(veto_roi_n>=8){double vt=1e30;for(int i=0;i<8;++i)if(veto_roi[i][3]<vt){vt=veto_roi[i][3];iv=i;}}
                     veto_roi[iv][0]=n.est[0];veto_roi[iv][1]=n.est[1];veto_roi[iv][2]=n.est[2];veto_roi[iv][3]=n2_relogio;veto_roi[iv][4]=veto_roi[iv][5]=0;veto_roi[iv][6]=n2_relogio;}}else if(fora_tela)m=2;else if(n.rapido_t>=P.npc2_rapido_s)m=4;
@@ -1200,6 +1282,7 @@ private:
         for(int k=0;k<npc_det_max;++k){auto& n=n2s[k];Resultado S{};bool mov=false;
             if(n.tem){++n.jobs;
                 const double mb=double(P.vida_borda)*n.est[2];
+                if(P.npc_vida&&!n.vida_pub){const double v[12]{double(k),n.est[0],n.est[1],n.est[2],double(n.vida_hits),double(n.desde),double(n.conf_t),(P.npc_todos&32)?(dentro_logo(n)?1.0:0.0):-1.0,double(n.roi_ok)-double(n.roi_ok0),(n.est[0]>=mb&&n.est[1]>=mb&&n.est[0]<g.w-mb&&n.est[1]<g.h-mb)?1.0:0.0,double(g.w),double(g.h)};for(int z=0;z<12;++z)pend_ult[z]=v[z];++pend_n;}
                 if(P.npc_vida&&!n.vida_pub&&n.vida_hits>=(n.vida_re?1:P.vida_conf_n)&&(!(P.npc_todos&32)||(n.conf_t<=double(P.todos_recente)&&dentro_logo(n)))&&(n.vida_re||n.desde>=double(P.vida_in_s)||(P.npc_vida>=2&&(n.desde>=double(P.vida2_in_s)||(P.npc_todos&4))&&n.roi_ok>=n.roi_ok0+((P.npc_todos&4)?1u:2u)&&n.nota>=P.vida2_nota&&
                    n.est[0]>=2*mb&&n.est[1]>=2*mb&&n.est[0]<g.w-2*mb&&n.est[1]<g.h-2*mb))&&(P.npc_roi_conf<=0||n.roi_ok>=n.roi_ok0+unsigned((std::max)(1,P.vida_roi_n)))&&
                    n.est[0]>=mb&&n.est[1]>=mb&&n.est[0]<g.w-mb&&n.est[1]<g.h-mb){n.vida_pub=true;S.vida_pub_novo=true;}

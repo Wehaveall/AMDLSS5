@@ -33,7 +33,7 @@ using ModuleLaunch=int(*)(void*,unsigned,unsigned,unsigned,unsigned,unsigned,uns
 inline ModuleLaunch launch{};inline int(*get_device)(int*){};
 inline bool enabled() noexcept{return requested;}
 inline void log(const char* s)noexcept{
-FILE* f{};if(_wfopen_s(&f,(folder/L"nr_neural_tone.log").c_str(),L"a")==0&&f){std::fprintf(f,"pid=%lu %s\n",GetCurrentProcessId(),s);std::fclose(f);}
+(void)s;
 }
 template<class T>inline T get(const void* p,size_t offset){T v{};std::memcpy(&v,static_cast<const char*>(p)+offset,sizeof v);return v;}
 inline bool read_module(const std::filesystem::path& p,size_t size,const unsigned char* hash,std::vector<unsigned char>& b,const unsigned char* alt=nullptr){

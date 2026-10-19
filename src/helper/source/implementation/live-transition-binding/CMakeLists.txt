@@ -115,7 +115,7 @@ foreach(entry QMapa)
   list(APPEND NR_REPROJECT_HEADERS "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h")
 endforeach()
 
-foreach(entry RjRecorte RjCompor RjComporR RjRostoImg)
+foreach(entry RjRecorte RjCompor RjComporR RjRostoImg RjCamada)
   string(TOLOWER "${entry}" lower)
   add_custom_command(OUTPUT "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
     COMMAND "${NR_REPROJECT_DXC}" -E ${entry} -T cs_6_0 -O3 -WX -Ges
@@ -172,6 +172,16 @@ foreach(entry LuzGrossa)
       -Vn "g_nr_reproject_${lower}" -Fh "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
       -Fo "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.cso" "${NR_REPROJECT_DIR}/luzgrossa.hlsl"
     DEPENDS "${NR_REPROJECT_DIR}/luzgrossa.hlsl" VERBATIM)
+  list(APPEND NR_REPROJECT_HEADERS "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h")
+endforeach()
+
+foreach(entry TLMedeRef TLMedeSai TLRazao TLAplica)
+  string(TOLOWER "${entry}" lower)
+  add_custom_command(OUTPUT "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
+    COMMAND "${NR_REPROJECT_DXC}" -E ${entry} -T cs_6_0 -O3 -WX -Ges
+      -Vn "g_nr_reproject_${lower}" -Fh "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h"
+      -Fo "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.cso" "${NR_REPROJECT_DIR}/travaluz.hlsl"
+    DEPENDS "${NR_REPROJECT_DIR}/travaluz.hlsl" VERBATIM)
   list(APPEND NR_REPROJECT_HEADERS "${NR_REPROJECT_GENERATED}/nr_reproject_${lower}.h")
 endforeach()
 

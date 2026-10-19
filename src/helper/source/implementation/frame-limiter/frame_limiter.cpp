@@ -33,21 +33,10 @@ long long ritmo_saida=0;long long ritmo_nat[64]{};unsigned ritmo_n=0,ritmo_i=0;l
 unsigned long long ritmo_quadros=0,ritmo_esperas=0;long long ritmo_espera_ns=0;
 
 std::filesystem::path log_limitador() {
-    HMODULE self{};wchar_t path[32768]{};
-    if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&ritmar),&self))return {};
-    const auto length=GetModuleFileNameW(self,path,32768);if(!length||length>=32768)return {};
-    return std::filesystem::path(path).parent_path()/L"nr_limitador.log";
+return {};
 }
 void ritmo_log(long long T) noexcept {
-    try{
-        const auto arquivo=log_limitador();if(arquivo.empty())return;
-        long long c[64];const unsigned n=ritmo_n;for(unsigned i=0;i<n;++i)c[i]=ritmo_nat[i];std::sort(c,c+n);
-        auto pc=[&](unsigned q){return n?double(c[(n-1)*q/100])/1e6:0.;};
-        std::ofstream log(arquivo,std::ios::app);
-        log<<"FG_RITMO P="<<fg_ritmo.load()<<" T_ms="<<double(T)/1e6<<" natural_p10/50/90_ms="<<pc(10)<<'/'<<pc(50)<<'/'<<pc(90)
-           <<" quadros="<<ritmo_quadros<<" esperas="<<ritmo_esperas<<" espera_media_ms="<<(ritmo_quadros?double(ritmo_espera_ns)/1e6/double(ritmo_quadros):0.)
-           <<" pid="<<GetCurrentProcessId()<<" tick="<<GetTickCount64()<<'\n';
-    }catch(...){}
+(void)T;
 }
 
 std::atomic<unsigned> fg_umjob{0};
@@ -99,18 +88,7 @@ bool ritmo_fg(long long chegada) noexcept {
 }
 long long qpc_frequencia() noexcept {LARGE_INTEGER f{};QueryPerformanceFrequency(&f);return f.QuadPart;}
 void registrar(const char* evento,unsigned fps) noexcept {
-    try{
-        const auto arquivo=log_limitador();if(arquivo.empty())return;
-        const auto c=contagem();
-        std::ofstream log(arquivo,std::ios::app);
-        log<<"LIMITADOR evento="<<evento<<" fps="<<fps<<" modo="<<c.modo<<" quadros="<<c.quadros<<" atrasados="<<c.atrasados
-           <<" esperados="<<c.esperados<<" pulados="<<c.pulados
-           <<" espera_media_ms="<<(c.quadros?c.espera_ms/double(c.quadros):0.)
-           <<" alinhados="<<c.alinhados<<" espera_depois_media_ms="<<(c.quadros?c.espera_depois_ms/double(c.quadros):0.)
-           <<" folga_ms="<<c.folga_ms
-           <<" alta_resolucao="<<(c.alta_resolucao?1:0)<<" thread="<<GetCurrentThreadId()
-           <<" pid="<<GetCurrentProcessId()<<" tick="<<GetTickCount64()<<'\n';
-    }catch(...){}
+(void)evento;(void)fps;
 }
 void carregar_ini(void* base) noexcept {
     bool esperado=false;

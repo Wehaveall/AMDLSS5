@@ -28,13 +28,10 @@ inline const std::wstring& pasta() noexcept {
 inline std::atomic<int> job_visto{0};
 
 inline void log(const char* fmt,...) noexcept {
- static std::atomic<unsigned> n{0};if(n.fetch_add(1,std::memory_order_relaxed)>=4000u)return;
- char t[700]{};va_list a;va_start(a,fmt);std::vsnprintf(t,sizeof t,fmt,a);va_end(a);
- static const std::wstring arq=pasta()+L"nr_orcamento.log";
- nrlogfila::linha(arq.c_str(),"pid=%lu tick=%llu %s\n",GetCurrentProcessId(),static_cast<unsigned long long>(GetTickCount64()),t);
+ (void)fmt;
 }
 inline int env_int(const char* k,int padrao) noexcept {
- char b[16]{};std::size_t n=0;if(getenv_s(&n,b,sizeof b,k)==0&&n>1)return std::atoi(b);
+ (void)k;
  return padrao;}
 inline bool ctx_separado() noexcept {return env_int("NR_ORC_CTX_SEPARADO",0)==1;}
 

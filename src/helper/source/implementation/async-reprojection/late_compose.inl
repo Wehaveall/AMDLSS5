@@ -115,8 +115,6 @@ Result Backend::compose_late(void* command,void* destination,std::uint32_t d3d_s
   p.srv(h,6,nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT);p.srv(h,7,nullptr,DXGI_FORMAT_R32_FLOAT);
   static bool logado=false;
   if(!logado){logado=true;
-  FILE* f{};if(fopen_s(&f,"nr_reproject.log","a")==0&&f){std::fprintf(f,"pid=%lu TARDIA_POST ligada (NeuralLateComposePost=1) historico=%ux%u saida=%ux%u\n",
-   GetCurrentProcessId(),p.width,p.height,p.comp_w,p.comp_h);std::fclose(f);}
   }
  }
  if(!L.snapshot){

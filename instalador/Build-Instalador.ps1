@@ -7,7 +7,7 @@
 # Saida padrao: instalador\bin\AMDLSS5-Instalador.exe (ignorado pelo git: *.exe).
 param(
     [string]$Saida = (Join-Path $PSScriptRoot 'bin'),
-    [string]$Versao = '1.3.0'
+    [string]$Versao = '1.5.2'
 )
 $ErrorActionPreference = 'Stop'
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'

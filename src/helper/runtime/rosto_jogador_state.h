@@ -131,6 +131,22 @@ inline std::atomic<int> cada_quadros{-1};
 
 inline std::atomic<int> corte_modo{0};
 
+inline std::atomic<float> corte_ok{.25f};
+inline std::atomic<int> sinal_n{6};
+
+inline std::atomic<int> rosto_calibra{0},rosto_manda{0};
+
+inline std::atomic<float> alfa_pos{.6f},alfa_tam{.25f};
+
+inline std::atomic<int> rosto_ancora{0};inline std::atomic<float> ancora_nota{.75f};
+inline std::atomic<float> nota_grande{0.f},nota_grande_px{900.f};
+inline std::atomic<bool> npc_borda_camada{false};
+inline std::atomic<bool> soma_cena{false};inline std::atomic<bool> camada_normaliza{false};inline std::atomic<bool> camada_fresco{false};
+
+inline std::atomic<float> escala_salto{0.f};
+
+inline std::atomic<unsigned> rede_fixa{0};
+
 inline std::atomic<unsigned> zoom{0};
 inline std::atomic<int> recorte_forcado{0};
 inline std::atomic<int> recorte_fixo_ini{0};
@@ -188,9 +204,35 @@ inline std::atomic<bool> compor_rapido{false};
 inline std::atomic<unsigned> segura{0};
 
 inline std::atomic<bool> segura_pixel{false};
+
+inline std::atomic<bool> camada{false};
+inline std::atomic<int> camada_segura{90};
+inline std::atomic<float> camada_meia{20.f},camada_margem{48.f},camada_forca{1.f};
+
+inline std::atomic<int> teste_falha_ini{0},teste_falha_fim{0};
 inline std::atomic<unsigned> ablacao{0};
 
 inline std::atomic<float> baixa_forca{1.f},baixa_lenta{0.f},baixa_rapida{0.f},baixa_mov_px{4.f},acum_limiar{0.f};
+
+inline std::atomic<float> banda_sigma{16.f};
+
+inline std::atomic<float> corte_ok_ini{.07f};
+
+inline std::atomic<int> desliga_jobs{12};
+inline std::atomic<bool> diag_hist{false};
+inline std::atomic<float> npc_zona{1.15f};
+inline std::atomic<bool> busca_sempre{false};
+
+inline std::atomic<bool> ceu_fora{false};
+inline std::atomic<unsigned> npc_todos_rede{768},npc_todos_jan{768};
+
+inline unsigned todos_rede_fino(unsigned L,unsigned tv,unsigned ult) noexcept {
+    const unsigned g=npc_todos_rede.load(std::memory_order_relaxed);
+    if(g>768u&&tv>768u&&L>=768u){const unsigned n=(std::min)((std::min)((L+64u)&~127u,g),tv&~127u);return (std::max)(n,768u);}
+    return todos_rede(L,tv,ult);}
+inline std::atomic<float> npc_todos_cab_max{700.f};
+inline std::atomic<float> adq_nota1{.60f};
+inline std::atomic<float> liga_forte{.75f};
 
 inline std::atomic<unsigned> borda_suave{0};
 
@@ -211,7 +253,8 @@ inline unsigned teto_jobs() noexcept {
 }
 
 inline unsigned rede_de(unsigned L,unsigned t) noexcept {if(canon_inst())return (std::min)(t,npc_canon_rede.load(std::memory_order_relaxed));
-    if(L>=t)return t;if(npc_amplia_inst()&&L<npc_rede_min)return (std::min)(t,npc_rede_min);if(zoom.load(std::memory_order_relaxed)&8u)return (std::min)(t,2u*L)&~127u;return L;}
+    if(L>=t)return t;if(inst_atual()==0&&rede_fixa.load(std::memory_order_relaxed))return (std::min)(t,rede_fixa.load(std::memory_order_relaxed)*L)&~127u;
+    if(npc_amplia_inst()&&L<npc_rede_min)return (std::min)(t,npc_rede_min);if(zoom.load(std::memory_order_relaxed)&8u)return (std::min)(t,2u*L)&~127u;return L;}
 
 inline constexpr unsigned n_max=2048,n_min=256;
 inline constexpr unsigned lado_sem_zoom=1024;
@@ -268,6 +311,10 @@ struct Compartilhado {
 };
 inline Compartilhado& global(){static auto* g=new Compartilhado[n_inst];return g[inst_atual()];}
 
+inline std::atomic<std::uint64_t> geracao_v[n_inst]{1,1,1,1,1,1,1,1};
+inline std::atomic<std::uint64_t>& ger() noexcept {return geracao_v[inst_atual()];}
+inline void cortar() noexcept {ger().fetch_add(1,std::memory_order_acq_rel);}
+
 inline int slot_do_job(int job) noexcept {
     if(job<=0)return -1;auto& g=global();
     for(unsigned s=0;s<slots;++s){const auto p=g.slot[s].palavra.load(std::memory_order_acquire);
@@ -283,9 +330,9 @@ inline int slot_anterior(int job) noexcept {
 }
 
 inline int slot_para_recorte() noexcept {
-    auto& g=global();int livre=-1,velho=-1;int jobs[slots]{};int js_n=0;
+    auto& g=global();const auto g0=ger().load(std::memory_order_acquire);int livre=-1,velho=-1;int jobs[slots]{};int js_n=0;
     for(unsigned s=0;s<slots;++s){const auto p=g.slot[s].palavra.load(std::memory_order_acquire);
-        if(estado_de(p)==Livre||estado_de(p)==Gravado){if(livre<0)livre=int(s);}
+        if(estado_de(p)==Livre||estado_de(p)==Gravado||(estado_de(p)==Pronto&&g.slot[s].geracao!=g0)){if(livre<0)livre=int(s);}
         else if(estado_de(p)==Pronto)jobs[js_n++]=job_de(p);}
     if(livre>=0)return livre;
     std::sort(jobs,jobs+js_n);
@@ -304,6 +351,9 @@ inline bool id_e_quadro(int id) noexcept {return id>=id_quadro_base;}
 
 inline bool sj_devido(std::uint64_t quadro,std::uint64_t quadro_ult,bool ger_nova,unsigned Q) noexcept {
     return ger_nova||quadro_ult==0||quadro>=quadro_ult+(std::max)(Q,1u);}
+
+inline std::atomic<std::uint64_t> epoca_backend{1};
+inline bool epoca_nova(std::uint64_t epoca,std::uint64_t& vista) noexcept {const bool v=vista&&epoca!=vista;vista=epoca;return v;}
 
 inline constexpr unsigned caminho_passos=16,caminho_bytes=caminho_passos*16u,caminho_anel=32;
 inline constexpr std::uint64_t caminho_total=std::uint64_t(caminho_bytes)*caminho_anel;
@@ -408,10 +458,6 @@ inline Publicada& publicada(){static auto* p=new Publicada[n_inst];return p[inst
 inline void publicar(const Deteccao& d){auto& p=publicada();std::lock_guard<std::mutex> l(p.m);const auto v=p.d.versao+1;p.d=d;p.d.versao=v;}
 inline Deteccao ler_deteccao(){auto& p=publicada();std::lock_guard<std::mutex> l(p.m);return p.d;}
 
-inline std::atomic<std::uint64_t> geracao_v[n_inst]{1,1,1,1,1,1,1,1};
-inline std::atomic<std::uint64_t>& ger() noexcept {return geracao_v[inst_atual()];}
-inline void cortar() noexcept {ger().fetch_add(1,std::memory_order_acq_rel);}
-
 inline std::atomic<std::uint64_t> geracao_sem_rampa_v[n_inst]{};
 inline std::atomic<std::uint64_t>& geracao_sem_rampa() noexcept {return geracao_sem_rampa_v[inst_atual()];}
 inline void cortar_troca_alvo() noexcept {
@@ -445,6 +491,8 @@ inline Recorte recorte_saida(const Deteccao& d,unsigned ow,unsigned oh,float fat
 inline Recorte recorte_saida(const Deteccao& d,unsigned ow,unsigned oh) noexcept {return recorte_saida(d,ow,oh,0.f,0u,0u);}
 
 inline std::atomic<unsigned> rosto_hz{10};
+
+inline std::atomic<unsigned> rosto_hz_busca{30};inline std::atomic<int> grace_on{0};
 inline std::atomic<float> rosto_nota{.7f};
 inline constexpr unsigned rosto_w_max=640,rosto_h_max=360,rosto_aneis=3,rosto_marca0=16;
 
@@ -492,16 +540,7 @@ struct QuadroRender {int on{-1};float nivel{},ganho{};float cx{},cy{},lado{};int
 inline QuadroRender& quadro_render(){static QuadroRender q[n_inst];return q[inst_atual()];}
 
 inline void log(const char* linha) noexcept {
-    static std::atomic<unsigned> linhas{0};if(linhas.fetch_add(1)>=6000)return;
-    try{
-        HMODULE self{};wchar_t path[32768]{};
-        if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&global),&self)||
-           !GetModuleFileNameW(self,path,32768))return;
-        std::ofstream f(std::filesystem::path(path).parent_path()/L"nr_rosto_jogador.log",std::ios::app);
-        f<<"pid="<<GetCurrentProcessId()<<" tick="<<GetTickCount64()<<' ';
-        if(inst_atual()>=1)f<<"[npc"<<char('1'+inst_atual())<<"] ";
-        f<<linha<<'\n';
-    }catch(...){}
+    (void)linha;
 }
 inline void envenenar(const char* motivo) noexcept {
     if(!global().envenenado.exchange(true)){char t[256]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_DESLIGADO motivo=%s (sessao inteira; a cena segue igual)",motivo?motivo:"?");log(t);}
@@ -516,7 +555,7 @@ inline nrorc::Config config_orcamento() noexcept {
     c.teto_grace=teto.load(std::memory_order_relaxed);c.janela_grace=nrorc::janela_grace_padrao;c.janela_npc=nrorc::janela_npc_padrao;
     if(npc_leve.load(std::memory_order_relaxed)&1){c.leve=true;c.janela_npc=npc_leve_jan.load(std::memory_order_relaxed);c.leve_rede=npc_leve_rede.load(std::memory_order_relaxed);}
     if(npc_canon.load(std::memory_order_relaxed)==2){c.perto=npc_canon_perto.load(std::memory_order_relaxed);c.jan_peq=npc_canon_jan_peq.load(std::memory_order_relaxed);}
-    if(npc_todos.load(std::memory_order_relaxed)&16){c.todos=true;c.perto=0;c.todos_max=npc_todos_grandes.load(std::memory_order_relaxed);}
+    if(npc_todos.load(std::memory_order_relaxed)&16){c.todos=true;c.perto=0;c.todos_max=npc_todos_grandes.load(std::memory_order_relaxed);c.todos_rede=npc_todos_rede.load(std::memory_order_relaxed);c.todos_jan=npc_todos_jan.load(std::memory_order_relaxed);}
     c.npc=npc2.load(std::memory_order_relaxed);c.npc_max=c.npc?std::clamp(npc_max.load(std::memory_order_relaxed),1,npc_slots):0;
     c.teto_npc=npc2_teto.load(std::memory_order_relaxed);
     c.acumula=acumula.load(std::memory_order_relaxed);c.npc_acumula=npc2_acumula.load(std::memory_order_relaxed);

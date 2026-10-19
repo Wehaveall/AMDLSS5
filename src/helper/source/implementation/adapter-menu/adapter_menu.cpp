@@ -435,10 +435,6 @@ void initialise_reproject(Context& context) noexcept {
         if(i==nrreproject::LightGuard&&nrrealce::luz_legada(parsed)){
             chosen[i]=nrreproject::nearest(i,nrreproject::guarda_sem_limite);
 
-FILE* f{};if(_wfopen_s(&f,L"nr_realce.log",L"a")==0&&f){
-                std::fprintf(f,"pid=%lu REALCE_LUZ_LEGADO NeuralHighlightGuardLight=%.2f (Desligado antigo, saiu da lista) -> Sem limite; o INI so muda quando a linha for trocada no menu\n",
-                             GetCurrentProcessId(),parsed);std::fclose(f);}
-
         }
     }
     for(unsigned i=0;i<nrreproject::ControlCount;++i)nrreproject::set(*context.reproject_controls,i,chosen[i]);

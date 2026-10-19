@@ -38,7 +38,7 @@ void* stub_allocation{};
 constexpr std::size_t hook_rva=0x20521;
 constexpr unsigned char original[]{0x48,0x8b,0x85,0xd0,0x01,0x00,0x00};
 void log(const char* message) noexcept {
-FILE* f{};if(fopen_s(&f,"nr_menu_layout.log","a")==0&&f){std::fprintf(f,"pid=%lu tick=%llu %s\n",GetCurrentProcessId(),GetTickCount64(),message);std::fclose(f);}
+(void)message;
 }
 bool disk_admitted(void* base) {
     wchar_t path[32768]{};

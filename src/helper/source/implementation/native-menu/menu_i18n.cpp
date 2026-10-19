@@ -160,6 +160,8 @@ const char* const ui_texts[][language_count]{
   "* pendiente: se aplica con el próximo resultado de la red; en las opciones (reiniciar), al reiniciar el juego."},
 
  {"Network off: ","Rede desligada: ","Red desactivada: "},
+
+ {"net","rede","red"},
 };
 static_assert(sizeof(ui_texts)/sizeof(*ui_texts)==unsigned(Ui::Count));
 
@@ -234,7 +236,7 @@ const CatalogEntry catalog[]{
 
  {"Preset",G::Neural,false,false},
  {"Structure intensity",G::Neural,true,true},
- {"Skin structure",G::Neural,false,true},
+ {"Skin structure",G::Neural,true,true},
  {"Tone intensity",G::Neural,true,true},
  {"NR antes do FSR",G::Neural,false,false},
  {"Modo da rede",G::Neural,false,false},

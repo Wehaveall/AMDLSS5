@@ -156,6 +156,8 @@ struct Controls {
 inline Controls controls;
 
 inline std::atomic<float> jitter_atual_x{0.f},jitter_atual_y{0.f};
+
+inline std::atomic<float> near_atual{0.f};
 inline std::atomic<bool> jitter_valido{false};
 inline std::atomic<unsigned> despejo_pedido{0};
 inline std::atomic<unsigned> despejo_gravados{0};

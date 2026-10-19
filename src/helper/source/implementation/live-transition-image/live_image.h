@@ -4,9 +4,9 @@
 
 namespace nrliveimage {
 inline constexpr std::size_t image_size = 0x73d000;
-inline constexpr std::size_t file_size = 7417344;
+inline constexpr std::size_t file_size = 7417856;
 inline constexpr std::uint32_t callback_rva = 0x72CFF0;
-inline constexpr char file_sha256[] = "28609e75a8917e47f370a67745a359d6605bcf6f1eb10153c45e94fa80e040dc";
+inline constexpr char file_sha256[] = "187078f636f3c38c78ff89b22e0a4f8e44f9bb8990373f1515bfce1e2d44a014";
 enum class VerificationStage : std::uint32_t {
     Verified, InvalidInput, HeaderProtection, ModuleIdentity, ModulePath,
     DiskOpen, DiskSize, DiskRead, DiskDigest, SpanProtection, SpanRead,

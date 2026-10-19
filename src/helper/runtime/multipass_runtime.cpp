@@ -127,10 +127,6 @@ void diagnostic_escreve(const char* phase,unsigned pass,int status,double millis
         if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             reinterpret_cast<LPCWSTR>(&diagnostic_escreve),&self)||!GetModuleFileNameW(self,path,32768))return;
 
-std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_multipass.log",std::ios::app);
-        log<<"pid="<<GetCurrentProcessId()<<" tick="<<GetTickCount64()<<" phase="<<phase<<" pass="<<pass
-           <<" hip_status="<<status<<" elapsed_ms="<<milliseconds<<" request="<<request<<" completed_jobs="<<completed_jobs<<'\n';
-
     }catch(...){}
 #else
     (void)phase;(void)pass;(void)status;(void)milliseconds;(void)request;(void)completed_jobs;
@@ -627,10 +623,7 @@ void acknowledge(char* base,unsigned value) {
 
 constexpr int job1_teto_padrao=1;
 static void job1_log(const char* linha) noexcept {
-    try{wchar_t path[32768]{};HMODULE self{};
-        if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&job1_log),&self)||!GetModuleFileNameW(self,path,32768))return;
-        std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",std::ios::app);
-        log<<linha<<std::endl;}catch(...){}
+    (void)linha;
 }
 extern "C" bool NRAquecerJob1_v1(void* proxy_base,int width,int height) noexcept {
     auto base=static_cast<char*>(proxy_base);
@@ -1238,11 +1231,6 @@ static void run_multipass_eval(void* primary,void* source,int input_pitch,int in
     static std::array<float,5> previous_controls{};static unsigned previous_style=~0u;
     const auto completed_style=read<unsigned>(base,0x71d084);
     if(previous_style!=completed_style || std::memcmp(previous_controls.data(),controls,sizeof(controls))!=0){
-
-std::ofstream log("nr_model_controls.log",std::ios::app);
-        log<<"pid="<<GetCurrentProcessId()<<" eval_returned=1 style="<<completed_style
-           <<" tone="<<controls[0]<<" structure="<<controls[1]<<" skin_mask="<<controls[2]
-           <<" local_mask="<<controls[3]<<" amd_scale="<<controls[4]<<" width="<<width<<" height="<<height<<'\n';
 
         std::memcpy(previous_controls.data(),controls,sizeof(controls));previous_style=completed_style;
     }

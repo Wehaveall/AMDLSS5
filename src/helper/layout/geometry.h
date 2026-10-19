@@ -217,7 +217,7 @@ public:
 struct TitleLayout { float x,y,scale,bold,split_x; };
 inline constexpr char title_text[]="AMDLSS5 MOD";
 
-inline constexpr char mod_version[]="v1.3.0";
+inline constexpr char mod_version[]="v1.5.2";
 inline Color title_color(std::size_t index) {
 
     return index<2?palette::brand_red:index<7?palette::brand_green:palette::title_neutral;
@@ -249,6 +249,7 @@ struct Frame {
     std::string empty="-";
     std::string fallback_status;
     bool show_help=true;
+    std::string network_word="rede";
 };
 inline constexpr unsigned panel_columns=52;
 inline std::string footer_text(const Frame& f){return f.position.empty()?f.hints:f.position+"   "+f.hints;}
@@ -355,8 +356,8 @@ inline Canvas build_compacto(unsigned width,unsigned height,const Frame& f,float
     std::string rede=ms.end>ms.begin?status.substr(ms.begin,ms.end-ms.begin):std::string("--");
 
     const std::string fps=pad_digitos(f.fps,3);rede=pad_digitos(rede,3);
-    const std::string linha=fps+"  \xc2\xb7  rede "+rede;
-    const std::size_t ini=fps.size()+std::string("  \xc2\xb7  rede ").size();
+    const std::string linha=fps+"  \xc2\xb7  "+f.network_word+" "+rede;
+    const std::size_t ini=linha.size()-rede.size();
     const float largura=float(columns_of(linha))*cell_width*esc+2*pad,altura=cell_height*esc+2*pad;
     const float x=W-margin-largura,y=margin;
     c.rect(x,y,largura,altura,palette::background);

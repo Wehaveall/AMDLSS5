@@ -38,7 +38,7 @@ __declspec(noinline) void native_present(void* base,void* swapchain){
 }
 
 __declspec(noinline) void print_capture(void* swapchain,void* queue){
-    __try{nrprint::capture(swapchain,queue);}
+    __try{nrprint::capture(swapchain,queue);nrprint::medir_tela(swapchain,queue);}
     __except(observe(GetExceptionCode(),GetExceptionInformation()->ExceptionRecord->ExceptionAddress,"print_capture")){}
 }
 __declspec(noinline) void native_overlay(void* base,void* swapchain,void* actual,const char* title){
@@ -86,9 +86,6 @@ extern "C" __declspec(dllexport) void NROverlay_v1(void* base,void* swapchain,vo
      static unsigned count{};static void* last_supplied{};static void* last_actual{};
      if(count<100&&(count==0||last_supplied!=supplied||last_actual!=actual)){
 
-FILE* log{};if(fopen_s(&log,"nr_overlay_queue.log","a")==0&&log){
-            std::fprintf(log,"pid=%lu tick=%llu thread=%lu swapchain=%p supplied=%p selected=%p actual=%p changed=%u\n",GetCurrentProcessId(),GetTickCount64(),GetCurrentThreadId(),swapchain,supplied,selected,actual,unsigned(actual!=supplied));std::fclose(log);
-        }
 ++count;last_supplied=supplied;last_actual=actual;
      }}
     print_capture(swapchain,actual);

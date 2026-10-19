@@ -21,5 +21,7 @@ void capture(void* swapchain,void* queue) noexcept;
 
 void capture_to(void* swapchain,void* queue,const std::wstring& folder) noexcept;
 
+void medir_tela(void* swapchain,void* queue) noexcept;
+
 bool wait_idle(unsigned milliseconds) noexcept;
 }

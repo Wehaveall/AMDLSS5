@@ -2,10 +2,13 @@
 #include "../../../runtime/reuso_state.h"
 #include "../../../runtime/orcamento_vram.h"
 #include <thread>
+#include <deque>
+#include <climits>
 #include "nr_reproject_rjrecorte.h"
 #include "nr_reproject_rjcompor.h"
 #include "nr_reproject_rjgrade.h"
 #include "nr_reproject_rjcomporr.h"
+#include "nr_reproject_rjcamada.h"
 #include "nr_reproject_rjcaminho.h"
 #include "nr_reproject_rjcabeca.h"
 #include "nr_reproject_rjrostoimg.h"
@@ -28,10 +31,10 @@ inline unsigned rj_jan() noexcept {
 }
 inline UINT64 rj_hist_b() noexcept {return 2ull*(rj_hcab+UINT64(rj_jan())*rj_jan()*16ull);}
 
-constexpr unsigned rj_srvs=3,rj_uavs=3,rj_set=rj_srvs+rj_uavs,rj_passes=6u+unsigned(nrrj::npc_slots)+3u,rj_aneis=8,rj_compor_max=3;
+constexpr unsigned rj_srvs=3,rj_uavs=4,rj_set=rj_srvs+rj_uavs,rj_passes=6u+unsigned(nrrj::npc_slots)+4u,rj_aneis=8,rj_compor_max=3;
 constexpr unsigned rj_passe_cabeca=6u+unsigned(nrrj::npc_slots),rj_passe_pontos=rj_passe_cabeca+1u;
 struct RjCabK{int x0,y0;float cw;unsigned n,fatia,inv,off,pad0;};
-constexpr unsigned rj_passe_caminho=rj_passes-1;
+constexpr unsigned rj_passe_caminho=rj_passes-1,rj_passe_camada=rj_passes-2;
 struct RjGradeK{unsigned gw,gh,off_d,off_mv,fatia,inv,pad0,pad1;};
 static_assert(sizeof(RjGradeK)==32);
 struct RjGlobal{
@@ -52,6 +55,7 @@ struct RjGlobal{
 
  std::uint64_t quadro_recorte{},por_quadros{},sem_rosto{};unsigned seg_motivo{};
  unsigned n_ult{};std::uint64_t compor_elipse_n{},compor_px{};
+ std::uint64_t epoca_vista{},epocas{};
 
  ComPtr<ID3D12PipelineState> caminho_pso;ComPtr<ID3D12Resource> caminho_buf,caminho_rbuf;bool caminho_tentado{};std::uint64_t idade_hist[18]{};std::uint64_t sj_compostos{};
 
@@ -95,7 +99,37 @@ void rj_nulos(RjGlobal& G,unsigned base){
  {D3D12_UNORDERED_ACCESS_VIEW_DESC v{};v.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;v.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;  G.device->CreateUnorderedAccessView(nullptr,nullptr,&v,rj_cpu(G,base+4));}
  {D3D12_UNORDERED_ACCESS_VIEW_DESC v{};v.Format=DXGI_FORMAT_R32_TYPELESS;v.ViewDimension=D3D12_UAV_DIMENSION_BUFFER;v.Buffer.NumElements=1;v.Buffer.Flags=D3D12_BUFFER_UAV_FLAG_RAW;
   G.device->CreateUnorderedAccessView(nullptr,nullptr,&v,rj_cpu(G,base+5));}
+ {D3D12_UNORDERED_ACCESS_VIEW_DESC v{};v.Format=DXGI_FORMAT_R32_TYPELESS;v.ViewDimension=D3D12_UAV_DIMENSION_BUFFER;v.Buffer.NumElements=1;v.Buffer.Flags=D3D12_BUFFER_UAV_FLAG_RAW;
+  G.device->CreateUnorderedAccessView(nullptr,nullptr,&v,rj_cpu(G,base+6));}
 }
+
+struct RjCamadaG{
+ ComPtr<ID3D12Resource> buf;unsigned w{},h{};ComPtr<ID3D12PipelineState> pso;bool tentado{},falhou{};
+ std::uint64_t quadro_ult{~0ull},passes{},px{},frescos_n{};int Bm[2][4]{};
+ struct Ret{std::uint64_t q;int x0,y0,x1,y1;};std::deque<Ret> frescos;
+};
+RjCamadaG& rjc(){static auto* g=new RjCamadaG;return *g;}
+
+bool rj_camada_pronta(RjGlobal& G,unsigned ow,unsigned oh){
+ auto& C=rjc();if(C.falhou||!nrrj::camada.load(std::memory_order_relaxed))return false;
+ if(!C.pso&&!C.tentado){C.tentado=true;if(!pipeline(G.device.Get(),G.root.Get(),g_nr_reproject_rjcamada,C.pso)){C.pso.Reset();C.falhou=true;nrrj::log("ROSTO_CAMADA PSO recusado: camada desligada");return false;}}
+ if(!C.pso)return false;
+ if(C.buf&&C.w==ow&&C.h==oh)return true;
+ C.buf.Reset();
+ if(!rj_buffer(G.device.Get(),D3D12_HEAP_TYPE_DEFAULT,UINT64(ow)*oh*16ull,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,C.buf)){
+  C.buf.Reset();C.falhou=true;nrrj::log("ROSTO_CAMADA sem memoria para a camada: desligada");return false;}
+ C.w=ow;C.h=oh;C.quadro_ult=~0ull;std::memset(C.Bm,0,sizeof C.Bm);C.frescos.clear();
+ char l[128]{};NRLOGF(l,sizeof l,"ROSTO_CAMADA camada %ux%u (%.1f MB)",ow,oh,double(UINT64(ow)*oh*16ull)/1048576.0);nrrj::log(l);return true;}
+void rj_camada_uav(RjGlobal& G,unsigned base){
+ auto& C=rjc();D3D12_UNORDERED_ACCESS_VIEW_DESC v{};v.Format=DXGI_FORMAT_R32_TYPELESS;v.ViewDimension=D3D12_UAV_DIMENSION_BUFFER;
+ v.Buffer.NumElements=UINT(UINT64(C.w)*C.h*4ull);v.Buffer.Flags=D3D12_BUFFER_UAV_FLAG_RAW;G.device->CreateUnorderedAccessView(C.buf.Get(),nullptr,&v,rj_cpu(G,base+6));}
+
+bool rj_camada_antes(RjGlobal& G,ID3D12GraphicsCommandList* c,unsigned base,unsigned ow,unsigned oh,std::uint64_t quadro,RjK& k){
+ if(nrrj::diag_hist.load(std::memory_order_relaxed)||!rj_camada_pronta(G,ow,oh))return false;
+ rj_camada_uav(G,base);k.rap_r|=32u;k.pad_r2=unsigned(quadro&1u);transition(c,rjc().buf.Get(),D3D12_RESOURCE_STATE_COMMON,write_state);return true;}
+void rj_camada_depois(ID3D12GraphicsCommandList* c,std::uint64_t quadro,const RjK& k){
+ auto& C=rjc();order_uav(c,C.buf.Get());transition(c,C.buf.Get(),write_state,D3D12_RESOURCE_STATE_COMMON);
+ if(k.fw&&k.fh){C.frescos.push_back({quadro,k.fx,k.fy,k.fx+int(k.fw),k.fy+int(k.fh)});++C.frescos_n;}}
 
 bool rj_hist_criar(RjGlobal& G){
  G.hist_tentado=true;
@@ -229,7 +263,9 @@ template<class Impl> void rj_caminhar(RjGlobal& G,Impl& p,ID3D12GraphicsCommandL
 }
 
 template<class Impl> void rj_rosto_img(RjGlobal& G,Impl& p,ID3D12GraphicsCommandList* c,ID3D12Resource* cor,unsigned vista){
- const unsigned hz=nrrj::rosto_hz.load(std::memory_order_relaxed);
+ unsigned hz=nrrj::rosto_hz.load(std::memory_order_relaxed);
+ const unsigned hb=nrrj::rosto_hz_busca.load(std::memory_order_relaxed);const bool busca=hz&&hb&&(!nrrj::grace_on.load(std::memory_order_relaxed)||nrrj::busca_sempre.load(std::memory_order_relaxed));
+ if(busca&&hb>hz)hz=hb;
  if((nrrj::npc_modo.load(std::memory_order_relaxed)!=1&&!nrrj::npc2.load(std::memory_order_relaxed))||!hz||!c||!cor||!p.device)return;
  LARGE_INTEGER agora{},freq{};QueryPerformanceCounter(&agora);QueryPerformanceFrequency(&freq);
  if(G.rosto_qpc&&agora.QuadPart-G.rosto_qpc<freq.QuadPart/LONGLONG(hz))return;
@@ -251,7 +287,7 @@ template<class Impl> void rj_rosto_img(RjGlobal& G,Impl& p,ID3D12GraphicsCommand
  if(iw<32||ih<32)return;
 
  int rx0=0,ry0=0,rw=int(ow),rh=int(oh);
- if(nrrj::npc2.load(std::memory_order_relaxed)&&(G.rosto_n++&1u)&&!nrrj::giro_inteira.load(std::memory_order_relaxed)){
+ if(nrrj::npc2.load(std::memory_order_relaxed)&&(G.rosto_n++&1u)&&!nrrj::giro_inteira.load(std::memory_order_relaxed)&&!busca){
   rw=int(ow);rh=int(std::lround(double(oh)*(960.0/2160.0)));ry0=int(std::lround(double(oh)*.25));
   iw=nrrj::faixa_w;ih=nrrj::faixa_h;
 
@@ -448,7 +484,8 @@ template<class Impl> void rj_cabeca(RjGlobal& G,Impl& p,ID3D12GraphicsCommandLis
   else{++G.cab_recusas;G.cab_t1=G.cab_t0=false;}}
 
  const float jx=q.cx,jy=q.cy;
- if(G.cab_t1&&G.quadro>=G.cab_f1&&G.quadro-G.cab_f1<=4u){
+
+ if(G.cab_t1&&G.quadro>=G.cab_f1&&G.quadro-G.cab_f1<=4u&&nrrj::rosto_ancora.load(std::memory_order_relaxed)<=0){
   double vx=0,vy=0;if(G.cab_t0&&G.cab_f1>G.cab_f0&&G.cab_f1-G.cab_f0<=3u){const double dt=double(G.cab_f1-G.cab_f0);vx=(G.cab_x1-G.cab_x0)/dt;vy=(G.cab_y1-G.cab_y0)/dt;}
   const double a=double(G.quadro-G.cab_f1),mx=G.cab_x1+vx*a,my=G.cab_y1+vy*a;
   if(std::hypot(mx-q.cx,my-q.cy)>=.15*det.lado||std::hypot(vx,vy)>=.08*det.lado)G.cab_rapido_ate=G.quadro+6u;
@@ -494,6 +531,9 @@ void Backend::rj_recorte(void* command,void* color,unsigned vista,bool post) noe
  try{
   ++G.quadro;G.variante=0;
 
+  if(nrrj::epoca_nova(nrrj::epoca_backend.load(std::memory_order_acquire),G.epoca_vista)){nrrj::cortar();G.job_ult=0;++G.epocas;
+   char l[160]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_EPOCA backend novo (troca do FSR): corte n=%llu quadro=%llu",static_cast<unsigned long long>(G.epocas),static_cast<unsigned long long>(G.quadro));nrrj::log(l);}
+
   const auto det=nrrj::ler_deteccao();const auto ger=nrrj::ger().load(std::memory_order_acquire);
   G.rampa.passo(det.on,G.composto,ger);G.composto_ant=G.composto;G.composto=false;
   if(ger!=G.ger_visto){if(G.ger_visto)G.ger_pend=true;G.ger_visto=ger;G.quadro_ger=G.quadro;}
@@ -537,7 +577,7 @@ void Backend::rj_recorte(void* command,void* color,unsigned vista,bool post) noe
   rj_compartilhado(G,base);
   RjK k{};k.w=ow;k.h=oh;k.rx=r.x;k.ry=r.y;k.lado=r.L;k.n=nrrj::rede_de(r.L,nrrj::teto_inst());
   if(nrrj::canon2_inst()){k.n=nrrj::canon2_rede(r.L,nrorc::aplicada()?nrrj::n_cap():(std::min)(nrrj::npc2_teto.load(std::memory_order_relaxed),1024u),G.n_ult);G.n_ult=k.n;}
-  if(nrrj::todos_inst()&&nrorc::aplicada()){k.n=nrrj::todos_rede(r.L,nrrj::n_cap(),G.n_ult);G.n_ult=k.n;}
+  if(nrrj::todos_inst()&&nrorc::aplicada()){k.n=nrrj::todos_rede_fino(r.L,nrrj::n_cap(),G.n_ult);G.n_ult=k.n;}
 
   {const float alvo=nrrj::rede_alvo.load(std::memory_order_relaxed);if(alvo>0.f){k.n=nrrj::rede_por_cabeca(r.L,nrrj::teto_inst(),det.lado,alvo,G.n_ult);G.n_ult=k.n;}}k.off_ent=unsigned(nrrj::offset_ent(unsigned(s)));k.off_tag=unsigned(nrrj::offset_tag(unsigned(s)));
   transition(c,G.compartilhado.Get(),D3D12_RESOURCE_STATE_COMMON,write_state);
@@ -626,7 +666,9 @@ void Backend::rj_segurar(void* command,void* destination,int job,float exposure,
   k.bytes_meio=unsigned(nrrj::bytes_meio_i());k.janela=rj_jan();k.rap_r=1u;
   k.bx_forca=nrrj::baixa_forca.load(std::memory_order_relaxed);
   transition(c,G.compartilhado.Get(),D3D12_RESOURCE_STATE_COMMON,write_state);transition(c,G.hist.Get(),D3D12_RESOURCE_STATE_COMMON,write_state);
+  const bool cam=rj_camada_antes(G,c,base,ow,oh,p.policy.frame,k);
   rj_bind(G,c,G.compor_r.Get(),base,k);c->Dispatch((k.fw+7)/8,(k.fh+7)/8,1);
+  if(cam)rj_camada_depois(c,p.policy.frame,k);
   order_uav(c,dst);order_uav(c,G.hist.Get());transition(c,G.hist.Get(),write_state,D3D12_RESOURCE_STATE_COMMON);transition(c,G.compartilhado.Get(),write_state,D3D12_RESOURCE_STATE_COMMON);
   G.composto=true;++G.segurados;++G.seg_n;G.seg_quadro=G.quadro;G.seg_fx=fx;G.seg_fy=fy;
   auto& q=nrrj::quadro_render();q.composto=1;q.job=job;q.ganho=ganho;q.idade=-2;
@@ -640,6 +682,8 @@ void Backend::rj_compor(void* command,void* destination,unsigned formato,int job
  nrorc::EscopoOrigem eo(nrrj::inst_atual()>=1?nrorc::Origem::Npc:nrorc::Origem::Rosto);
  try{
   if(!G.pronto||job<=0||age<0||!p.histories_read||!p.history[1]||!p.history[2])return;
+  {const int fa=nrrj::teste_falha_ini.load(std::memory_order_relaxed),fb=nrrj::teste_falha_fim.load(std::memory_order_relaxed);
+   if(fb>fa&&p.policy.frame>=std::uint64_t(fa)&&p.policy.frame<std::uint64_t(fb))return;}
 
   const unsigned teto=nrrj::teto_jobs();
 
@@ -712,8 +756,7 @@ void Backend::rj_compor(void* command,void* destination,unsigned formato,int job
   }
 
   {
-   static const float peso=[]{char v[16]{};size_t n=0;if(getenv_s(&n,v,sizeof v,"NR_RJ_PESO")==0&&n){const float f=float(std::atof(v));if(f>0.f&&f<=1.f)return f;}return .5f;}();
-   static const float limiar=[]{char v[16]{};size_t n=0;if(getenv_s(&n,v,sizeof v,"NR_RJ_LIMIAR")==0&&n){const float f=float(std::atof(v));if(f>0.f)return f;}return .03f;}();
+   constexpr float peso=.5f,limiar=.03f;
    k.peso=nrrj::temporal_inst()?peso:1.f;k.limiar=limiar;
    {const float t4=nrrj::acum_limiar.load(std::memory_order_relaxed);if(k.acum&&t4>0.f)k.limiar=t4;}
 
@@ -735,7 +778,7 @@ void Backend::rj_compor(void* command,void* destination,unsigned formato,int job
        G.compor_px-=std::uint64_t(k.fw)*k.fh;k.fx=u0;k.fy=v0;k.fw=unsigned(u1-u0);k.fh=unsigned(v1-v0);G.compor_px+=std::uint64_t(k.fw)*k.fh;}}}}}
 
   {
-   static const bool zero=[]{char v[8]{};size_t n=0;return getenv_s(&n,v,sizeof v,"NR_RJ_GANHO0")==0&&n&&v[0]=='1';}();
+   constexpr bool zero=false;
    if(zero||(nrrj::ablacao.load(std::memory_order_relaxed)&1u)){G.composto=true;auto& qz=nrrj::quadro_render();qz.composto=1;qz.job=job;qz.ganho=0.f;qz.idade=ap;return;}}
   if(det.pend&&!(k.acum&&nrrj::compor_rapido.load(std::memory_order_relaxed)&&G.compor_r&&det.camq))return;
   transition(c,G.compartilhado.Get(),D3D12_RESOURCE_STATE_COMMON,write_state);
@@ -745,6 +788,8 @@ void Backend::rj_compor(void* command,void* destination,unsigned formato,int job
   if(k.acum&&nrrj::compor_rapido.load(std::memory_order_relaxed)){
    if(!G.compor_r&&!G.compor_r_tentado){G.compor_r_tentado=true;if(!pipeline(G.device.Get(),G.root.Get(),g_nr_reproject_rjcomporr,G.compor_r)){G.compor_r.Reset();nrrj::log("ROSTO_JOGADOR_COMPOR_RAPIDO PSO recusado: caminho de hoje");}else nrrj::log("ROSTO_JOGADOR_COMPOR_RAPIDO ligado");}
    if(G.compor_r)pso=G.compor_r.Get();
+   if(G.compor_r&&nrrj::diag_hist.load(std::memory_order_relaxed))k.rap_r|=256u;
+   if(G.compor_r&&nrrj::ceu_fora.load(std::memory_order_relaxed))k.rap_r|=512u;
    if(G.compor_r&&nrrj::segura.load(std::memory_order_relaxed)&&nrrj::segura_pixel.load(std::memory_order_relaxed))k.rap_r|=2u;
    {const unsigned bs=nrrj::borda_suave.load(std::memory_order_relaxed);if(G.compor_r&&(bs&1u))k.rap_r|=4u;if(G.compor_r&&(bs&2u)){k.rap_r|=8u;const float lb=nrrj::borda_largura.load(std::memory_order_relaxed);std::memcpy(&k.pad_r0,&lb,4);}}
 
@@ -769,7 +814,9 @@ void Backend::rj_compor(void* command,void* destination,unsigned formato,int job
      G.device->CreateShaderResourceView(G.copia.Get(),&sv,rj_cpu(G,base));
      k.rap_r|=16u;std::memcpy(&k.pad_r1,&gt,4);++G.tetos;
      if(G.tetos<=2||(G.tetos&1023u)==0){char l[120]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_TETO gama=%.2f quadros=%llu",double(gt),static_cast<unsigned long long>(G.tetos));nrrj::log(l);}}}}
+  const bool cam=rj_camada_antes(G,c,base,ow,oh,p.policy.frame,k);
   rj_bind(G,c,pso,base,k);c->Dispatch((k.fw+7)/8,(k.fh+7)/8,1);
+  if(cam)rj_camada_depois(c,p.policy.frame,k);
   order_uav(c,dst);if(k.acum){order_uav(c,G.hist.Get());transition(c,G.hist.Get(),write_state,D3D12_RESOURCE_STATE_COMMON);}transition(c,G.compartilhado.Get(),write_state,D3D12_RESOURCE_STATE_COMMON);
   G.composto=true;++G.composicoes;nrrj::global().composicoes.fetch_add(1);
   auto& q=nrrj::quadro_render();q.composto=1;q.job=job;q.ganho=ganho;q.idade=ap;
@@ -788,5 +835,60 @@ void Backend::rj_compor(void* command,void* destination,unsigned formato,int job
    if(nrrj::inst_atual()==0){const auto& H=G.idade_hist;auto& C=nrrj::sj_conta();char li[520]{};NRLOGF(li,sizeof li,"ROSTO_JOGADOR_IDADES semjob=%u q0..17=%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu recortes=%llu avaliados=%llu velhos=%llu futuro=%llu sem_pub=%llu estendido=%llu zero=%llu marcador_tarde=%llu intercalados=%llu sem_tabela=%llu tabela_tarde=%llu adiados=%llu",
     nrrj::sj_q(),H[0],H[1],H[2],H[3],H[4],H[5],H[6],H[7],H[8],H[9],H[10],H[11],H[12],H[13],H[14],H[15],H[16],H[17],C.recortes.load(),C.avaliados.load(),C.velhos.load(),C.futuro.load(),C.sem_pub.load(),C.estendido.load(),C.zero.load(),C.marcador_tarde.load(),C.intercalados.load(),C.sem_tabela.load(),C.tabela_tarde.load(),C.adiados.load());nrrj::log(li);}}
  }catch(...){nrrj::envenenar("excecao na composicao");}
+}
+}
+
+namespace nrreproject {
+
+void Backend::rj_camada(void* command,void* destination,float exposure,unsigned tone) noexcept{
+ if(!p_||!nrrj::ativo()||!nrrj::camada.load(std::memory_order_relaxed)||nrrj::diag_hist.load(std::memory_order_relaxed))return;
+ auto& p=*p_;auto& C=rjc();
+ try{
+  nrrj::Inst i0(0);auto& G=rjg();
+  if(!G.pronto||C.falhou||!p.histories_read||!p.history[1]||!p.history[2])return;
+  auto* c=static_cast<ID3D12GraphicsCommandList*>(command);auto* dst=static_cast<ID3D12Resource*>(destination);if(!c||!dst)return;
+  const auto dd=dst->GetDesc();const unsigned ow=unsigned(dd.Width),oh=dd.Height;
+  if(!rj_camada_pronta(G,ow,oh))return;
+  const std::uint64_t q=p.policy.frame;const unsigned cur=unsigned(q&1u);
+  const bool ant_ok=C.quadro_ult!=~0ull&&C.quadro_ult+1==q;
+  const int segura=nrrj::camada_segura.load(std::memory_order_relaxed);
+  const float meia=nrrj::camada_meia.load(std::memory_order_relaxed),margem=nrrj::camada_margem.load(std::memory_order_relaxed);
+  const int zera=segura+int(std::ceil(6.f*meia))+1;
+  while(!C.frescos.empty()&&C.frescos.front().q+std::uint64_t(zera)<q)C.frescos.pop_front();
+  int b[4]{INT_MAX,INT_MAX,INT_MIN,INT_MIN};
+  for(const auto& r:C.frescos){const int m=int(64.f+margem*float(q-r.q));
+   b[0]=(std::min)(b[0],r.x0-m);b[1]=(std::min)(b[1],r.y0-m);b[2]=(std::max)(b[2],r.x1+m);b[3]=(std::max)(b[3],r.y1+m);}
+  b[0]=(std::max)(b[0],0);b[1]=(std::max)(b[1],0);b[2]=(std::min)(b[2],int(ow));b[3]=(std::min)(b[3],int(oh));
+  if(b[0]>=b[2]||b[1]>=b[3]){b[0]=b[1]=b[2]=b[3]=0;}
+
+  int r[4]{b[0],b[1],b[2],b[3]};bool vazio=b[2]<=b[0];
+  for(const auto* m:{C.Bm[cur],C.Bm[cur^1u]})if(m[2]>m[0]&&m[3]>m[1]){
+   if(vazio){r[0]=m[0];r[1]=m[1];r[2]=m[2];r[3]=m[3];vazio=false;}
+   else{r[0]=(std::min)(r[0],m[0]);r[1]=(std::min)(r[1],m[1]);r[2]=(std::max)(r[2],m[2]);r[3]=(std::max)(r[3],m[3]);}}
+  if(vazio){C.quadro_ult=q;return;}
+  const unsigned base=rj_base(G,rj_passe_camada);
+  {D3D12_SHADER_RESOURCE_VIEW_DESC sv{};sv.Format=DXGI_FORMAT_R16G16_FLOAT;sv.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;sv.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+   sv.Texture2DArray.MipLevels=1;sv.Texture2DArray.ArraySize=Policy::history_count;G.device->CreateShaderResourceView(p.history[1].Get(),&sv,rj_cpu(G,base+1));}
+  {D3D12_SHADER_RESOURCE_VIEW_DESC sv{};sv.Format=DXGI_FORMAT_R32_FLOAT;sv.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;sv.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+   sv.Texture2DArray.MipLevels=1;sv.Texture2DArray.ArraySize=Policy::history_count;G.device->CreateShaderResourceView(p.history[2].Get(),&sv,rj_cpu(G,base+2));}
+  {D3D12_UNORDERED_ACCESS_VIEW_DESC uv{};uv.Format=dd.Format;uv.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;G.device->CreateUnorderedAccessView(dst,nullptr,&uv,rj_cpu(G,base+4));}
+  rj_camada_uav(G,base);
+  RjK k{};k.w=ow;k.h=oh;k.fx=r[0];k.fy=r[1];k.fw=unsigned(r[2]-r[0]);k.fh=unsigned(r[3]-r[1]);
+  k.rx=b[0];k.ry=b[1];k.lado=unsigned(b[2]);k.n=unsigned(b[3]);
+  k.fatia=p.constants.slice;k.mascara=p.constants.mask;k.historico=Policy::history_count;
+  k.prof_rel=p.constants.depth_relative;k.prof_abs=p.constants.depth_absolute;k.expo=exposure;k.tonemap=tone&1u;
+  k.ganho=nrrj::camada_forca.load(std::memory_order_relaxed);k.pad_r2=cur;k.idade2=ant_ok?1u:0u;
+  k.sozinho=unsigned(segura);k.peso=std::pow(.5f,1.f/(std::max)(meia,1.f));{const float z=float(zera);std::memcpy(&k.pad3,&z,4);}
+  if(nrrj::ceu_fora.load(std::memory_order_relaxed))k.rap_r|=512u;
+   if(nrrj::camada_normaliza.load(std::memory_order_relaxed))k.rap_r|=1024u;
+   if(nrrj::camada_fresco.load(std::memory_order_relaxed))k.rap_r|=2048u;
+  transition(c,C.buf.Get(),D3D12_RESOURCE_STATE_COMMON,write_state);
+  rj_bind(G,c,C.pso.Get(),base,k);c->Dispatch((k.fw+7)/8,(k.fh+7)/8,1);
+  order_uav(c,dst);order_uav(c,C.buf.Get());transition(c,C.buf.Get(),write_state,D3D12_RESOURCE_STATE_COMMON);
+  std::memcpy(C.Bm[cur],b,sizeof b);C.quadro_ult=q;++C.passes;C.px+=std::uint64_t(k.fw)*k.fh;
+  if(C.passes<=4||(C.passes&1023u)==0){char l[240]{};NRLOGF(l,sizeof l,"ROSTO_CAMADA passes=%llu quadro=%llu regiao=%d,%d,%ux%u B=%d,%d,%d,%d frescos=%llu px_med=%llu cadeia=%d",
+   static_cast<unsigned long long>(C.passes),static_cast<unsigned long long>(q),k.fx,k.fy,k.fw,k.fh,b[0],b[1],b[2],b[3],static_cast<unsigned long long>(C.frescos_n),
+   static_cast<unsigned long long>(C.px/C.passes),ant_ok?1:0);nrrj::log(l);}
+ }catch(...){C.falhou=true;nrrj::envenenar("excecao na camada do rosto");}
 }
 }

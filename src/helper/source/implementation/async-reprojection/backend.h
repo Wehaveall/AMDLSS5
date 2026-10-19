@@ -60,6 +60,7 @@ private: struct Impl;std::unique_ptr<Impl> p_;
     void rj_aceito(int job) noexcept;
     void rj_compor(void* command,void* destination,unsigned formato,int job,int age,float exposure,unsigned tone) noexcept;
     void rj_segurar(void* command,void* destination,int job,float exposure,unsigned tone) noexcept;
+    void rj_camada(void* command,void* destination,float exposure,unsigned tone) noexcept;
 };
 
 bool despejar_final(void* command,void* input,std::uint32_t estado_entrada,void* output,std::uint32_t estado_saida,

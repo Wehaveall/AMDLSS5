@@ -36,9 +36,6 @@ inline bool inicializar(void* primary,int width,int height){
   wchar_t path[32768]{};HMODULE self{};
   if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&buffers),&self)&&GetModuleFileNameW(self,path,32768)){
 
-std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",std::ios::app);
-   log<<"PRE_SCALE_CONFIG pid="<<GetCurrentProcessId()<<" percent="<<b.percent<<" lido="<<lido<<" dims="<<width<<'x'<<height<<"->"<<::nrprescale::scaled_extent(width,b.percent)<<'x'<<::nrprescale::scaled_extent(height,b.percent)<<" guided="<<b.guided<<" auto_alvo="<<::nrprescale::auto_alvo.load()<<" origem="<<(nrinipath::native(static_cast<char*>(primary)-0x93f48).empty()?"modulo":"proxy")<<" ini="<<std::filesystem::path(ini).string()<<std::endl;
-
   }
  }
  return true;
@@ -84,11 +81,6 @@ inline bool evaluate(Eval eval,void* primary,void* source,int input_pitch,int in
    wchar_t path[32768]{};HMODULE self{};
    if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&buffers),&self)&&GetModuleFileNameW(self,path,32768)){
 
-std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",std::ios::app);
-    log<<"PRE_SCALE_MULTIPASS_CAP pid="<<GetCurrentProcessId()<<" request="<<request<<" extent="<<width<<'x'<<height<<" pedido="<<pedido
-       <<" teto720="<<::nrmpprescale::multipass_cap_percent(width,height,100,request)<<" percent="<<pct
-       <<" neural="<<::nrprescale::scaled_extent(width,pct)<<'x'<<::nrprescale::scaled_extent(height,pct)<<std::endl;
-
    }
   }}
  if(alvo){
@@ -97,11 +89,6 @@ std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",
    ultimo=pct;ultimo_w=width;ultimo_h=height;ultimo_alvo=alvo;
    wchar_t path[32768]{};HMODULE self{};
    if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&buffers),&self)&&GetModuleFileNameW(self,path,32768)){
-
-std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",std::ios::app);
-    log<<"PRE_SCALE_AUTO pid="<<GetCurrentProcessId()<<" alvo="<<alvo<<" extent="<<width<<'x'<<height<<" percent="<<pct
-       <<" neural="<<::nrprescale::scaled_extent(width,pct)<<'x'<<::nrprescale::scaled_extent(height,pct)
-       <<" area_preenchida="<<::nrprescale::area_rede(width,height,pct)<<" qpc="<<[]{LARGE_INTEGER q{};QueryPerformanceCounter(&q);return q.QuadPart;}()<<std::endl;
 
    }
   }
@@ -129,12 +116,6 @@ std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",
    wchar_t path[32768]{};HMODULE self{};
    if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&buffers),&self)&&GetModuleFileNameW(self,path,32768)){
 
-std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",std::ios::app);
-    log<<"PRE_SCALE_SKIP pid="<<GetCurrentProcessId()<<" reason="<<reason<<" percent="<<pct<<" request="<<request
-       <<" metadata="<<(metadata?1:0)<<" metadata_0x40="<<meta40<<" input_format="<<input_format<<" output_format="<<output_format
-       <<" extent="<<width<<'x'<<height<<" input_pitch="<<input_pitch<<" output_pitch="<<output_pitch
-       <<" geometry_published="<<(published>>32)<<'x'<<(published&0xffffffffu)<<" geometry_expected="<<width<<'x'<<height<<std::endl;
-
    }
   }
   ::nrprescale::efetivo.store(100.);return false;
@@ -155,9 +136,6 @@ std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",
   if(!std::filesystem::is_regular_file(hsaco,ec)){
    static std::atomic<bool> avisado{false};
    if(!avisado.exchange(true)){
-
-std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",std::ios::app);
-    log<<"PRE_SCALE_SKIP pid="<<GetCurrentProcessId()<<" reason=modulo_ausente arquivo=nr_resize.hsaco (rodar o instalador com -Sincronizar)"<<std::endl;
 
    }
    ::nrprescale::efetivo.store(100.);return false;
@@ -198,9 +176,6 @@ std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",
   wchar_t path[32768]{};HMODULE self{};
   if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&buffers),&self)&&GetModuleFileNameW(self,path,32768)){
 
-std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",std::ios::app);
-   log<<"PRE_SCALE_TROCA pid="<<GetCurrentProcessId()<<" tick="<<GetTickCount64()<<" stage="<<(post?"POST":"PRE")<<" effective="<<pct<<" neural="<<w<<'x'<<h<<" antes="<<visto_w<<'x'<<visto_h<<" output="<<width<<'x'<<height<<"\n";
-
   }
  }
  visto_w=w;visto_h=h;visto_post=post;
@@ -208,9 +183,6 @@ std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",
  if(!reported){
   wchar_t path[32768]{};HMODULE self{};
   if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&buffers),&self)&&GetModuleFileNameW(self,path,32768)){
-
-std::ofstream log(std::filesystem::path(path).parent_path()/L"nr_pre_scale.log",std::ios::app);
-   log<<"PRE_SCALE pid="<<GetCurrentProcessId()<<" stage="<<(post?"POST":"PRE")<<" effective="<<pct<<" source="<<width<<'x'<<height<<" neural="<<w<<'x'<<h<<" at "<<w<<'x'<<h<<" output="<<width<<'x'<<height<<" input_format="<<input_format<<" guided="<<b.guided<<" fsr_descriptor_unchanged=1 residual=1\n";
 
   }reported=true;
  }

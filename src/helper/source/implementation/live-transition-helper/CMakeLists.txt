@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.24)
 project(nr_live_helper LANGUAGES CXX)
 add_compile_options(/utf-8)
 
+  add_compile_definitions(NR_SEM_LOG=1)
+  add_compile_options(/wd4127 /wd4100 /wd4189 /wd4505)
+
   add_compile_definitions(NR_SEM_GRAVACAO=1)
 
 add_subdirectory(../universal-scale universal-scale)

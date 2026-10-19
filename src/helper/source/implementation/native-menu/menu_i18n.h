@@ -44,7 +44,7 @@ std::string help(const char* label_source,const char* help_source,Language value
 std::string value(const char* label_source,const std::string& source,Language value,bool* complete=nullptr);
 std::string status(const std::string& source,Language value);
 enum class Ui : unsigned { Hints, Input, FgActive, FgIdle, FgNone, FpsCollecting, DisplayUnavailable, Empty,
-                           FallbackStatus, PendingLegend, NetworkOff, Count };
+                           FallbackStatus, PendingLegend, NetworkOff, NetworkWord, Count };
 const char* ui(Ui key,Language value) noexcept;
 
 struct CompatReason { const char* id; bool prefix; const char* text[language_count]; };

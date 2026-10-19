@@ -67,6 +67,7 @@ void Capture(uint3 id : SV_DispatchThreadID) {
  float2 m=inputMotion.SampleLevel(linearClamp,uv,0)*motionScaleUV+motionJitterUV;
  uint dw,dh; inputDepth.GetDimensions(dw,dh);
  float d=inputDepth.Load(int3(min(uint2(uv*float2(dw,dh)),uint2(dw-1,dh-1)),0));
+ if(age!=0u)d*=asfloat(age);
 
  const uint simula=(debugMotivo>>12)&3u, reparo=(debugMotivo>>10)&3u;
  if(simula>0||reparo>0) {

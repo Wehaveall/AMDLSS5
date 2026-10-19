@@ -15,7 +15,7 @@
 namespace nrcapture {
 struct Dim3 {unsigned x,y,z;};
 using Launch=int(*)(const void*,Dim3,Dim3,void**,std::size_t,void*);
-inline bool requested=false;
+inline constexpr bool requested=false;
 inline std::string symbol;
 inline unsigned arg_bytes=0,limit=2,skip=0;
 inline int mode_filter=-1;

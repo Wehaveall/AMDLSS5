@@ -19,15 +19,7 @@ struct State {
     std::atomic<std::uint64_t> presents{0},queues{0},overlays{0};
 };
 inline State& state(){static auto* s=new State;return *s;}
-inline void line(const char* format,...) noexcept {
-    auto& s=state();
-    std::lock_guard<std::mutex> lock(s.mutex);
-    if(s.lines>=600)return;++s.lines;
-    FILE* f{};if(fopen_s(&f,"nr_present_trace.log","a")!=0||!f)return;
-    std::fprintf(f,"pid=%lu tick=%llu thread=%lu ",GetCurrentProcessId(),GetTickCount64(),GetCurrentThreadId());
-    va_list args;va_start(args,format);std::vfprintf(f,format,args);va_end(args);
-    std::fputc('\n',f);std::fclose(f);
-}
+template<class... A> inline void line(const char*,A&&...) noexcept {}
 
 inline bool first(void* (&seen)[32],void* p) noexcept {
     auto& s=state();std::lock_guard<std::mutex> lock(s.mutex);

@@ -14,6 +14,7 @@
 #include "../../../runtime/overlay_amd.h"
 #include "../../../runtime/rede_cada.h"
 #include "../../../runtime/custo_perfil.h"
+#include "../../../runtime/expo_trava.h"
 #include <atomic>
 #include <cstring>
 #include <limits>
@@ -803,7 +804,10 @@ int PinnedBinding::dispatch(NrFfxDispatch original,void* context,void* descripto
         nrffx::Descriptor dj{};const bool ok=nrffx::decode(descriptor,dj)&&std::isfinite(dj.jitter_x)&&std::isfinite(dj.jitter_y)&&
             std::fabs(dj.jitter_x)<=4.f&&std::fabs(dj.jitter_y)<=4.f;
         nrreproject::jitter_atual_x.store(ok?dj.jitter_x:0.f);nrreproject::jitter_atual_y.store(ok?dj.jitter_y:0.f);nrreproject::jitter_valido.store(ok);
+        nrreproject::near_atual.store(ok&&std::isfinite(dj.camera_near)&&dj.camera_near>0.f?dj.camera_near:0.f);
     }
+
+    if(p.enabled)nrexpotrava::tick(p.host->base(),nullptr);
     p.in_dispatch=true;struct Exit{bool& v;~Exit(){v=false;}}exit{p.in_dispatch};
     NrActiveDispatchV1 input{};input.size=sizeof(input);input.version=1;input.image_base=p.host->base();input.original=original;input.context=context;input.descriptor=descriptor;input.nesting=nesting;input.selection=selection;input.selection.master_enabled=1;input.selection.generation=p.controller->generation()+(reset?1:0);input.selection.stage=(reset?p.requested:p.controller->initializing_stage())==Stage::Pre?NR_ACTIVE_STAGE_PRE:NR_ACTIVE_STAGE_POST;
     input.hooks={sizeof(NrActiveHooksV1),1,&p,Impl::capture,Impl::describe,Impl::environment,Impl::get_device,Impl::retain,Impl::release};

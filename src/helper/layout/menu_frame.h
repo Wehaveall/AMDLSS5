@@ -33,6 +33,7 @@ Frame compose_frame(const std::vector<NativeView>& rows,const Order& order,unsig
     f.fallback_status=nrmenu::ui(nrmenu::Ui::FallbackStatus,lang);
     f.empty=nrmenu::ui(nrmenu::Ui::Empty,lang);
     f.hints=nrmenu::ui(nrmenu::Ui::Hints,lang);
+    f.network_word=nrmenu::ui(nrmenu::Ui::NetworkWord,lang);
     f.show_help=nrmenu::show_help();
     if(!f.rows.empty())f.position=std::to_string(f.selected+1)+"/"+std::to_string(f.rows.size());
     return f;

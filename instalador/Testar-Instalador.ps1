@@ -140,7 +140,8 @@ $hashOk = (Get-FileHash (Join-Path $re 'nr_native_adapter.dll')).Hash -eq (Get-F
 Ok 'instalar RE (raiz + _storage_ + REFramework, sem INI)' ($r.Codigo -eq 0 -and $okArq -and $hashOk -and $semIni) "codigo=$($r.Codigo)"
 $sess = @(Get-ChildItem -LiteralPath (Join-Path $re 'AMDLSS5_backup') -Directory)
 $acoes = if ($sess.Count -eq 1) { [IO.File]::ReadAllText((Join-Path $sess[0].FullName 'acoes.json')) } else { '' }
-Ok 'log e acoes.json ao lado do backup (INI e amdlss5.dat marcados como do mod)' ($sess.Count -eq 1 -and (Test-Path (Join-Path $sess[0].FullName 'instalacao.log')) -and ([regex]::Matches($acoes, 'criado_pelo_mod')).Count -eq 4)
+# 1.3.0: o mod cria 3 arquivos (INI, amdlss5.dat e nr_orcamento.ini) na raiz e em _storage_ = 6 marcas
+Ok 'log e acoes.json ao lado do backup (INI, amdlss5.dat e nr_orcamento.ini marcados como do mod)' ($sess.Count -eq 1 -and (Test-Path (Join-Path $sess[0].FullName 'instalacao.log')) -and ([regex]::Matches($acoes, 'criado_pelo_mod')).Count -eq 6)
 
 # o mod roda: cria o INI da proxy e o amdlss5.dat (raiz e _storage_)
 Simula-Jogo $re
@@ -154,6 +155,29 @@ Ok 'reinstalar RE (INI do mod intacto)' ($r.Codigo -eq 0 -and $r.Texto -match '\
 $r = Rodar @('--desinstalar', $re, '--payload', $pay)
 $depois = Foto $re
 Ok 'desinstalar RE byte a byte (INI e amdlss5.dat do mod removidos)' ($r.Codigo -eq 0 -and (Iguais $fotoRe $depois)) "codigo=$($r.Codigo) $(Dif $fotoRe $depois)"
+
+# T4b 1.5.2: versao nova por cima da velha = uma pasta de backup so (sem o helper velho), desinstalar volta ao original
+$payB = Join-Path $Raiz 'payload-v2'
+Copy-Item -LiteralPath $pay -Destination $payB -Recurse
+Copy-Item -LiteralPath (Join-Path $sys 'dcomp.dll') -Destination (Join-Path $payB 'mod\nr_native_adapter.dll') -Force
+Bytes (Join-Path $payB 'mod\nr_extra.hsaco') 3000 31
+$docB = Get-Content -Raw (Join-Path $payB 'pacote.json') | ConvertFrom-Json
+$docB.arquivos.'nr_native_adapter.dll' = (Get-FileHash (Join-Path $payB 'mod\nr_native_adapter.dll')).Hash
+$docB.arquivos | Add-Member -NotePropertyName 'nr_extra.hsaco' -NotePropertyValue (Get-FileHash (Join-Path $payB 'mod\nr_extra.hsaco')).Hash
+$docB.versao = 'teste-v2'
+[IO.File]::WriteAllText((Join-Path $payB 'pacote.json'), ($docB | ConvertTo-Json -Depth 4))
+$reU = Novo-RE (Join-Path $Raiz 'RE Atualizar')
+$fotoU = Foto $reU
+$r1 = Rodar @('--instalar', $reU, '--payload', $pay)
+Simula-Jogo $reU
+$r2 = Rodar @('--instalar', $reU, '--payload', $payB)
+$sessU = @(Get-ChildItem -LiteralPath (Join-Path $reU 'AMDLSS5_backup') -Directory)
+$helperVelho = (Get-FileHash (Join-Path $pay 'mod\nr_native_adapter.dll')).Hash
+$copiasVelho = @(Get-ChildItem -LiteralPath (Join-Path $reU 'AMDLSS5_backup') -Recurse -File | Where-Object { (Get-FileHash $_.FullName).Hash -eq $helperVelho })
+$novoOk = (Get-FileHash (Join-Path $reU 'nr_native_adapter.dll')).Hash -eq $docB.arquivos.'nr_native_adapter.dll' -and (Test-Path (Join-Path $reU '_storage_\nr_extra.hsaco'))
+Ok 'atualizar por cima: 1 pasta de backup, sem o helper da versao velha' ($r1.Codigo -eq 0 -and $r2.Codigo -eq 0 -and $novoOk -and $sessU.Count -eq 1 -and $copiasVelho.Count -eq 0) "codigo=$($r1.Codigo)/$($r2.Codigo) sessoes=$($sessU.Count) copias_velho=$($copiasVelho.Count)"
+$r = Rodar @('--desinstalar', $reU, '--payload', $payB)
+Ok 'desinstalar depois de atualizar: byte a byte' ($r.Codigo -eq 0 -and (Iguais $fotoU (Foto $reU))) "codigo=$($r.Codigo) $(Dif $fotoU (Foto $reU))"
 
 # T5 Cyberpunk: escolher a raiz, o mod vai para bin\x64
 $cp = Novo-CP (Join-Path $Raiz 'Cyberpunk Falso')
@@ -270,12 +294,42 @@ if ($PayloadReal) {
     }
     $refOk = (Get-FileHash (Join-Path $reR 'dinput8.dll')).Hash -eq $man.reframework.sha256
     Ok "pacote real: $(@($man.arquivos.PSObject.Properties).Count) arquivos + REFramework conferidos (raiz e _storage_)" ($r.Codigo -eq 0 -and $todos -and $refOk) "codigo=$($r.Codigo)"
-    $inisPacote = @(Get-ChildItem -LiteralPath (Split-Path -Parent $PayloadReal) -Recurse -File -Filter '*.ini')
     $inisJogo = @(Get-ChildItem -LiteralPath $reR -Recurse -File -Filter '*.ini' | Where-Object { $_.FullName -notmatch 'AMDLSS5_backup' })
-    Ok 'pacote real sem nenhum .ini (pacote e jogo depois de instalar)' ($inisPacote.Count -eq 0 -and $inisJogo.Count -eq 0 -and -not $man.arquivos.PSObject.Properties['dlssnr_on_amd.ini']) "pacote=$($inisPacote.Count) jogo=$($inisJogo.Count)"
+    $iniMan = $man.arquivos.PSObject.Properties['dlssnr_on_amd.ini']
+    if ($iniMan) {
+        # 1.3.0: pacote com INI. No RE (sem payload\ini\re9.ini) vai o INI padrao do pacote, na raiz e em _storage_, e nada mais.
+        $iniRe = Join-Path $PayloadReal 'ini\re9.ini'
+        $esperado = if (Test-Path -LiteralPath $iniRe) { (Get-FileHash -LiteralPath $iniRe).Hash } else { $iniMan.Value }
+        $iniOk = $inisJogo.Count -eq 2
+        foreach ($alvo in $reR, (Join-Path $reR '_storage_')) {
+            $c = Join-Path $alvo 'dlssnr_on_amd.ini'
+            if (-not (Test-Path -LiteralPath $c) -or (Get-FileHash -LiteralPath $c).Hash -ne $esperado) { $iniOk = $false }
+        }
+        Ok 'pacote real: INI do pacote no RE (raiz e _storage_), nenhum outro .ini' $iniOk "jogo=$($inisJogo.Count)"
+    } else {
+        $inisPacote = @(Get-ChildItem -LiteralPath (Split-Path -Parent $PayloadReal) -Recurse -File -Filter '*.ini')
+        Ok 'pacote real sem nenhum .ini (pacote e jogo depois de instalar)' ($inisPacote.Count -eq 0 -and $inisJogo.Count -eq 0) "pacote=$($inisPacote.Count) jogo=$($inisJogo.Count)"
+    }
     Simula-Jogo $reR
     $r = Rodar @('--desinstalar', $reR, '--payload', $PayloadReal)
     Ok 'pacote real: desinstalar byte a byte' ($r.Codigo -eq 0 -and (Iguais $fotoR (Foto $reR))) "codigo=$($r.Codigo) $(Dif $fotoR (Foto $reR))"
+
+    # 1.5.2: INI proprio de um jogo (payload\ini\<exe>.ini), ex. witcher3.ini, vai so para esse jogo.
+    foreach ($iniJogo in @(Get-ChildItem -LiteralPath (Join-Path $PayloadReal 'ini') -File -Filter '*.ini' -ErrorAction SilentlyContinue)) {
+        $exeNome = $iniJogo.BaseName + '.exe'
+        $dirJ = Join-Path $Raiz ("Jogo Real " + $iniJogo.BaseName)
+        New-Item -ItemType Directory -Force -Path $dirJ | Out-Null
+        Copy-Item -LiteralPath $exeStub -Destination (Join-Path $dirJ $exeNome)
+        Copy-Item -LiteralPath (Join-Path $sys 'dcomp.dll') -Destination (Join-Path $dirJ 'amd_fidelityfx_dx12.dll')
+        $fotoJ = Foto $dirJ
+        $r = Rodar @('--instalar', (Join-Path $dirJ $exeNome), '--payload', $PayloadReal)
+        $c = Join-Path $dirJ 'dlssnr_on_amd.ini'
+        $okJ = $r.Codigo -eq 0 -and (Test-Path -LiteralPath $c) -and (Get-FileHash -LiteralPath $c).Hash -eq (Get-FileHash -LiteralPath $iniJogo.FullName).Hash
+        Ok "pacote real: $($iniJogo.Name) instalado em $exeNome" $okJ "codigo=$($r.Codigo)"
+        Simula-Jogo $dirJ
+        $r = Rodar @('--desinstalar', $dirJ, '--payload', $PayloadReal)
+        Ok "pacote real: desinstalar $exeNome byte a byte" ($r.Codigo -eq 0 -and (Iguais $fotoJ (Foto $dirJ))) "codigo=$($r.Codigo) $(Dif $fotoJ (Foto $dirJ))"
+    }
 }
 
 # T13b pacote sem REFramework e download nao pedido: recusa sem tocar no jogo (o download e opcional e desligado)

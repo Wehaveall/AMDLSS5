@@ -29,7 +29,7 @@ inline std::atomic<bool> handshake_logged[policy::handshake_count]{};
 inline char* image_base{};
 inline std::filesystem::path folder;
 inline void log(const char* text) noexcept {
- try{FILE* f=nullptr;if(_wfopen_s(&f,(folder/L"nr_prioridade.log").c_str(),L"a")==0&&f){std::fprintf(f,"pid=%lu %s\n",GetCurrentProcessId(),text);std::fclose(f);}}catch(...){}
+(void)text;
 }
 
 inline int create() noexcept {

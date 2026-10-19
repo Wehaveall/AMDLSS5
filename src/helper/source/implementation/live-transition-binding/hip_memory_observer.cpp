@@ -112,39 +112,7 @@ void* exchange_slot(void* context,unsigned i,void* replacement,void* expected) n
 }
 }
 bool install_if_requested(void* base) noexcept {
-    if(!enabled())return observer.load()?validate(base):true;
-    Locked guard(installation_lock);
-    if(observer.load())return validate(base);
-
-    HMODULE hip=GetModuleHandleW(L"amdhip64_7.dll"),pinned{},self{};
-    if(!base||!hip||!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN,L"amdhip64_7.dll",&pinned)||pinned!=hip||
-       !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN|GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCWSTR>(&install_if_requested),&self))return false;
-    auto* p=new(std::nothrow) Observer;if(!p)return false;p->base=base;p->owner=GetCurrentThreadId();
-    p->hooks[0]=reinterpret_cast<void*>(&on_allocate);p->hooks[1]=reinterpret_cast<void*>(&on_free);p->hooks[2]=reinterpret_cast<void*>(&on_import);p->hooks[3]=reinterpret_cast<void*>(&on_map);p->hooks[4]=reinterpret_cast<void*>(&on_destroy);
-    MEMORY_BASIC_INFORMATION page{};
-    auto* first=static_cast<char*>(base)+0x86B58;
-    if(!VirtualQuery(first,&page,sizeof(page))||page.AllocationBase!=base||page.Type!=MEM_IMAGE||page.State!=MEM_COMMIT||
-       (page.Protect&(PAGE_GUARD|PAGE_NOACCESS))||reinterpret_cast<std::uintptr_t>(static_cast<char*>(base)+0x86BE8)>reinterpret_cast<std::uintptr_t>(page.BaseAddress)+page.RegionSize){delete p;return false;}
-    for(unsigned i=0;i<5;++i){
-        const auto target=GetProcAddress(hip,names[i]);HMODULE owner{};
-        if(!target||!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN|GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCWSTR>(target),&owner)||owner!=hip||
-           !copy_pointer(static_cast<char*>(base)+slots[i],p->originals[i])||p->originals[i]!=reinterpret_cast<void*>(target)){delete p;return false;}
-    }
-    const auto get=GetProcAddress(hip,"hipGetDevice"),mem=GetProcAddress(hip,"hipMemGetInfo");HMODULE get_owner{},mem_owner{};
-    if(get&&mem&&GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN|GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCWSTR>(get),&get_owner)&&get_owner==hip&&
-       GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN|GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCWSTR>(mem),&mem_owner)&&mem_owner==hip){
-        p->get_device=reinterpret_cast<decltype(p->get_device)>(get);p->mem_info=reinterpret_cast<decltype(p->mem_info)>(mem);
-    }
-    p->forwarder.reset(new(std::nothrow) Forwarder(p->ledger,{reinterpret_cast<Allocate>(p->originals[0]),reinterpret_cast<Release>(p->originals[1]),reinterpret_cast<Import>(p->originals[2]),reinterpret_cast<Map>(p->originals[3]),reinterpret_cast<Release>(p->originals[4])}));
-    if(!p->forwarder){delete p;return false;}
-    p->file=CreateFileW(L"nr_memory.log",GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
-    if(p->file==INVALID_HANDLE_VALUE){delete p;return false;}
-    observer.store(p);
-    WindowsPatch transaction{base,first};const auto patched=detail::patch({&transaction,protect_slots,exchange_slot},p->originals,p->hooks,5);
-    p->installed=patched.installed;
-    char header[384]{};NRLOGF(header,sizeof(header),"NR_MEMORY installed=%u restore_protection=%u rollback=%u pid=%lu owner=%lu base=%p preexisting_allocations=unknown imported_bytes_overlap_mapped=true\n",p->installed?1u:0u,patched.restored?1u:0u,patched.rollback?1u:0u,GetCurrentProcessId(),p->owner,base);(void)write(*p,header);
-
-    return p->installed&&!p->io_failed;
+(void)base;return true;
 }
 bool validate(void* base) noexcept {
     auto* p=observer.load();if(!p)return true;if(!p->installed||p->base!=base||p->io_failed)return false;
@@ -152,18 +120,6 @@ bool validate(void* base) noexcept {
     return true;
 }
 void flush(bool force) noexcept {
-    auto* p=observer.load();if(!p||p->file==INVALID_HANDLE_VALUE||GetCurrentThreadId()!=p->owner)return;
-    const auto now=GetTickCount64();if(!force&&now-p->last_flush<500)return;p->last_flush=now;
-    Event events[128];char line[768];std::size_t count{};
-    while((count=p->ledger.drain(events,128))){for(std::size_t i=0;i<count;++i){const auto& e=events[i];
-        NRLOGF(line,sizeof(line),"NR_MEMORY_EVENT seq=%llu time=%llu op=%s ptr=%llx related=%llx bytes=%llu result=%d thread=%u caller=%llx caller_rva=%llx\n",e.sequence,e.time,names[e.operation],e.pointer,e.related,e.bytes,e.result,e.thread,e.caller,e.caller-reinterpret_cast<std::uintptr_t>(p->base));if(!write(*p,line))return;
-    }}
-    const auto s=p->ledger.summary();NRLOGF(line,sizeof(line),"NR_MEMORY_SUMMARY time=%llu seq=%llu malloc_live=%llu mapped_live=%llu imported_live=%llu malloc_freed=%llu mapped_freed=%llu import_destroyed=%llu ok=%llu,%llu,%llu,%llu,%llu fail=%llu,%llu,%llu,%llu,%llu unknown_free=%llu unknown_destroy=%llu duplicate=%llu ledger_overflow=%llu events_dropped=%llu unreadable=%llu\n",now,s.sequence,s.live_malloc_bytes,s.live_mapped_bytes,s.live_import_bytes,s.freed_malloc_bytes,s.freed_mapped_bytes,s.destroyed_import_bytes,s.success[0],s.success[1],s.success[2],s.success[3],s.success[4],s.failure[0],s.failure[1],s.failure[2],s.failure[3],s.failure[4],s.unknown_free,s.unknown_destroy,s.duplicate_pointer,s.ledger_overflow,s.events_dropped,s.unreadable);(void)write(*p,line);
-    if(p->get_device&&p->mem_info){
-        int device=-1;std::size_t free_bytes{},total_bytes{};const int device_result=p->get_device(&device);
-
-        const int memory_result=device_result?device_result:p->mem_info(&free_bytes,&total_bytes);
-        NRLOGF(line,sizeof(line),"NR_MEMORY_DEVICE time=%llu device=%d get_result=%d mem_result=%d free=%llu total=%llu used=%llu scope=device_wide\n",now,device,device_result,memory_result,static_cast<unsigned long long>(free_bytes),static_cast<unsigned long long>(total_bytes),static_cast<unsigned long long>(total_bytes>=free_bytes?total_bytes-free_bytes:0));(void)write(*p,line);
-    }
+(void)force;
 }
 }

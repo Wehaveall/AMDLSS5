@@ -6,6 +6,7 @@
 #include "menu_i18n.h"
 #include "../async-reprojection/reproject_controls.h"
 #include "../present-runtime/print_state.h"
+#include "../../../runtime/expo_trava.h"
 #include <atomic>
 #include <mutex>
 #include <cstdio>
@@ -105,7 +106,7 @@ HRESULT STDMETHODCALLTYPE data_hook(void* device,DWORD bytes,DIDEVICEOBJECTDATA*
     return hr;
 }
 void log(const char* status) noexcept {
-    FILE* f{};if(fopen_s(&f,"nr_menu_input.log","a")==0&&f){std::fprintf(f,"pid=%lu status=%s visible=%u block=%u state_blocked=%llu data_blocked=%llu raw_blocked=%llu msg_blocked=%llu pad_blocked=%llu\n",GetCurrentProcessId(),status,unsigned(visible()),unsigned(block()),blocked_state.load(),blocked_data.load(),blocked_raw.load(),blocked_messages.load(),blocked_pad.load());std::fclose(f);}
+(void)status;
 }
 bool patch(void** slot,void* before,void* after) noexcept {
     DWORD old{};if(!VirtualProtect(slot,sizeof(void*),PAGE_READWRITE,&old))return false;
@@ -260,6 +261,10 @@ void tick(void* base) noexcept {
         log(next?"f10_enabled":"f10_disabled");
         persist_enabled(next);
     }
+
+    {static std::wstring ini_expo;static bool ini_expo_lido=false;
+     if(!ini_expo_lido){ini_expo_lido=true;try{ini_expo=nrinipath::resolve(base,reinterpret_cast<const void*>(&tick));}catch(...){}}
+     if(!ini_expo.empty())nrexpotrava::tick(base,ini_expo.c_str());}
 
     static bool imports_attempted{};
     if(!imports_attempted){imports_attempted=true;install_game_imports();}

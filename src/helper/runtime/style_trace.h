@@ -106,65 +106,14 @@ inline int launch(const void* f,Dim g,Dim b,void** args,size_t shared,void* stre
     return result;
 }
 inline bool install(char* image) noexcept {
-    try {
-        wchar_t path[32768];auto n=GetModuleFileNameW(reinterpret_cast<HMODULE>(image),path,32768);if(!n||n>=32768)return false;
-        folder=std::filesystem::path(path).parent_path();
-        style_enabled=NRCFG_INT(L"DlssNrOnAmd",L"NeuralStyleDiagnostic",0,(folder/L"dlssnr_on_amd.ini").c_str())==1;
-        kernel_enabled=NRCFG_INT(L"DlssNrOnAmd",L"NeuralKernelTrace",0,(folder/L"dlssnr_on_amd.ini").c_str())==1;
-        contract_enabled=false;
-        conv2_launch_enabled=NRCFG_INT(L"DlssNrOnAmd",L"NeuralConv2LaunchTrace",0,(folder/L"dlssnr_on_amd.ini").c_str())==1;
-        kernel_job_limit=NRCFG_INT(L"DlssNrOnAmd",L"NeuralKernelTraceJobs",3,(folder/L"dlssnr_on_amd.ini").c_str());
-        conv2_launch_limit=NRCFG_INT(L"DlssNrOnAmd",L"NeuralConv2LaunchTraceLimit",96,(folder/L"dlssnr_on_amd.ini").c_str());
-        if(!conv2_launch_limit||conv2_launch_limit>512)conv2_launch_limit=96;
-
-        if(!style_enabled&&!kernel_enabled&&!contract_enabled&&!conv2_launch_enabled)return true;
-        if(enabled)return base==image;
-        auto hip=GetModuleHandleW(L"amdhip64_7.dll");auto expected=GetProcAddress(hip,"hipLaunchKernel");
-        auto slot=reinterpret_cast<void**>(image+0x86bd8);if(!expected || !nrregswin::known_launch(*slot,reinterpret_cast<void*>(expected)))return false;
-        const auto previous=*slot;
-        DWORD old=0,tmp=0;if(!VirtualProtect(slot,sizeof(void*),PAGE_READWRITE,&old))return false;
-        base=image;original=reinterpret_cast<Launch>(previous);kernel_recorder=std::make_unique<nrkerneltrace::Recorder>(kernel_enabled);enabled=true;
-        events={reinterpret_cast<EventApi::Create>(GetProcAddress(hip,"hipEventCreate")),reinterpret_cast<EventApi::Record>(GetProcAddress(hip,"hipEventRecord")),reinterpret_cast<EventApi::Sync>(GetProcAddress(hip,"hipEventSynchronize")),reinterpret_cast<EventApi::Elapsed>(GetProcAddress(hip,"hipEventElapsedTime")),reinterpret_cast<EventApi::Destroy>(GetProcAddress(hip,"hipEventDestroy"))};
-        InterlockedExchangePointer(reinterpret_cast<void* volatile*>(slot),reinterpret_cast<void*>(&launch));
-        VirtualProtect(slot,sizeof(void*),old,&tmp);nrregswin::register_hook(reinterpret_cast<void*>(&launch));return true;
-    }catch(...){return false;}
+(void)image;return true;
 }
 inline void begin(char* image) noexcept {
-    armed=false;observed=false;kernel_armed=false;if(!enabled || base!=image)return;
-    if(kernel_enabled&&kernel_recorder&&kernel_job<kernel_job_limit){std::lock_guard<std::mutex> lock(kernel_mutex);kernel_recorder->begin(static_cast<int>(++kernel_job),tick());kernel_armed=true;}
-    if(!style_enabled||count>=12)return;
-    requested=get<unsigned>(image,0x71d080);effective=get<unsigned>(image,0x71d084);
-    if(requested==last)return;
-    last=requested;++count;armed=true;
+(void)image;
 }
 inline void abandon() noexcept {
-    if(kernel_armed&&kernel_recorder){std::lock_guard<std::mutex> lock(kernel_mutex);kernel_recorder->end(tick());(void)kernel_recorder->take();}
-    for(const auto& item:timed){if(events.destroy){if(item.begin)events.destroy(item.begin);if(item.end)events.destroy(item.end);}}timed.clear();kernel_armed=false;armed=false;
 }
 inline void capture(void* context,void* output,int pitch,int format,int width,int height) noexcept {
-    capture_contract_buffers();
-    if(kernel_armed&&kernel_recorder){std::vector<nrkerneltrace::Record> records;{std::lock_guard<std::mutex> lock(kernel_mutex);kernel_recorder->end(tick());records=kernel_recorder->take();}kernel_armed=false;write_kernel_receipt(std::move(records));}
-    write_gpu_timing();const bool take=armed&&observed;
-    if(armed&&!observed) {try {FILE* f=nullptr;if(_wfopen_s(&f,(folder/L"nr_style_trace.log").c_str(),L"a")==0&&f){std::fprintf(f,"pid=%lu requested=%u effective=%u NO_FIRST_LAYER_OBSERVED\n",GetCurrentProcessId(),requested,effective);std::fclose(f);}}catch(...){}}
-    armed=false;if(!take)return;
-    try {
-        if(format!=0 || width<128 || height<128 || width>4096 || height>4096 || pitch<width*8)return;
-        const int ph=get<int>(context,0x18),pw=get<int>(context,0x1c);
-        if(ph!=((height+127)&~127)||pw!=((width+127)&~127))return;
-        auto input=get<void*>(context,0xf8);if(!input)return;
-        const size_t input_size=size_t(pw)*ph*12,output_size=size_t(pitch)*height;
-        if(input_size>128*1024*1024 || output_size>128*1024*1024)return;
-        auto hip=GetModuleHandleW(L"amdhip64_7.dll");
-        auto sync=reinterpret_cast<int(*)()>(GetProcAddress(hip,"hipDeviceSynchronize"));
-        auto copy=reinterpret_cast<int(*)(void*,const void*,size_t,int)>(GetProcAddress(hip,"hipMemcpy"));
-        if(!sync||!copy||sync())return;
-        std::vector<char> rgb(input_size),result(output_size);
-        if(copy(rgb.data(),input,input_size,2)||copy(result.data(),output,output_size,2))return;
-        const auto stem=L"nr_style_"+std::to_wstring(GetCurrentProcessId())+L"_"+std::to_wstring(count);
-        auto save=[&](const wchar_t* suffix,const std::vector<char>& bytes){FILE* f=nullptr;if(_wfopen_s(&f,(folder/(stem+suffix)).c_str(),L"wb")!=0||!f)return;std::fwrite(bytes.data(),1,bytes.size(),f);std::fclose(f);};
-        save(L"_input.rgb32f",rgb);save(L"_output.half",result);
-        FILE* f=nullptr;if(_wfopen_s(&f,(folder/(stem+L".txt")).c_str(),L"w")==0&&f){
-            std::fprintf(f,"width=%d height=%d padded_width=%d padded_height=%d output_pitch=%d requested=%u effective=%u\nInput is imported network-domain RGB, output follows native residual contract. Diagnostic stalls; no FPS inference.\n",width,height,pw,ph,pitch,requested,effective);std::fclose(f);}
-    }catch(...){}
+(void)context;(void)output;(void)pitch;(void)format;(void)width;(void)height;
 }
 }

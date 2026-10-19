@@ -3,6 +3,7 @@
 #endif
 #include "../../../runtime/nr_publico.h"
 #include "print_capture.h"
+#include "../../../runtime/expo_trava.h"
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <wincodec.h>
@@ -24,19 +25,7 @@ namespace {
 using Microsoft::WRL::ComPtr;
 constexpr unsigned max_in_flight=3;
 std::mutex& log_mutex(){static auto* m=new std::mutex;return *m;}
-void log(const std::wstring& folder,const char* format,...) noexcept {
-    try{
-        char text[768]{};va_list args;va_start(args,format);std::vsnprintf(text,sizeof text,format,args);va_end(args);
-        SYSTEMTIME t{};GetLocalTime(&t);
-        std::lock_guard<std::mutex> lock(log_mutex());
-        FILE* f{};
-        if(_wfopen_s(&f,(std::filesystem::path(folder)/L"nr_print.log").c_str(),L"a")==0&&f){
-            std::fprintf(f,"%04u-%02u-%02u %02u:%02u:%02u.%03u pid=%lu %s\n",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond,
-                         t.wMilliseconds,GetCurrentProcessId(),text);
-            std::fclose(f);
-        }
-    }catch(...){}
-}
+template<class... A> void log(const std::wstring&,const char*,A&&...) noexcept {}
 std::string narrow(const std::wstring& w){
     std::string out;
     const int n=WideCharToMultiByte(CP_UTF8,0,w.c_str(),int(w.size()),nullptr,0,nullptr,nullptr);
@@ -172,6 +161,71 @@ void start(void* opaque_swap,void* opaque_queue,const std::wstring& folder){
     try{std::thread(finish,raw).detach();}
     catch(...){salvando.fetch_sub(1);fail(folder,"thread"); }
 }
+}
+
+namespace {
+struct TelaEstado {
+    ComPtr<ID3D12Device> device;ComPtr<ID3D12Resource> rb;ComPtr<ID3D12CommandAllocator> alloc;ComPtr<ID3D12GraphicsCommandList> list;
+    ComPtr<ID3D12Fence> fence;UINT64 valor{};D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};UINT64 total{};Kind kind{};unsigned w{},h{},fmt{};
+    D3D12_COMMAND_LIST_TYPE tipo{};std::atomic<int> ocupado{0};ULONGLONG ult{};bool falhou{};
+};
+TelaEstado& tela(){static auto* s=new TelaEstado;return *s;}
+void tela_calcular() noexcept {
+    auto& s=tela();
+    try{
+        if(s.fence->GetCompletedValue()<s.valor){
+            HANDLE ev=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!ev){s.ocupado.store(0);return;}
+            if(SUCCEEDED(s.fence->SetEventOnCompletion(s.valor,ev)))WaitForSingleObject(ev,10000);CloseHandle(ev);}
+        const UINT64 feito=s.fence->GetCompletedValue();
+        if(feito==UINT64_MAX||feito<s.valor){s.falhou=true;return;}
+        void* m{};D3D12_RANGE r{0,SIZE_T(s.total)},nada{0,0};
+        if(FAILED(s.rb->Map(0,&r,&m))||!m){s.ocupado.store(0);return;}
+        std::vector<unsigned char> linha(std::size_t(s.w)*4);double soma=0.;unsigned long long n=0;
+        for(unsigned y=4;y<s.h;y+=8){
+            convert_row(s.kind,static_cast<unsigned char*>(m)+s.fp.Offset+std::size_t(y)*s.fp.Footprint.RowPitch,s.w,linha.data());
+            for(unsigned x=4;x<s.w;x+=8){const unsigned char* p=&linha[std::size_t(x)*4];soma+=(.2126*p[0]+.7152*p[1]+.0722*p[2])/255.;++n;}}
+        s.rb->Unmap(0,&nada);
+        if(n>0){nrexpotrava::tela_media.store(float(soma/double(n)),std::memory_order_relaxed);nrexpotrava::tela_ms.store(GetTickCount64(),std::memory_order_relaxed);}
+    }catch(...){}
+    s.ocupado.store(0,std::memory_order_release);
+}
+}
+void medir_tela(void* opaque_swap,void* opaque_queue) noexcept {
+    if(!nrexpotrava::tela_ligada.load(std::memory_order_relaxed)||!opaque_swap||!opaque_queue)return;
+    auto& s=tela();if(s.falhou||s.ocupado.load(std::memory_order_acquire))return;
+    const ULONGLONG agora=GetTickCount64();if(agora-s.ult<200)return;s.ult=agora;
+    try{
+        ComPtr<IDXGISwapChain3> swap;ComPtr<ID3D12CommandQueue> queue;ComPtr<ID3D12Resource> image;ComPtr<ID3D12Device> dev;
+        if(FAILED(static_cast<IUnknown*>(opaque_swap)->QueryInterface(IID_PPV_ARGS(&swap)))||FAILED(static_cast<IUnknown*>(opaque_queue)->QueryInterface(IID_PPV_ARGS(&queue))))return;
+        if(FAILED(swap->GetBuffer(swap->GetCurrentBackBufferIndex(),IID_PPV_ARGS(&image)))||!image||FAILED(image->GetDevice(IID_PPV_ARGS(&dev))))return;
+        {ComPtr<ID3D12Device> outro;ComPtr<IUnknown> a,b;if(FAILED(queue->GetDevice(IID_PPV_ARGS(&outro)))||FAILED(dev.As(&a))||FAILED(outro.As(&b))||a.Get()!=b.Get())return;}
+        const auto d=image->GetDesc();const Kind k=kind_of(unsigned(d.Format));const auto tipo=queue->GetDesc().Type;
+        if(k==Kind::Unsupported||d.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D||d.DepthOrArraySize!=1||d.SampleDesc.Count!=1||!d.Width||!d.Height||d.Width>16384||d.Height>16384)return;
+        if(s.device.Get()!=dev.Get()||s.w!=unsigned(d.Width)||s.h!=d.Height||s.fmt!=unsigned(d.Format)||s.tipo!=tipo||!s.rb){
+            s.rb.Reset();s.alloc.Reset();s.list.Reset();s.fence.Reset();s.device=dev;s.valor=0;
+            UINT rows{};UINT64 rb{};dev->GetCopyableFootprints(&d,0,1,0,&s.fp,&rows,&rb,&s.total);
+            if(rows!=d.Height||!s.total||s.total>1024ull*1024*1024){s.falhou=true;return;}
+            D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_READBACK;hp.CreationNodeMask=hp.VisibleNodeMask=1;
+            D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=s.total;bd.Height=1;bd.DepthOrArraySize=bd.MipLevels=1;bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            if(FAILED(dev->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&s.rb)))||
+               FAILED(dev->CreateCommandAllocator(tipo,IID_PPV_ARGS(&s.alloc)))||
+               FAILED(dev->CreateCommandList(0,tipo,s.alloc.Get(),nullptr,IID_PPV_ARGS(&s.list)))||FAILED(s.list->Close())||
+               FAILED(dev->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&s.fence)))){s.falhou=true;return;}
+            s.kind=k;s.w=unsigned(d.Width);s.h=d.Height;s.fmt=unsigned(d.Format);s.tipo=tipo;}
+        if(FAILED(s.alloc->Reset())||FAILED(s.list->Reset(s.alloc.Get(),nullptr)))return;
+        D3D12_RESOURCE_BARRIER bar{};bar.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        bar.Transition={image.Get(),D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,D3D12_RESOURCE_STATE_PRESENT,D3D12_RESOURCE_STATE_COPY_SOURCE};
+        s.list->ResourceBarrier(1,&bar);
+        D3D12_TEXTURE_COPY_LOCATION src{},dst{};src.pResource=image.Get();src.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;src.SubresourceIndex=0;
+        dst.pResource=s.rb.Get();dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;dst.PlacedFootprint=s.fp;
+        s.list->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
+        std::swap(bar.Transition.StateBefore,bar.Transition.StateAfter);s.list->ResourceBarrier(1,&bar);
+        if(FAILED(s.list->Close()))return;
+        ID3D12CommandList* ls[]{s.list.Get()};queue->ExecuteCommandLists(1,ls);
+        s.ocupado.store(1,std::memory_order_release);
+        if(FAILED(queue->Signal(s.fence.Get(),++s.valor))){s.falhou=true;return;}
+        try{std::thread(tela_calcular).detach();}catch(...){s.falhou=true;}
+    }catch(...){}
 }
 Kind kind_of(unsigned f) noexcept {
     switch(DXGI_FORMAT(f)){

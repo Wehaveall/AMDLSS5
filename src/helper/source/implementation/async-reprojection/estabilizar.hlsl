@@ -1,4 +1,16 @@
-cbuffer K : register(b0) { uint largura, altura, fatia; float alfa; uint valido; float refParado; uint semLimite; float alargar; float profRel, profAbs; uint fatiaAnterior; float alfaMov, alfaLuz, limite; float alfaLuzMov; };
+cbuffer K : register(b0) { uint largura, altura, fatia; float alfa; uint valido; float refParado; uint semLimite; float alargar; float profRel, profAbs; uint fatiaAnterior; float alfaMov, alfaLuz, limite; float alfaLuzMov;
+    float alfaRosto, aspecto; uint nRostos; float r0x, r0y, r0r, r1x, r1y, r1r, r2x, r2y, r2r, r3x, r3y, r3r;
+    uint detRampa; float detParado; };
+float PesoRosto(float2 uv) {
+    float w = 0.0;
+    [unroll] for (uint i = 0; i < 4u; ++i) {
+        if (i < nRostos) {
+        const float3 r = i == 0u ? float3(r0x, r0y, r0r) : i == 1u ? float3(r1x, r1y, r1r) : i == 2u ? float3(r2x, r2y, r2r) : float3(r3x, r3y, r3r);
+        const float d = length(float2((uv.x - r.x) * aspecto, uv.y - r.y)) / max(r.z, 1e-4);
+        w = max(w, 1.0 - smoothstep(1.0, 1.2, d)); }
+    }
+    return w;
+}
 Texture2D<float4> atual : register(t0);
 Texture2D<float4> anterior : register(t1);
 Texture2DArray<float2> movimento : register(t2);
@@ -84,8 +96,12 @@ void Estabilizar(uint3 id : SV_DispatchThreadID) {
         const float parado = refParado > 0.0 ? saturate(1.0 - length(mv3 * tam) / refParado) : 1.0;
         const float3 e3 = (mx3 - mn3) * alargar * lerp(0.5, 1.0, parado);
         const float3 ph = clamp(p3 - pl, (mn3 - cl) - e3, (mx3 - cl) + e3);
-        const float3 h3 = lerp(ph, c3.rgb - cl, lerp(alfaMov, alfa, parado));
-        const float3 l3 = lerp(pl, cl, lerp(alfaLuzMov > 0.0 ? alfaLuzMov : alfaMov, alfaLuz > 0.0 ? alfaLuz : alfa, parado));
+        const float wr = nRostos > 0u ? PesoRosto((float2(id.xy) + 0.5) / tam) : 0.0;
+
+        const float paradoDet = saturate(1.0 - length(mv3 * tam) / max(detParado, 1e-4));
+        const float aDet = detRampa != 0u ? lerp(alfaRosto, alfa, paradoDet) : lerp(alfaMov, alfa, parado);
+        const float3 h3 = lerp(ph, c3.rgb - cl, lerp(aDet, alfaRosto, wr));
+        const float3 l3 = lerp(pl, cl, lerp(lerp(alfaLuzMov > 0.0 ? alfaLuzMov : alfaMov, alfaLuz > 0.0 ? alfaLuz : alfa, parado), alfaRosto, wr));
         float3 o3 = l3 + h3;
         if (limite > 0.0 && parado > 0.0) {
             const float y = max(dot(cor.Load(int4(id.xy, fatia, 0)).rgb, float3(0.2126, 0.7152, 0.0722)), 0.0);

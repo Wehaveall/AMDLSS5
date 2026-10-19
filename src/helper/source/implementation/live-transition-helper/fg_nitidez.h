@@ -72,7 +72,7 @@ struct Estado{
 
 inline Estado& estado_(){static Estado* e=new Estado;return *e;}
 inline void log(const char* t){
-FILE* f{};if(fopen_s(&f,"nr_fg_nitidez.log","a")==0&&f){std::fprintf(f,"pid=%lu %s\n",GetCurrentProcessId(),t);std::fclose(f);}
+(void)t;
 }
 
 inline float forca(const std::wstring& ini){

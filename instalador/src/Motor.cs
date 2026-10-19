@@ -304,7 +304,7 @@ namespace Amdlss5.Instalador
             j.PastaMod = Path.GetDirectoryName(j.Exe);
             InfoPe pe = Pe.Ler(j.Exe);
             j.ExeX64 = pe != null && pe.X64;
-            j.ExeImportaVersion = pe != null && pe.ImportaDll("version.dll");
+            j.ExeImportaVersion = pe != null && (pe.ImportaDll("version.dll") || VersionPorDependencia(pe, j.PastaMod));
             if (pe == null || !j.ExeX64) j.Bloqueios.Add(T.F("det_nao_x64", Path.GetFileName(j.Exe)));
             else if (!j.ExeImportaVersion) j.Bloqueios.Add(T.F("det_sem_version", Path.GetFileName(j.Exe)));
 
@@ -358,6 +358,20 @@ namespace Amdlss5.Instalador
             string di = Path.Combine(j.PastaMod, "dinput8.dll");
             if (File.Exists(di)) j.Dinput8Sha = Util.Sha256(di);
             return j;
+        }
+
+        // version.dll carregada por uma DLL do proprio jogo que o exe importa (ex.: Witcher 3 next-gen: xaudio2_9redist.dll,
+        // GFSDK_Aftermath_Lib.x64.dll). So a pasta do exe: as DLLs do sistema nao contam.
+        static bool VersionPorDependencia(InfoPe pe, string pasta)
+        {
+            foreach (string s in pe.Importa)
+            {
+                string f = Path.Combine(pasta, s);
+                if (!File.Exists(f)) continue;
+                InfoPe d = Pe.Ler(f);
+                if (d != null && d.X64 && d.ImportaDll("version.dll")) return true;
+            }
+            return false;
         }
 
         // Procura o exe do jogo ate 3 niveis abaixo (ex.: Cyberpunk em bin\x64). Pontua: x64 + importa
@@ -650,7 +664,6 @@ namespace Amdlss5.Instalador
                 s.Progresso(100);
                 s.Linha(T.F("instalado_ok", pastaSessao));
                 if (!j.TemStorage && j.ReEngine) s.Linha(T.S("nota_storage"));
-                return pastaSessao;
             }
             catch (Exception e)
             {
@@ -676,6 +689,105 @@ namespace Amdlss5.Instalador
                 throw new ErroInstalador(CodigoErro.Geral, e.Message + Environment.NewLine + T.S(limpo ? "desfeito_ok" : "desfeito_parcial"));
             }
             finally { s.Fechar(); }
+            return Consolidar(bkRaiz, pastaSessao, r);
+        }
+
+        // 1.5.2: instalar por cima de uma versao anterior nao empilha backup. As sessoes de AMDLSS5_backup viram uma so, a
+        // mais velha (a que guarda os arquivos originais do jogo): um arquivo que uma sessao anterior ja tinha posto so
+        // atualiza o hash esperado, e o backup da versao velha do mod nao e guardado. Desinstalar continua devolvendo a
+        // pasta como era antes da 1a instalacao. Sessao sem acoes.json = nada muda (as sessoes ficam como estao).
+        static string Consolidar(string bkRaiz, string nova, IRelato r)
+        {
+            try
+            {
+                List<string> sessoes = new List<string>(Directory.GetDirectories(bkRaiz));
+                sessoes.Sort(StringComparer.Ordinal);
+                if (sessoes.Count < 2) return nova;
+                JavaScriptSerializer js = new JavaScriptSerializer();
+                List<List<Dictionary<string, object>>> listas = new List<List<Dictionary<string, object>>>();
+                foreach (string d in sessoes)
+                {
+                    string json = Path.Combine(d, "acoes.json");
+                    if (!File.Exists(json)) return nova;
+                    List<Dictionary<string, object>> acoes = new List<Dictionary<string, object>>();
+                    object[] lista = js.DeserializeObject(File.ReadAllText(json, Encoding.UTF8)) as object[];
+                    if (lista != null) foreach (object o in lista) acoes.Add((Dictionary<string, object>)o);
+                    listas.Add(acoes);
+                }
+                string baseDir = sessoes[0];
+                for (int k = 1; k < sessoes.Count; k++)
+                    foreach (Dictionary<string, object> a in listas[k]) Juntar(listas[0], a, sessoes[k], baseDir);
+                // a base primeiro (tmp + troca); depois tira o acoes.json das outras (sem ele uma sessao nunca e aplicada)
+                string tmp = Path.Combine(baseDir, "acoes.json.tmp"), fin = Path.Combine(baseDir, "acoes.json");
+                File.WriteAllText(tmp, js.Serialize(listas[0]), new UTF8Encoding(false));
+                File.Delete(fin);
+                File.Move(tmp, fin);
+                for (int k = 1; k < sessoes.Count; k++) File.Delete(Path.Combine(sessoes[k], "acoes.json"));
+                long liberado = 0;
+                for (int k = 1; k < sessoes.Count; k++)
+                {
+                    string log = Path.Combine(sessoes[k], "instalacao.log");
+                    if (File.Exists(log)) File.AppendAllText(Path.Combine(baseDir, "instalacao.log"), Environment.NewLine + File.ReadAllText(log, Encoding.UTF8), new UTF8Encoding(false));
+                    foreach (string f in Directory.GetFiles(sessoes[k], "*", SearchOption.AllDirectories)) liberado += new FileInfo(f).Length;
+                    Directory.Delete(sessoes[k], true);
+                }
+                r.Linha(T.F("consolidado", sessoes.Count - 1, Util.Mb(liberado), baseDir));
+                return baseDir;
+            }
+            catch (Exception e)
+            {
+                r.Linha(T.F("consolidar_falhou", e.Message));
+                return nova;
+            }
+        }
+
+        // Junta a acao a (de uma sessao mais nova, pasta dirA) na lista da sessao base. Sem regra especial, a acao vai
+        // para o fim da base com o seu backup: desfeita antes das que ja estavam la, como se fosse uma sessao a parte.
+        static void Juntar(List<Dictionary<string, object>> base_, Dictionary<string, object> a, string dirA, string baseDir)
+        {
+            string rel = Convert.ToString(a["caminho"]), tipo = Convert.ToString(a["acao"]);
+            Dictionary<string, object> b = null;
+            for (int i = base_.Count - 1; i >= 0 && b == null; i--)
+                if (string.Equals(Convert.ToString(base_[i]["caminho"]), rel, StringComparison.OrdinalIgnoreCase)) b = base_[i];
+            string tb = b == null ? null : Convert.ToString(b["acao"]);
+            bool doMod = tb == "ini_novo" || tb == "criado_pelo_mod" || tb == "ini_mesclado" || tb == "preservado";
+            switch (tipo)
+            {
+                case "igual":
+                    if (b != null) return;
+                    break;
+                case "trocado":
+                case "acrescentado":
+                    // o arquivo ja era do mod (posto por uma sessao anterior): o original continua no backup da base
+                    if (tb == "acrescentado" || tb == "trocado") { b["novo"] = a["novo"]; return; }
+                    // a base o achou igual (original do jogo = o do mod antigo): o original e o "anterior" desta troca
+                    if (tipo == "trocado" && tb == "igual")
+                    {
+                        b["acao"] = "trocado"; b["backup"] = CopiarBackup(a, dirA, baseDir); b["anterior"] = a["anterior"]; b["novo"] = a["novo"];
+                        return;
+                    }
+                    break;
+                case "ini_mesclado":
+                case "preservado":
+                case "ini_novo":
+                case "criado_pelo_mod":
+                    // INI/.dat do mod: a base ja sabe devolver o original (ou apagar o que o mod criou)
+                    if (doMod) return;
+                    break;
+            }
+            if (a.ContainsKey("backup")) a["backup"] = CopiarBackup(a, dirA, baseDir);
+            base_.Add(a);
+        }
+
+        static string CopiarBackup(Dictionary<string, object> a, string dirA, string baseDir)
+        {
+            string nome = Convert.ToString(a["backup"]);
+            string origem = Path.Combine(dirA, nome);
+            if (!File.Exists(origem)) throw new IOException(T.F("des_sem_backup", Convert.ToString(a["caminho"])));
+            string destino = Path.Combine(baseDir, nome);
+            if (File.Exists(destino)) { nome = "c" + Guid.NewGuid().ToString("N").Substring(0, 8) + "-" + nome; destino = Path.Combine(baseDir, nome); }
+            File.Copy(origem, destino);
+            return nome;
         }
 
         public static void GuardaJogoAberto(Jogo j)

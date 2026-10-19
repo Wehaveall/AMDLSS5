@@ -102,98 +102,10 @@ public:
 };
 
 std::string menu_line(void* base,const nradapter::GatewayResult& request) noexcept {
-    auto* current=binding.load(std::memory_order_acquire);if(!current||!request.state)return {};
-    try{
-        const auto snapshot=current->snapshot();
-        auto* coordinator=scale_coordinator.load(std::memory_order_acquire);
-        const bool universal=!host_resolution_owned.load(std::memory_order_acquire)&&coordinator;
-        const auto scale=universal?coordinator->snapshot():nrscale::Coordinator::Snapshot{};
-        const char* scale_diagnostic=universal?coordinator->diagnostic():"scale_backend_host";
-        if(universal&&coordinator->sticky()){
-            (void)nradapter::runtime_fail(base,request.state->generation,scale_diagnostic);
-        }else if(snapshot.state==nrtransition::State::FailedFsrOnly){
-            (void)nradapter::runtime_fail(base,request.state->generation,current->status());
-        }else if(const auto generation=current->acknowledged_generation();generation&&*generation==request.state->generation&&snapshot.working_percent==request.state->requested.percent&&snapshot.effective_stage==(request.state->requested.pre_upscale?1u:2u)){
-            (void)nradapter::runtime_acknowledge(base,*generation);
-        }
-
-        const char* diagnostico=current->status();if(!diagnostico)diagnostico="";
-        {
-            auto bits=[](float f){std::uint32_t u{};std::memcpy(&u,&f,sizeof u);return std::uint64_t(u);};
-            const std::array<std::uint64_t,24> chave{std::uint64_t(snapshot.state),request.state->generation,snapshot.generation,
-                std::uint64_t(request.state->requested.pre_upscale),std::uint64_t(request.state->requested.percent),
-                std::uint64_t(snapshot.effective_stage),std::uint64_t(snapshot.working_percent),
-                std::uint64_t(snapshot.render_width),std::uint64_t(snapshot.render_height),
-                std::uint64_t(snapshot.output_width),std::uint64_t(snapshot.output_height),std::uint64_t(universal),
-                scale.original.render_w,scale.original.render_h,scale.original.output_w,scale.original.output_h,
-                scale.scaled.render_w,scale.scaled.render_h,scale.scaled.output_w,scale.scaled.output_h,
-                std::uint64_t(snapshot.enabled),bits(snapshot.local_structure),bits(snapshot.skin_structure),
-                snapshot.enabled_dispatches/64};
-            static std::mutex chave_mutex;std::lock_guard<std::mutex> chave_lock(chave_mutex);
-            static std::array<std::uint64_t,24> chave_anterior{};static bool tem_chave=false;
-            static std::string escala_anterior,diagnostico_anterior;
-            if(tem_chave&&chave==chave_anterior&&escala_anterior==scale_diagnostic&&diagnostico_anterior==diagnostico)return {};
-            chave_anterior=chave;tem_chave=true;escala_anterior=scale_diagnostic;diagnostico_anterior=diagnostico;
-        }
-        FILETIME created{},exited{},kernel{},user{};
-        if(!GetProcessTimes(GetCurrentProcess(),&created,&exited,&kernel,&user))return {};
-        const auto creation=(std::uint64_t(created.dwHighDateTime)<<32)|created.dwLowDateTime;
-        const std::string message=std::string("NR_LIVE state=")+std::to_string(static_cast<int>(snapshot.state))+
-            " menu_generation="+std::to_string(request.state->generation)+
-            " resource_generation="+std::to_string(snapshot.generation)+
-            " requested_stage="+(request.state->requested.pre_upscale?"PRE":"POST")+
-            " requested_percent="+std::to_string(request.state->requested.percent)+
-            " effective_stage="+std::to_string(snapshot.effective_stage)+
-            " effective_percent="+std::to_string(snapshot.working_percent)+
-            " render="+std::to_string(snapshot.render_width)+"x"+std::to_string(snapshot.render_height)+
-            " output="+std::to_string(snapshot.output_width)+"x"+std::to_string(snapshot.output_height)+
-            " scale_backend="+(universal?"universal_d3d12":"host")+
-            " scale_diagnostic="+scale_diagnostic+
-            " original_render="+std::to_string(scale.original.render_w)+"x"+std::to_string(scale.original.render_h)+
-            " original_output="+std::to_string(scale.original.output_w)+"x"+std::to_string(scale.original.output_h)+
-            " internal_render="+std::to_string(scale.scaled.render_w)+"x"+std::to_string(scale.scaled.render_h)+
-            " internal_output="+std::to_string(scale.scaled.output_w)+"x"+std::to_string(scale.scaled.output_h)+
-            " backend_version=unverified"+
-            " enabled="+std::to_string(snapshot.enabled)+
-            " local_structure="+std::to_string(snapshot.local_structure)+
-            " skin_structure="+std::to_string(snapshot.skin_structure)+" diagnostic="+diagnostico;
-        const std::string identity=" pid="+std::to_string(GetCurrentProcessId())+" created="+std::to_string(creation);
-        const auto key=message+identity+std::to_string(snapshot.enabled_dispatches/64);
-        static std::mutex log_mutex;std::lock_guard<std::mutex> log_lock(log_mutex);
-        static std::string previous;
-        if(key==previous)return {};
-        previous=key;
-
-        std::ostringstream line;
-        line<<message<<" observed_epoch="<<snapshot.observed_epoch
-           <<" observed_resets="<<snapshot.observed_resets
-           <<" observed_closes="<<snapshot.observed_closes
-           <<" recording_primed="<<snapshot.recording_primed
-           <<" flow_enabled="<<snapshot.enabled_dispatches<<" flow_jobs="<<snapshot.captured_jobs
-           <<" flow_unsubmitted="<<snapshot.pending_unsubmitted<<" flow_submitted="<<snapshot.pending_submitted
-           <<" async_pending_job="<<snapshot.async_pending_job<<" async_completed_job="<<snapshot.async_completed_job
-           <<" compose_ok="<<snapshot.compose_accepted<<" compose_skip="<<snapshot.compose_skipped<<identity<<'\n';
-        return line.str();
-    }catch(...){ }
-    return {};
+(void)base;(void)request;return {};
 }
 void write_menu_line(const std::string& text) noexcept {
-    if(text.empty())return;
-    try{
-
-        static std::mutex write_mutex;std::lock_guard<std::mutex> lock(write_mutex);
-        static std::filesystem::path destino;
-        if(destino.empty()){
-            HMODULE self{};wchar_t path[32768]{};
-            if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCWSTR>(&NRMenuAppend_v1),&self))return;
-            const auto length=GetModuleFileNameW(self,path,32768);
-            if(!length||length>=32768)return;
-            destino=std::filesystem::path(path).parent_path()/L"nr_live_transition.log";
-        }
-
-        nrlogfila::escrever(destino.c_str(),text);
-    }catch(...){}
+(void)text;
 }
 void update_menu(void* base,const nradapter::GatewayResult& request) noexcept {write_menu_line(menu_line(base,request));}
 
@@ -304,7 +216,7 @@ std::int32_t dispatch(void* base,nrabi::FfxDispatch original,void* context,
 std::uint32_t compose(void* base,void* command,void* destination,std::uint32_t state,
     std::int32_t job,float exposure,std::int32_t alternate,std::uint32_t inline_mode){
 
-    static const bool skip=GetEnvironmentVariableW(L"NR_DIAG_SKIP_COMPOSE",nullptr,0)>0;
+    constexpr bool skip=false;
     if(skip)return 1;
     const auto request=snapshot_com_espera(base);
     auto* current=binding.load(std::memory_order_acquire);
@@ -353,19 +265,6 @@ std::int32_t dispatch_fsr3(void* base,nrabi::FfxDispatch original,void* context,
     const bool converted=nrffx::legacy_fsr3_to_generic(descriptor,generic.data(),generic.size());
     static std::atomic<bool> probed{};bool expected=false;
 
-if(probed.compare_exchange_strong(expected,true,std::memory_order_acq_rel))try{
-        HMODULE self{};wchar_t path[32768]{};
-        if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&NRMenuAppend_v1),&self)){
-            const auto length=GetModuleFileNameW(self,path,32768);if(length&&length<32768)
-                std::ofstream(std::filesystem::path(path).parent_path()/L"nr_legacy_fsr3.log",std::ios::app)<<"entered=1 converted="<<converted<<" nesting="<<nesting
-                  <<" render="<<*reinterpret_cast<const std::uint32_t*>(generic.data()+0x178)<<"x"<<*reinterpret_cast<const std::uint32_t*>(generic.data()+0x17c)
-                  <<" output="<<*reinterpret_cast<const std::uint32_t*>(generic.data()+0x180)<<"x"<<*reinterpret_cast<const std::uint32_t*>(generic.data()+0x184)
-                  <<" motion="<<*reinterpret_cast<const float*>(generic.data()+0x170)<<","<<*reinterpret_cast<const float*>(generic.data()+0x174)
-                  <<" preExposure="<<*reinterpret_cast<const float*>(generic.data()+0x194)<<" reset="<<unsigned(generic[0x198])
-                  <<" exposure="<<(*reinterpret_cast<void* const*>(generic.data()+0xa8)!=nullptr)<<'\n';
-        }
-    }
-catch(...){ }
     if(!converted)return original(context,descriptor);
     LegacyCall call{original,context,descriptor};
     struct Scope {LegacyCall* previous;Scope(LegacyCall* value):previous(legacy_call){legacy_call=value;}~Scope(){legacy_call=previous;}} scope(&call);

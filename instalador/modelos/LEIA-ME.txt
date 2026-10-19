@@ -7,14 +7,23 @@ End opens the mod menu.
 The package includes dlssnr_on_amd.ini with the mod settings. Uninstalling restores the folder as it was.
 
 Requirements: AMD Radeon RX 9070 / RX 9070 XT (RDNA 4); DirectX 12 game with FSR 3.1.
-Tested only on a Radeon RX 9070 XT, in Resident Evil Requiem, Onimusha: Way of the Sword (demo), Cyberpunk 2077
-and Monster Hunter Wilds.
+Tested only on a Radeon RX 9070 XT, in Resident Evil Requiem, The Witcher 3: Wild Hunt (next-gen, DirectX 12),
+Onimusha: Way of the Sword (demo), Cyberpunk 2077 and Monster Hunter Wilds.
 Keep the payload folder next to the installer.
 
 WARNING (AMD Adrenalin):
 Before playing, turn off the Adrenalin metrics overlay and recording/instant replay and set performance tuning
 to "Default" (no saved overclock); reboot after changing it. With them on the GPU can become very slow and hang
 (black screen/TDR) while the game loads, with this mod and with the original one.
+
+WHAT'S NEW IN 1.5.2:
+- New DLSS 5 neural network installed: the "Small FP8" model from NVIDIA DLSS NR 310.9.16 (faster network).
+- The Witcher 3: Wild Hunt (next-gen / remastered, DirectX 12) support, with its own settings.
+  Install it in the DirectX 12 folder: in the installer click "Select the .exe..." and choose
+  <game folder>\bin\x64_dx12\witcher3.exe (Steam: C:\Program Files (x86)\Steam\steamapps\common\The Witcher 3\bin\x64_dx12).
+  Do not use bin\x64 (that is the DirectX 11 version). Start the game in DirectX 12 mode.
+- Installing a new version over an old one keeps a single backup with the original game files.
+- Bug fixes.
 
 WHAT'S NEW IN 1.3.0:
 - Better network performance.
