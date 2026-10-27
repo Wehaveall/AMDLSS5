@@ -27,6 +27,7 @@
 #include "rosto_cpu.h"
 #include "scrfd_grafo.h"
 #include "scrfd_nucleo.h"
+#include "scrfd_nucleo_avx2.h"
 
 namespace nrsc {
 using nrdet::Rosto;
@@ -95,7 +96,8 @@ public:
 
     bool carregar(const wchar_t* caminho,char* erro,std::size_t ne,bool reservar_grandes=true){
         pesos_.reset();
-        if(nrdet::cpu_simd()<2){std::snprintf(erro,ne,"CPU sem AVX-512F");return false;}
+        simd_=nrdet::cpu_simd();
+        if(simd_<1){std::snprintf(erro,ne,"CPU sem AVX2+FMA");return false;}
         {auto& C=pesos_cache();std::lock_guard<std::mutex> l(C.m);if(C.p&&caminho&&C.caminho==caminho)pesos_=C.p;}
         if(!pesos_){
             FILE* f=nullptr;if(_wfopen_s(&f,caminho,L"rb")||!f){std::snprintf(erro,ne,"arquivo ausente");return false;}
@@ -111,6 +113,9 @@ public:
         std::snprintf(erro,ne,"ok");return true;
     }
     bool pronto() const noexcept {return pesos_&&!pesos_->empty();}
+
+    int simd() const noexcept {return simd_;}
+    bool usar_simd(int nivel) noexcept {if(nivel<1||nivel>2||nivel>nrdet::cpu_simd())return false;simd_=nivel;return true;}
     const float* pesos_dados() const noexcept {return pesos_?pesos_->data():nullptr;}
 
     void usar_threads(int n,int prioridade=0){pool_.iniciar(n,prioridade);}
@@ -220,13 +225,17 @@ private:
         float* ob=t_[o.out];const float* rb=o.res>=0?t_[o.res]:nullptr;const size_t sh=size_t(go.Wp)+1u;
         const int n=pool_.n();const int chunk=n<=1?4:(std::clamp)(NT*ncob/(6*n),1,4);const int nch=(NT+chunk-1)/chunk;
         const float* W=pesos_->data()+o.woff;const float* Bv=pesos_->data()+o.boff;const size_t wbloco=size_t(o.ci)*size_t(o.nt)*size_t(o.K);
+        const bool a512=simd_>=2;
         auto tarefa=[&](int id){const int ch=id/ncob,cb=id%ncob;const int t0=ch*chunk,t1=(std::min)(NT,t0+chunk);
             const float* w=W+size_t(cb)*wbloco;const float* b=Bv+size_t(cb)*size_t(o.K);
             float* oc=ob+size_t(cb)*size_t(o.K)*go.ps;const float* rc=rb?rb+size_t(cb)*size_t(o.K)*go.ps:nullptr;
             for(int tl=t0;tl<t1;++tl){const int i=tl*M*16;__mmask16 mk[4];const __mmask16* pm=nullptr;
                 if(i+M*16>N){for(int m=0;m<M;++m){const int r=N-(i+16*m);mk[m]=r>=16?__mmask16(0xFFFF):r<=0?__mmask16(0):__mmask16((1u<<unsigned(r))-1u);}pm=mk;}
-                if(o.K==8)nucleo_8x3(inb+i,cs,toff,o.nt,o.ci,w,b,oc+sh+size_t(i),go.ps,rc?rc+sh+size_t(i):nullptr,o.relu!=0,pm);
-                else nucleo_6x4(inb+i,cs,toff,o.nt,o.ci,w,b,oc+sh+size_t(i),go.ps,rc?rc+sh+size_t(i):nullptr,o.relu!=0,pm);}
+                float* od=oc+sh+size_t(i);const float* rd=rc?rc+sh+size_t(i):nullptr;
+                if(a512){if(o.K==8)nucleo_8x3(inb+i,cs,toff,o.nt,o.ci,w,b,od,go.ps,rd,o.relu!=0,pm);
+                    else nucleo_6x4(inb+i,cs,toff,o.nt,o.ci,w,b,od,go.ps,rd,o.relu!=0,pm);}
+                else{if(o.K==8)nucleo_8x3_avx2(inb+i,cs,toff,o.nt,o.ci,w,b,od,go.ps,rd,o.relu!=0,pm);
+                    else nucleo_6x4_avx2(inb+i,cs,toff,o.nt,o.ci,w,b,od,go.ps,rd,o.relu!=0,pm);}}
 
             const size_t lo=sh+size_t(t0)*size_t(M)*16u,hi=sh+(std::min)(size_t(N),size_t(t1)*size_t(M)*16u);
             for(int k=0;k<o.K;++k){float* p=oc+size_t(k)*go.ps;
@@ -268,7 +277,7 @@ private:
     }
     struct PesosCache {std::mutex m;std::wstring caminho;std::shared_ptr<const std::vector<float>> p;};
     static PesosCache& pesos_cache(){static auto* c=new PesosCache;return *c;}
-    std::shared_ptr<const std::vector<float>> pesos_;float* mem_=nullptr;size_t cap_=0;int W32_=0,H32_=0;
+    std::shared_ptr<const std::vector<float>> pesos_;float* mem_=nullptr;size_t cap_=0;int W32_=0,H32_=0;int simd_=0;
     float* t_[n_tensores]{};float* f_[n_tensores]{};
     std::vector<Rosto> cand_;std::vector<int> ord_;Pool pool_;
 };

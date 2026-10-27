@@ -2,13 +2,13 @@
 # e <Saida>\AMDLSS5-<versao>.zip, FORA do repositorio (binarios nunca entram nele; o repositorio
 # publico leva so o fonte do instalador). Nunca apaga nada: pasta ou zip existentes = erro.
 #
-#   powershell -NoProfile -File instalador\Montar-Pacote.ps1 -Helper <nr_native_adapter.dll publico> [-Versao 1.6.0]
+#   powershell -NoProfile -File instalador\Montar-Pacote.ps1 -Helper <nr_native_adapter.dll publico> [-Versao 1.6.1]
 #        [-Pacote <pasta>] [-Ini <ini>] [-ManterDiagnostico] [-REFramework <pasta>|''] [-IniJogo @{Exe='ini'}] [-PorJogo @{re9=@{'reframework/plugins/x.dll'='<origem>'}}] [-Saida <pasta>] [-SemZip]
 #
 # Padroes:
 #   -Pacote      mod\candidatos\menu-final-0310\pacote-re do checkout principal (instalado no RE em 03/10); o manifesto
 #                <Pacote>.json (nome -> SHA-256) confere cada arquivo
-#   -Versao      1.6.0
+#   -Versao      1.6.1
 #   -Helper      OBRIGATORIO (review P2, 26/10): o helper PUBLICO (sem log), feito para o mesmo version.dll do pacote (conferido:
 #                o SHA-256 do proxy tem de estar dentro do helper). So com -ManterDiagnostico o padrao e o helper do -Pacote
 #                (de pesquisa). Sem -ManterDiagnostico todo .dll/.asi do payload e dos -PorJogo passa pela varredura sem log
@@ -22,7 +22,7 @@
 #   -Saida       <pasta-mae do repositorio>\AMDLSS5-release
 # O trabalho de copiar/conferir e feito por ferramentas\MontarPacote.cs (compilado aqui com o csc do .NET Framework).
 param(
-    [string]$Versao = '1.6.0',
+    [string]$Versao = '1.6.1',
     [string]$Pacote = '',
     [string]$Helper = '',
     [string]$Ini = '',

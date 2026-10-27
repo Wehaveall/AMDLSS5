@@ -92,7 +92,8 @@ inline std::atomic<int> giro_inteira{0};
 inline std::atomic<int> npc_peito{0};
 
 inline std::atomic<int> detector_threads{2};
-inline bool detector_cpu_ok(int simd) noexcept {return simd>=2;}
+inline bool detector_cpu_ok(int simd) noexcept {return simd>=1;}
+inline std::atomic<bool> detector_avx2{false};
 
 inline std::atomic<float> scrfd_b_inteira{.6f},scrfd_b_faixa{.5f};
 inline float scrfd_a(bool faixa) noexcept {return (std::min)(.3f,(faixa?scrfd_b_faixa:scrfd_b_inteira).load(std::memory_order_relaxed)-.1f);}

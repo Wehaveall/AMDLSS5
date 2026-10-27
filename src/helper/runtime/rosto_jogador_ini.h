@@ -186,6 +186,7 @@ inline void ler_ini_rosto(const std::wstring& ini,const IniGanchos& g){
          nrrj::npc_peito.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcPeito",0,ini.c_str())==1?1:0);
 
          nrrj::detector_threads.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorDetectorThreads",2,ini.c_str())),1,8));
+         nrrj::detector_avx2.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorDetectorAvx2",0,ini.c_str())==1);
          nrrj::scrfd_b_inteira.store(flt(L"NeuralRostoJogadorDetectorInteira",.6f,.35f,.9f));nrrj::scrfd_b_faixa.store(flt(L"NeuralRostoJogadorDetectorFaixa",.5f,.35f,.9f));
          {char ld[200]{};NRLOGF(ld,sizeof ld,"ROSTO_NPC2_DETECTOR scrfd threads=%d nota_0.7=%.2f/%.2f (inteira/faixa e ROI do NPC)",nrrj::detector_threads.load(),double(nrrj::scrfd_b_inteira.load()),double(nrrj::scrfd_b_faixa.load()));nrrj::log(ld);}
          if(nrrj::npc2.load()){char l2[260]{};NRLOGF(l2,sizeof l2,"ROSTO_NPC2_CONFIG ligado npcs=%d teto=%u acumula=%d vel_max=%.2f segura=%.1f faixa=%u recmin=%d peito=%d (pipeline do rosto para cada NPC)",nrrj::npc_max.load(),nrrj::npc2_teto.load(),

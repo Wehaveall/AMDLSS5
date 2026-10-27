@@ -90,7 +90,7 @@ inline void ler_ini(char* base) noexcept {
         nrrj::ler_ini_rosto(ini,g);
         nrrjcl::ler(ini.c_str());
 
-        if(!nrrj::detector_cpu_ok(nrdet::cpu_simd()))nrrj::desligar_rostos("CPU sem AVX-512F: o detector de rosto (SCRFD) exige AVX-512F");
+        if(!nrrj::detector_cpu_ok(nrdet::cpu_simd()))nrrj::desligar_rostos("CPU sem AVX2+FMA: o detector de rosto (SCRFD) exige AVX2 e FMA (Intel 4a geracao / AMD Ryzen em diante)");
     }catch(...){}
 }
 inline void lancar(Hip& hip,void* k,size_t n,void** args){check(hip.launch(k,unsigned((n+255)/256),1,1,256,1,1,0,nullptr,args,nullptr));}
@@ -269,6 +269,8 @@ inline nrsc::Rede* scrfd_carregar(bool reservar_grandes,char* erro,size_t ne) no
     nrsc::Rede* r=new(std::nothrow) nrsc::Rede;if(!r){std::snprintf(erro,ne,"sem memoria");return nullptr;}
     bool ok=false;try{ok=r->carregar(p.c_str(),erro,ne,reservar_grandes);}catch(...){std::snprintf(erro,ne,"excecao");}
     if(!ok){delete r;return nullptr;}
+    const bool forcado=nrrj::detector_avx2.load(std::memory_order_relaxed)&&r->simd()>1&&r->usar_simd(1);
+    std::snprintf(erro,ne,"ok, %s%s",nrdet::nome_simd(r->simd()),forcado?" forcado (NeuralRostoJogadorDetectorAvx2)":"");
     return r;}
 
 inline double detectar_imagem(nrsc::Rede& rede,const std::vector<std::uint16_t>& hb,int w,int h,std::vector<std::uint8_t>& bgr,std::vector<nrdet::Rosto>& rs,float limiar,bool faixa){

@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <immintrin.h>
 namespace nrsc {
-inline void nucleo_8x3(const float* in,std::size_t cs,const int* toff,int nt,int nci,const float* w,const float* b,
+__declspec(noinline) inline void nucleo_8x3(const float* in,std::size_t cs,const int* toff,int nt,int nci,const float* w,const float* b,
     float* out,std::size_t pso,const float* res,bool relu,const __mmask16* mk){
     __m512 a00=_mm512_set1_ps(b[0]);__m512 a01=a00;__m512 a02=a00;
     __m512 a10=_mm512_set1_ps(b[1]);__m512 a11=a10;__m512 a12=a10;
@@ -47,7 +47,7 @@ inline void nucleo_8x3(const float* in,std::size_t cs,const int* toff,int nt,int
         _mm512_mask_storeu_ps(out+7*pso+0,mk[0],fim(a70,7*pso+0));_mm512_mask_storeu_ps(out+7*pso+16,mk[1],fim(a71,7*pso+16));_mm512_mask_storeu_ps(out+7*pso+32,mk[2],fim(a72,7*pso+32));
     }
 }
-inline void nucleo_6x4(const float* in,std::size_t cs,const int* toff,int nt,int nci,const float* w,const float* b,
+__declspec(noinline) inline void nucleo_6x4(const float* in,std::size_t cs,const int* toff,int nt,int nci,const float* w,const float* b,
     float* out,std::size_t pso,const float* res,bool relu,const __mmask16* mk){
     __m512 a00=_mm512_set1_ps(b[0]);__m512 a01=a00;__m512 a02=a00;__m512 a03=a00;
     __m512 a10=_mm512_set1_ps(b[1]);__m512 a11=a10;__m512 a12=a10;__m512 a13=a10;

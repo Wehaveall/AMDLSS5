@@ -5,11 +5,13 @@
 # jogo aberto, sem permissao, arquivos NVIDIA faltando, falha no meio com desfazer automatico,
 # pacote real (opcional, -PayloadReal) e download do REFramework (opcional, -Rede). Tira capturas da janela.
 #
-#   powershell -NoProfile -File instalador\Testar-Instalador.ps1 [-Exe <AMDLSS5-Instalador.exe>] [-PayloadReal <pasta payload>] [-Rede] [-Manter]
+#   powershell -NoProfile -File instalador\Testar-Instalador.ps1 [-Exe <AMDLSS5-Instalador.exe>] [-PayloadReal <pasta payload>] [-PayloadAnterior <payload anterior>] [-Rede] [-Manter]
 # Tudo certo = a pasta de teste e apagada no fim (-Manter a deixa); com falha ela fica para inspecao.
 param(
     [string]$Exe = (Join-Path $PSScriptRoot 'bin\AMDLSS5-Instalador.exe'),
     [string]$PayloadReal = '',
+    # 1.6.1 (27/10): payload da versao ANTERIOR (ex. o do 1.6.0 publicado): com -PayloadReal, testa a atualizacao real por cima dela
+    [string]$PayloadAnterior = '',
     [switch]$Rede,
     [switch]$Manter,   # nao apaga a pasta de teste no fim (com falha ela sempre fica)
     [string]$Raiz = (Join-Path $env:TEMP ('AMDLSS5-teste-' + (Get-Date -Format 'yyyyMMdd-HHmmss')))
@@ -786,6 +788,71 @@ foreach ($i in 'pt', 'en', 'es') {
 $jogoV.VersaoInstalada = '1.7.0'
 $okV = $okV -and "$($cartaoT.GetMethod('Estado').Invoke($null, @($jogoV, $pacoteV)))" -eq 'Instalado'
 Ok 'versao: "?" = Atualizar com "versao desconhecida" (nunca "v?") nos 3 idiomas; 1.7.0 instalada sobre pacote 1.6.0 = Instalado' $okV ($textosV -join ' / ')
+
+# 1.6.1 (27/10): atualizacao REAL -- o pacote anterior (-PayloadAnterior, o payload do 1.6.0 publicado) num RE falso, o jogador
+# mexe no menu (INI da raiz e de _storage_), o pacote novo (-PayloadReal) e oferecido como "Atualizar" (versao maior), instala por
+# cima mantendo as chaves do jogador (o resto do INI vem do pacote novo), e desinstalar volta byte a byte ao jogo sem mod.
+if ($PayloadReal -and $PayloadAnterior) {
+    $manA = Get-Content -Raw (Join-Path $PayloadAnterior 'pacote.json') | ConvertFrom-Json
+    $manN = Get-Content -Raw (Join-Path $PayloadReal 'pacote.json') | ConvertFrom-Json
+    $reA = Novo-RE (Join-Path $Raiz 'RE Atualizar Real')
+    $fotoA = Foto $reA
+    $ra1 = Rodar @('--instalar', $reA, '--payload', $PayloadAnterior, '--idioma', 'en')
+    $rdA1 = Rodar @('--detectar', $reA, '--payload', $PayloadAnterior)
+    $okA1 = $ra1.Codigo -eq 0 -and $rdA1.Texto -match ('(?m)versao_instalada: ' + [regex]::Escape($manA.versao) + '\s*$') -and
+        (Get-FileHash (Join-Path $reA 'nr_native_adapter.dll')).Hash -eq $manA.arquivos.'nr_native_adapter.dll'
+    Ok "atualizacao real: v$($manA.versao) instalada (helper e versao do pacote anterior)" $okA1 "codigo=$($ra1.Codigo) texto=$($rdA1.Texto)"
+    # o jogador no menu: idioma, contador, limite de FPS, filtros, estilo, estrutura, F10; e uma regulagem (Scale) que nao e dele
+    $doJogador = [ordered]@{ MenuLanguage = 'es'; NeuralMenuCompacto = '0'; NeuralFrameCap = '90'; NeuralFiltroCas = '1'; NeuralFiltroCasForca = '0.7';
+        NeuralStyle = '2'; LocalStructure = '1.300'; Enabled = '0' }
+    foreach ($d in $reA, (Join-Path $reA '_storage_')) {
+        $c = Join-Path $d 'dlssnr_on_amd.ini'
+        $t = [IO.File]::ReadAllText($c, [Text.Encoding]::GetEncoding(28591))
+        foreach ($k in @($doJogador.Keys) + 'Scale') {
+            $v = if ($k -eq 'Scale') { '0.099' } else { $doJogador[$k] }
+            if ($t -match ('(?m)^' + $k + '=')) { $t = [regex]::Replace($t, ('(?m)^' + $k + '=[^\r\n]*'), "$k=$v") } else { $t = $t.TrimEnd("`r", "`n") + "`r`n$k=$v`r`n" }
+        }
+        [IO.File]::WriteAllText($c, $t, [Text.Encoding]::GetEncoding(28591))
+    }
+    # o instalador novo ve a v anterior e oferece "Atualizar" (Cartao.Estado com a versao que o --detectar leu e a do pacote novo)
+    $rdA2 = Rodar @('--detectar', $reA, '--payload', $PayloadReal)
+    $vInst = if ($rdA2.Texto -match '(?m)versao_instalada: (\S+)\s*$') { $Matches[1] } else { '' }
+    $jogoA = [Activator]::CreateInstance($asm.GetType('Amdlss5.Instalador.Jogo'), $true); $jogoA.VersaoInstalada = $vInst
+    $pacA = [Activator]::CreateInstance($asm.GetType('Amdlss5.Instalador.Payload'), $true); $pacA.Versao = $manN.versao
+    $estadoA = "$($cartaoT.GetMethod('Estado').Invoke($null, @($jogoA, $pacA)))"
+    [void]$tT.GetMethod('Definir').Invoke($null, @('en'))
+    $txA = $cartaoT.GetMethod('TextoAtualizar').Invoke($null, @($jogoA, $pacA))
+    Ok "atualizacao real: v$($manA.versao) instalada + pacote v$($manN.versao) = Atualizar" ($vInst -eq $manA.versao -and $estadoA -eq 'Atualizar' -and $txA.Contains("v$($manA.versao)") -and $txA.Contains("v$($manN.versao)")) "instalada=$vInst estado=$estadoA texto=$txA"
+    $ra2 = Rodar @('--instalar', $reA, '--payload', $PayloadReal)
+    $sessA = @(Get-ChildItem -LiteralPath (Join-Path $reA 'AMDLSS5_backup') -Directory)
+    $todosA = $true
+    foreach ($p in $manN.arquivos.PSObject.Properties) {
+        if ($p.Name -eq 'dlssnr_on_amd.ini') { continue }
+        foreach ($alvo in $reA, (Join-Path $reA '_storage_')) { $c = Join-Path $alvo $p.Name; if (-not (Test-Path $c) -or (Get-FileHash $c).Hash -ne $p.Value) { $todosA = $false } }
+    }
+    $helperA = $manA.arquivos.'nr_native_adapter.dll'
+    $copiasA = @(Get-ChildItem -LiteralPath (Join-Path $reA 'AMDLSS5_backup') -Recurse -File | Where-Object { (Get-FileHash $_.FullName).Hash -eq $helperA })
+    $rdA3 = Rodar @('--detectar', $reA, '--payload', $PayloadReal)
+    Ok "atualizacao real: v$($manN.versao) por cima (arquivos do pacote novo, 1 pasta de backup, sem o helper velho, versao nova)" ($ra2.Codigo -eq 0 -and $todosA -and $sessA.Count -eq 1 -and $copiasA.Count -eq 0 -and $rdA3.Texto -match ('(?m)versao_instalada: ' + [regex]::Escape($manN.versao) + '\s*$')) "codigo=$($ra2.Codigo) arquivos=$todosA sessoes=$($sessA.Count) copias_velho=$($copiasA.Count)"
+    # INI depois da atualizacao: as chaves do jogador com o valor dele, o resto = o INI do pacote novo (re9.ini), nos dois lugares
+    $iniN = Join-Path $PayloadReal 'ini\re9.ini'
+    $pacoteIni = @{}
+    foreach ($l in ([IO.File]::ReadAllText($iniN, [Text.Encoding]::GetEncoding(28591)) -split "`r`n|`r|`n")) { if ($l -match '^([^=;\[]+)=(.*)$') { $pacoteIni[$Matches[1].Trim()] = $Matches[2].Trim() } }
+    $ruinsA = @()
+    foreach ($d in $reA, (Join-Path $reA '_storage_')) {
+        $t = [IO.File]::ReadAllText((Join-Path $d 'dlssnr_on_amd.ini'), [Text.Encoding]::GetEncoding(28591))
+        foreach ($k in $doJogador.Keys) { if ([regex]::Matches($t, ('(?m)^' + $k + '=' + [regex]::Escape($doJogador[$k]) + '\r?$')).Count -ne 1) { $ruinsA += "$k(jogador)" } }
+        if ($pacoteIni.ContainsKey('Scale') -and $t -notmatch ('(?m)^Scale=' + [regex]::Escape($pacoteIni['Scale']) + '\r?$')) { $ruinsA += 'Scale(pacote)' }
+        foreach ($k in $pacoteIni.Keys) {
+            if ($doJogador.Contains($k)) { continue }
+            if ($t -notmatch ('(?m)^' + [regex]::Escape($k) + '=' + [regex]::Escape($pacoteIni[$k]) + '\r?$')) { $ruinsA += "$k(pacote)"; if ($ruinsA.Count -gt 12) { break } }
+        }
+    }
+    Ok 'atualizacao real: INI mantem as chaves do menu do jogador e o resto vem do pacote novo (raiz e _storage_)' ($ruinsA.Count -eq 0) ("diferente: " + (($ruinsA | Select-Object -First 12) -join ', '))
+    Simula-Jogo $reA
+    $ra3 = Rodar @('--desinstalar', $reA, '--payload', $PayloadReal)
+    Ok 'atualizacao real: desinstalar depois da atualizacao = jogo sem mod, byte a byte' ($ra3.Codigo -eq 0 -and (Iguais $fotoA (Foto $reA))) "codigo=$($ra3.Codigo) $(Dif $fotoA (Foto $reA))"
+}
 
 # 21/10 (revisao final): as linhas de maquina das lojas (LOJA_ERRO/JOGO_ERRO) aparecem traduzidas no log da biblioteca
 $lpj = $asm.GetType('Amdlss5.Instalador.Biblioteca').GetMethod('LinhaParaJanela', [Reflection.BindingFlags]'NonPublic,Static')

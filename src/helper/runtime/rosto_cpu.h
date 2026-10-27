@@ -54,10 +54,17 @@ template<class Meia> inline void tom_bgr_meia(const std::uint16_t* hb,int w,int 
     for(size_t i=0;i<np;++i)for(int c=0;c<3;++c)bgr[i*3+size_t(2-c)]=lut[hb[i*4+size_t(c)]];
 }
 
-inline int cpu_simd() noexcept {
-    int r[4]{};__cpuid(r,1);const bool osx=(r[2]&(1<<27))!=0,avx=(r[2]&(1<<28))!=0;if(!osx||!avx)return 0;
-    const unsigned long long x=_xgetbv(0);if((x&6u)!=6u)return 0;
-    int m[4]{};__cpuid(m,0);if(m[0]<7)return 1;
-    int e[4]{};__cpuidex(e,7,0);return ((e[1]&(1<<16))!=0&&(x&0xE6u)==0xE6u)?2:1;
+inline int nivel_simd(unsigned ecx1,unsigned ebx7,unsigned long long xcr0,int folhas) noexcept {
+    const bool osx=(ecx1&(1u<<27))!=0,avx=(ecx1&(1u<<28))!=0,fma=(ecx1&(1u<<12))!=0;
+    if(!osx||!avx||(xcr0&6u)!=6u||folhas<7)return 0;
+    if((ebx7&(1u<<16))!=0&&(xcr0&0xE6u)==0xE6u)return 2;
+    return ((ebx7&(1u<<5))!=0&&fma)?1:0;
 }
+inline int cpu_simd() noexcept {
+    int r[4]{};__cpuid(r,1);const unsigned ecx1=unsigned(r[2]);
+    const unsigned long long x=(ecx1&(1u<<27))?_xgetbv(0):0ull;
+    int m[4]{};__cpuid(m,0);int e[4]{};if(m[0]>=7)__cpuidex(e,7,0);
+    return nivel_simd(ecx1,unsigned(e[1]),x,m[0]);
+}
+inline const char* nome_simd(int nivel) noexcept {return nivel>=2?"AVX-512F":nivel==1?"AVX2+FMA":"sem AVX2+FMA";}
 }

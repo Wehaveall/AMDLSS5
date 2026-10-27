@@ -13,7 +13,8 @@ language and options, structure, style, neural passes, FPS limit, image filters,
 "Restore defaults", puts the menu options back to the mod's general defaults (image filters off, Default style), also in a
 game with its own profile; menu language, input blocking and F10 on/off stay as they are.
 
-Requirements: AMD Radeon RX 9070 / RX 9070 XT (RDNA 4); DirectX 12 game with FSR 3.1.
+Requirements: AMD Radeon RX 9070 / RX 9070 XT (RDNA 4); DirectX 12 game with FSR 3.1; a CPU with AVX2 (Intel Core
+4th generation / AMD Ryzen or newer; AVX-512 is used when present - without AVX2 the face pass stays off).
 Tested only on a Radeon RX 9070 XT, in Resident Evil Requiem, The Witcher 3: Wild Hunt (next-gen, DirectX 12),
 Onimusha: Way of the Sword (demo), Cyberpunk 2077, Monster Hunter Wilds, Shadow of the Tomb Raider,
 Red Dead Redemption 2, Stellar Blade (demo) and Final Fantasy XVI (demo).
@@ -25,6 +26,10 @@ WARNING (AMD Adrenalin):
 Before playing, turn off the Adrenalin metrics overlay and recording/instant replay and set performance tuning
 to "Default" (no saved overclock); reboot after changing it. With them on the GPU can become very slow and hang
 (black screen/TDR) while the game loads.
+
+WHAT'S NEW IN 1.6.1:
+- Fixed: the face enhancement turned off on processors without AVX-512 (for example AMD Ryzen 5000 / Ryzen 7 5800X3D
+  and older, Intel Core 12th-14th generation and Core Ultra 200). It now needs only AVX2.
 
 WHAT'S NEW IN 1.6.0:
 - Greater stability.
