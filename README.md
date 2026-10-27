@@ -10,6 +10,8 @@ This repository holds the source code of the helper and of the installer. Binari
 
 - AMD Radeon **RX 9070 / RX 9070 XT** (RDNA 4). Other cards are not supported.
 - Windows 10/11 64-bit, a recent AMD Adrenalin driver.
+- A CPU with **AVX2** (Intel Core 4th generation / AMD Ryzen or newer); AVX-512 is used when present. Without AVX2 the
+  face pass stays off and the rest of the mod works.
 - A **DirectX 12** game with **FSR 3.1 or newer**, or one of the games listed below with its own setup. RE Engine (Capcom)
   games use REFramework, which the installer includes.
 
@@ -56,6 +58,11 @@ installed.
   Raider). In games that already offer it, turn it on in the game's own menu.
 - In-game menu in English, Portuguese and Spanish, with "Restore defaults".
 - Installer with a game library (all stores), backup and a complete uninstall.
+
+## What's new in 1.6.1
+
+- Fixed the face enhancement turning off on CPUs without AVX-512 (e.g. AMD Ryzen 5000 / Ryzen 7 5800X3D and older,
+  Intel Core 12th-14th gen, Core Ultra 200). AVX2 is now enough.
 
 ## What's new in 1.6.0
 
