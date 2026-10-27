@@ -36,4 +36,7 @@ public:
     std::vector<Record> take(){auto result=std::move(records_);records_.clear();return result;}
 };
 
+inline constexpr bool trace_ligado(long valor_ini,bool log_ativo) noexcept {return log_ativo&&valor_ini==1;}
+inline constexpr bool contrato_ligado(long valor_ini,bool log_ativo,bool sem_gravacao) noexcept {return log_ativo&&!sem_gravacao&&valor_ini==1;}
+
 }

@@ -7,6 +7,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include "../../../runtime/pasta_helper.h"
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -15,6 +16,9 @@
 
 namespace nrcompat {
 namespace {
+
+constexpr bool minimo=!NR_LOG_ATIVO;
+std::atomic<unsigned> contador_tolerados{0};
 constexpr unsigned origens=unsigned(Origem::Count);
 const char* const nome_origem[origens]{"binding","descritor","admissao","captura","composicao"};
 struct Estado {
@@ -36,30 +40,31 @@ void limpar(const char* id,char* out,std::size_t n) noexcept {
     copiar(out,n,id);for(std::size_t i=0;i<n&&out[i];++i)if(out[i]==' ')out[i]='_';
 }
 
-bool caminho_log(wchar_t (&path)[MAX_PATH]) noexcept {
-(void)path;return false;
-}
-
 struct Linha { bool ok{}; bool cabecalho{}; teste::Sink sink{}; char texto[4200]; };
 bool montar(Estado& e,const char* id,const char* detalhe,Linha& l) noexcept {
+    if constexpr(minimo){if(!e.sink)return false;}
     char gid[64];limpar(id,gid,sizeof gid);
     if(!e.limiter.admit(gid))return false;
-    NRLOGF(l.texto,sizeof l.texto,"pid=%lu tick=%llu thread=%lu id=%s %s\n",GetCurrentProcessId(),
+    std::snprintf(l.texto,sizeof l.texto,"pid=%lu tick=%llu thread=%lu id=%s %s\n",GetCurrentProcessId(),
         static_cast<unsigned long long>(GetTickCount64()),GetCurrentThreadId(),gid,detalhe?detalhe:"");
     l.sink=e.sink;l.cabecalho=!e.sink&&!e.cabecalho;if(l.cabecalho)e.cabecalho=true;
     return l.ok=true;
 }
 
 void gravar(const Linha& l) noexcept {
-(void)l;
+    if(!l.ok)return;
+    if(l.sink){l.sink(l.texto);return;}
 }
 }
 
+unsigned Limiter::por_id_efetivo() noexcept {return minimo?1u:per_id;}
+unsigned Limiter::total_efetivo() noexcept {return minimo?16u:total;}
 bool Limiter::admit(const char* id) noexcept {
-    if(lines_>=total)return false;
+    const unsigned lim_id=por_id_efetivo(),lim_total=total_efetivo();
+    if(lines_>=lim_total)return false;
     char key[sizeof(Entry::id)];copiar(key,sizeof key,id);
     for(unsigned i=0;i<used_;++i)if(std::strcmp(entries_[i].id,key)==0){
-        if(entries_[i].count>=per_id)return false;
+        if(entries_[i].count>=lim_id)return false;
         ++entries_[i].count;++lines_;return true;
     }
     if(used_>=total)return false;
@@ -83,6 +88,10 @@ void gate_id(const char* s,char* out,std::size_t n) noexcept {
 void report(const char* id,const char* detalhe) noexcept {
     try{auto& e=estado();Linha l;{std::lock_guard<std::mutex> lock(e.mutex);montar(e,id,detalhe,l);}gravar(l);}catch(...){}
 }
+void tolerado(const char* id,const char* detalhe) noexcept {
+    contador_tolerados.fetch_add(1,std::memory_order_relaxed);report(id,detalhe);
+}
+unsigned tolerados() noexcept {return contador_tolerados.load(std::memory_order_relaxed);}
 bool blocked(Origem origem) noexcept {
     const unsigned o=unsigned(origem);return o<origens&&estado().tem[o].load(std::memory_order_relaxed);
 }
@@ -97,7 +106,7 @@ void block(Origem origem,const char* id,const char* detalhe,const char* campo) n
             copiar(e.ativo[o].id,sizeof(Motivo::id),gid);copiar(e.ativo[o].campo,sizeof(Motivo::campo),campo);
             e.tem[o].store(true,std::memory_order_release);
             char texto[1200];
-            NRLOGF(texto,sizeof texto,"origem=%s campo=\"%s\" %s",nome_origem[o],campo?campo:"",detalhe?detalhe:"");
+            std::snprintf(texto,sizeof texto,"origem=%s campo=\"%s\" %s",nome_origem[o],campo?campo:"",detalhe?detalhe:"");
             montar(e,gid,texto,l);
         }
         gravar(l);
@@ -110,7 +119,7 @@ void unblock(Origem origem) noexcept {
         Linha l;
         {
             std::lock_guard<std::mutex> lock(e.mutex);if(!e.tem[o].load(std::memory_order_relaxed))return;
-            char texto[160];NRLOGF(texto,sizeof texto,"origem=%s motivo=%s",nome_origem[o],e.ativo[o].id);
+            char texto[160];std::snprintf(texto,sizeof texto,"origem=%s motivo=%s",nome_origem[o],e.ativo[o].id);
             e.ativo[o]={};e.tem[o].store(false,std::memory_order_release);
             montar(e,"recuperado",texto,l);
         }

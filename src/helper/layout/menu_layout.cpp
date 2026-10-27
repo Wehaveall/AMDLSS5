@@ -5,7 +5,9 @@
 #define NOMINMAX
 #endif
 #include "../runtime/nr_publico.h"
+#include "../runtime/proxy_layout.h"
 #include <windows.h>
+#include "../runtime/log_fila.h"
 #include <dxgi.h>
 #include <array>
 #include <atomic>
@@ -26,6 +28,8 @@
 #include "live_image.h"
 #include "../source/implementation/compat-diag/compat.h"
 #include "../runtime/overlay_amd.h"
+#include "../runtime/fsr_intermitente.h"
+#include "../runtime/fg_externo.h"
 
 namespace nrmenulayout {
 namespace {
@@ -40,16 +44,6 @@ constexpr unsigned char original[]{0x48,0x8b,0x85,0xd0,0x01,0x00,0x00};
 void log(const char* message) noexcept {
 (void)message;
 }
-bool disk_admitted(void* base) {
-    wchar_t path[32768]{};
-    if(!GetModuleFileNameW(static_cast<HMODULE>(base),path,32768))return false;
-    HANDLE h=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-    if(h==INVALID_HANDLE_VALUE)return false;
-    LARGE_INTEGER size{};bool ok=GetFileSizeEx(h,&size)&&size.QuadPart==nrliveimage::file_size;
-    std::vector<unsigned char> bytes;
-    if(ok){bytes.resize(nrliveimage::file_size);DWORD got{};ok=ReadFile(h,bytes.data(),DWORD(bytes.size()),&got,nullptr)&&got==bytes.size();}
-    CloseHandle(h);return ok&&nrliveimage::inspect_disk_snapshot(bytes.data(),bytes.size());
-}
 void destroy_string(void* base,nrmenu::NativeString& value) noexcept {
     if(value.capacity<16)return;
 
@@ -61,21 +55,38 @@ void destroy_string(void* base,nrmenu::NativeString& value) noexcept {
 }
 struct StringGuard {void* base;nrmenu::NativeString value{};~StringGuard(){destroy_string(base,value);}};
 
-std::string native_text(const unsigned char* base,std::size_t rva,std::size_t limit) {
+std::string_view native_view(const unsigned char* base,std::size_t rva,std::size_t limit) {
     const auto* value=reinterpret_cast<const nrmenu::NativeString*>(base+rva);
     if(!value->size||value->size>limit||value->capacity<value->size)return {};
     const char* text=value->text;if(value->capacity>=16)std::memcpy(&text,value->text,sizeof text);
     if(!text)return {};
-    return std::string(text,std::size_t(value->size));
+    return std::string_view(text,std::size_t(value->size));
+}
+std::string native_text(const unsigned char* base,std::size_t rva,std::size_t limit) {return std::string(native_view(base,rva,limit));}
+
+const char* fps_texto(const nrmenufps::Display& d,nrmenu::Language lang,char (&text)[64]) {
+    using nrmenu::Ui;
+    if(!d.read_ok)return nrmenu::ui(Ui::FpsCollecting,lang);
+    if(d.display_valid){std::snprintf(text,sizeof text,"%.0f FPS",d.display_fps);return text;}
+    if(d.input_valid){std::snprintf(text,sizeof text,"%.0f FPS",d.input_fps);return text;}
+    return "-- FPS";
+}
+void fps_principal(const nrmenufps::Display& d,nrmenu::Language lang,Frame& f) {
+    char text[64]{};f.fps=fps_texto(d,lang,text);
 }
 
+struct ChaveCompacto {
+    std::string status;int mediana{-2};bool enabled{};nrcompat::Motivo motivo{};int overlay{};bool pausa{},fsrint{},fg{};char fps[64]{};int lang{-1};
+    unsigned w{},h{},aw{},ah{},cw{},ch{};
+    bool igual(std::string_view s,int m,bool e,const nrcompat::Motivo& mo,int o,bool p,bool fi,bool g,const char* f,int l,unsigned w2,unsigned h2,unsigned aw2,unsigned ah2,unsigned cw2,unsigned ch2) const noexcept {
+        return lang>=0&&status==s&&mediana==m&&enabled==e&&std::strcmp(motivo.id,mo.id)==0&&std::strcmp(motivo.campo,mo.campo)==0&&overlay==o&&pausa==p&&
+            fsrint==fi&&fg==g&&std::strcmp(fps,f)==0&&lang==l&&w==w2&&h==h2&&aw==aw2&&ah==ah2&&cw==cw2&&ch==ch2;
+    }
+};
 void fps_texts(const nrmenufps::Display& d,const std::string& upscaler,nrmenu::Language lang,Frame& f) {
     using nrmenu::Ui;
     char text[64]{};
-    if(!d.read_ok){f.fps=nrmenu::ui(Ui::FpsCollecting,lang);}
-    else if(d.display_valid){std::snprintf(text,sizeof text,"%.0f FPS",d.display_fps);f.fps=text;}
-    else if(d.input_valid){std::snprintf(text,sizeof text,"%.0f FPS",d.input_fps);f.fps=text;}
-    else f.fps="-- FPS";
+    fps_principal(d,lang,f);
     std::string detail;
     auto add=[&](const std::string& part){if(part.empty())return;if(!detail.empty())detail+=" · ";detail+=part;};
 
@@ -97,14 +108,45 @@ Vertex* __cdecl rebuild(NativeVector* native) noexcept {
         const std::size_t count=(b-a)/sizeof(nrmenu::NativeRow);
         const auto lang=nrmenu::language();
 
+        const bool compacto=nrmenucompacto::desenhando.load(std::memory_order_relaxed);
+        Frame f;
+        thread_local ChaveCompacto chave;thread_local std::vector<Vertex> vertices_compacto;
+        if(compacto){
+            const auto cw=*reinterpret_cast<unsigned*>(base+0x92380),ch=*reinterpret_cast<unsigned*>(base+0x92384),
+                aw=*reinterpret_cast<unsigned*>(base+0x92388),ah=*reinterpret_cast<unsigned*>(base+0x9238c);
+            const bool enabled=*reinterpret_cast<const volatile std::uint8_t*>(base+nrproxy::rva_enabled)!=0;
+            const auto motivo=enabled?nrcompat::last_reason():nrcompat::Motivo{};
+            char fps[64]{};const char* fps_t=fps_texto(current->counters,lang,fps);
+            thread_local nrfgext::Vigia vigia_fg;const bool fg=nrfgext::gerando_agora(vigia_fg,GetTickCount64());
+            if(!vertices_compacto.empty()&&chave.igual(native_view(base,0x923e8,1024),nrpainel::mediana_ms.load(std::memory_order_relaxed),enabled,motivo,
+                   nroverlayamd::estado_aviso.load(std::memory_order_relaxed),nroverlayamd::pausa_recriacao.load(std::memory_order_relaxed)!=0,
+                   nrfsrint::ativo.load(std::memory_order_relaxed),fg,fps_t,int(lang),current->width,current->height,aw,ah,cw,ch)){
+                native->end=native->begin;
+                using Append=void(__cdecl*)(NativeVector*,Vertex*,const Vertex*,std::size_t);
+                reinterpret_cast<Append>(base+0x26870)(native,native->end,vertices_compacto.data(),vertices_compacto.size());
+                return native->begin;
+            }
+            vertices_compacto.clear();
+            chave.status.assign(native_view(base,0x923e8,1024));chave.mediana=nrpainel::mediana_ms.load(std::memory_order_relaxed);chave.enabled=enabled;
+            chave.motivo=motivo;chave.overlay=nroverlayamd::estado_aviso.load(std::memory_order_relaxed);
+            chave.pausa=nroverlayamd::pausa_recriacao.load(std::memory_order_relaxed)!=0;chave.fsrint=nrfsrint::ativo.load(std::memory_order_relaxed);chave.fg=fg;
+            std::snprintf(chave.fps,sizeof chave.fps,"%s",fps_t);chave.lang=int(lang);chave.w=current->width;chave.h=current->height;
+            chave.aw=aw;chave.ah=ah;chave.cw=cw;chave.ch=ch;
+            f.fallback_status=nrmenu::ui(nrmenu::Ui::FallbackStatus,lang);
+            f.network_word=nrmenu::ui(nrmenu::Ui::NetworkWord,lang);
+            if(fg)f.fg=nrfgext::rotulo_compacto;
+        }else{
+
         std::vector<NativeView> views(count);
         for(std::size_t i=0;i<count;++i)views[i]={begin[i].label,begin[i].help};
-        const auto order=catalog_order(views);
+        auto order=catalog_order(views);
         auto* selection=reinterpret_cast<int*>(base+0x923b4);
         const unsigned native_selected=unsigned(std::max(0,*selection));
-        const unsigned corrected=navigator.update(order,native_selected,begin);
+        unsigned corrected=navigator.update(order,native_selected,begin);
+
+        if(corrected<count&&nrfiltros::selecionado(views[corrected].label)){order=catalog_order(views);corrected=navigator.update(order,corrected,begin);}
         if(corrected!=native_selected&&corrected<count)*selection=int(corrected);
-        auto f=compose_frame(views,order,corrected,lang,[&](unsigned index){
+        f=compose_frame(views,order,corrected,lang,[&](unsigned index){
             const auto* p=begin+index;
             StringGuard str{base};str.value.capacity=15;
             if(p->getter){using Read=nrmenu::NativeString*(__cdecl*)(void*,nrmenu::NativeString*);auto** table=*reinterpret_cast<void***>(p->getter);reinterpret_cast<Read>(table[2])(p->getter,&str.value);}
@@ -112,6 +154,7 @@ Vertex* __cdecl rebuild(NativeVector* native) noexcept {
             const char* value=str.value.text;if(str.value.capacity>=16)std::memcpy(&value,str.value.text,sizeof value);
             return std::string(value,std::size_t(str.value.size));
         });
+        }
         const auto cw=*reinterpret_cast<unsigned*>(base+0x92380),ch=*reinterpret_cast<unsigned*>(base+0x92384),
             aw=*reinterpret_cast<unsigned*>(base+0x92388),ah=*reinterpret_cast<unsigned*>(base+0x9238c);
         if(!cw||!ch||!aw||!ah||cw>128||ch>128)return native->begin;
@@ -123,18 +166,25 @@ Vertex* __cdecl rebuild(NativeVector* native) noexcept {
             if(sp.end>sp.begin+3)f.status=f.status.substr(0,sp.begin)+std::to_string(med)+f.status.substr(sp.end-3);
         }
 
-        if(*reinterpret_cast<const volatile std::uint8_t*>(base+0x94A8C)!=0){
+        if(*reinterpret_cast<const volatile std::uint8_t*>(base+nrproxy::rva_enabled)!=0){
             const auto motivo=nrcompat::last_reason();
             if(motivo.id[0])f.status=nrmenu::network_off(motivo.id,motivo.campo,lang);
         }
 
         if(nroverlayamd::estado_aviso.load(std::memory_order_relaxed)==1)f.status=nrmenu::network_off("overlay_amd",nullptr,lang);
         else if(nroverlayamd::pausa_recriacao.load(std::memory_order_relaxed))f.status=nrmenu::network_off("overlay_amd_recriacao",nullptr,lang);
-        fps_texts(current->counters,native_text(base,0x94880,64),lang,f);
-        auto canvas=nrmenucompacto::desenhando.load(std::memory_order_relaxed)?build_compacto(current->width,current->height,f,float(aw),float(ah),float(cw),float(ch),
-                                                                                            *reinterpret_cast<const volatile std::uint8_t*>(base+0x94A8C)!=0?1:0)
+
+        if(nrfsrint::ativo.load(std::memory_order_relaxed)&&*reinterpret_cast<const volatile std::uint8_t*>(base+nrproxy::rva_enabled)!=0){
+            f.status=nrmenu::network_off("fsr_intermitente",nullptr,lang);
+            if(compacto)f.aviso=nrmenu::ui(nrmenu::Ui::DynamicResolution,lang);
+        }
+        if(compacto)fps_principal(current->counters,lang,f);
+        else fps_texts(current->counters,native_text(base,0x94880,64),lang,f);
+        auto canvas=compacto?build_compacto(current->width,current->height,f,float(aw),float(ah),float(cw),float(ch),
+                                                                                            *reinterpret_cast<const volatile std::uint8_t*>(base+nrproxy::rva_enabled)!=0?1:0)
                                                                              :build(current->width,current->height,f,float(aw),float(ah),float(cw),float(ch));
         if(canvas.vertices.empty()||canvas.vertices.size()*sizeof(Vertex)>0x100000)return native->begin;
+        if(compacto)vertices_compacto=canvas.vertices;
 
         native->end=native->begin;
         using Append=void(__cdecl*)(NativeVector*,Vertex*,const Vertex*,std::size_t);
@@ -152,7 +202,8 @@ bool install(void* address) noexcept {
         auto* base=static_cast<unsigned char*>(address);auto* site=base+hook_rva;
         constexpr unsigned char append_bytes[]{0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x55,0x53,0x48,0x83,0xec,0x48};
         constexpr unsigned char free_bytes[]{0xe9,0xdb,0x08,0,0,0xcc,0xcc,0xcc};
-        if(!address||!disk_admitted(address)||std::memcmp(site,original,sizeof original)!=0||
+
+        if(!address||!nrproxy::admitido(address)||std::memcmp(site,original,sizeof original)!=0||
            std::memcmp(base+0x26870,append_bytes,sizeof append_bytes)!=0||std::memcmp(base+0x38510,free_bytes,sizeof free_bytes)!=0){log("REJECTED module hash or renderer/allocator bytes");return false;}
         SYSTEM_INFO info{};GetSystemInfo(&info);const std::uintptr_t gran=info.dwAllocationGranularity;
         const auto center=reinterpret_cast<std::uintptr_t>(site)&~(gran-1);

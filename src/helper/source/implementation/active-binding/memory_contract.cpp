@@ -1,4 +1,5 @@
 #include "memory_contract.h"
+#include "../../../runtime/proxy_rva.h"
 #include <cstring>
 #include <windows.h>
 #include <intrin.h>
@@ -20,7 +21,7 @@ bool publish_capture_bookkeeping(void* image,std::size_t size) noexcept{
 }
 namespace {
 template<class T>T read(const Globals& g,std::uint32_t rva) noexcept {T v{};std::memcpy(&v,g.data()+rva-globals_begin,sizeof(v));return v;}
-bool known_cache(std::uint32_t c) noexcept{return c==0x94298||c==0x94398||c==0x94498||c==0x94598;}
+bool known_cache(std::uint32_t c) noexcept{return c==nrproxy::rva_cache_cor||c==nrproxy::rva_cache_mv||c==nrproxy::rva_cache_prof||c==nrproxy::rva_cache_expo;}
 }
 bool exclusive_signatures(const void* image,std::size_t size) noexcept{
     if(!image||size<0x732000)return false;
@@ -38,34 +39,34 @@ bool first_use_empty(const Globals& g) noexcept{
     for(auto r:{0x94850u,0x94858u,0x94860u,0x94868u})if(read<std::uint64_t>(g,r))return false;
     if(read<std::uint16_t>(g,0x94870)||read<std::uint64_t>(g,0x94B80)||read<std::uint8_t>(g,0x94B88))return false;
 
-    for(auto rva:{0x949A8u,0x948E0u,0x949D0u,0x949C0u,0x94800u,0x94708u,0x94718u,0x94720u,0x94728u,0x94758u,0x94760u,0x94A00u,0x94A30u,0x94A38u,0x94A40u,0x94A48u,0x94A50u})if(read<std::uint64_t>(g,rva))return false;
-    for(auto rva:{0x949B0u,0x948E8u,0x949DCu,0x94740u,0x94744u,0x94A58u,0x94A5Cu})if(read<std::uint32_t>(g,rva))return false;
-    for(auto rva:{0x949B8u,0x94711u,0x948F5u,0x94B78u})if(read<std::uint8_t>(g,rva))return false;
-    for(auto rva:{0x949BCu,0x949C8u,0x949D8u,0x949E4u,0x94A60u,0x94808u})if(read<std::int32_t>(g,rva)!=-1)return false;
-    for(auto c:{0x94298u,0x94398u,0x94498u,0x94598u}){
+    for(auto rva:{0x949A8u,0x948E0u,nrproxy::rva_lista_pendente,nrproxy::rva_cerca_alvo,0x94800u,0x94708u,0x94718u,0x94720u,0x94728u,0x94758u,0x94760u,0x94A00u,0x94A30u,0x94A38u,0x94A40u,0x94A48u,0x94A50u})if(read<std::uint64_t>(g,rva))return false;
+    for(auto rva:{0x949B0u,0x948E8u,nrproxy::rva_job_aceito,0x94740u,0x94744u,0x94A58u,0x94A5Cu})if(read<std::uint32_t>(g,rva))return false;
+    for(auto rva:{0x949B8u,nrproxy::rva_inline_ativo,nrproxy::rva_interop_ativo,nrproxy::rva_reset_pendente})if(read<std::uint8_t>(g,rva))return false;
+    for(auto rva:{nrproxy::rva_worker_job,nrproxy::rva_job_pronto,nrproxy::rva_job_pendente,0x949E4u,nrproxy::rva_job_compondo,0x94808u})if(read<std::int32_t>(g,rva)!=-1)return false;
+    for(auto c:{nrproxy::rva_cache_cor,nrproxy::rva_cache_mv,nrproxy::rva_cache_prof,nrproxy::rva_cache_expo}){
         for(auto off:{0x00u,0x08u,0x10u,0x18u,0x40u,0x80u,0x88u,0x90u,0x98u,0xA0u,0xA8u,0xB0u,0xB8u,0xC0u,0xC8u,0xD0u,0xD8u,0xE0u,0xE8u,0xF0u,0xF8u})if(read<std::uint64_t>(g,c+off))return false;
         if(read<std::uint32_t>(g,c+0x30)||read<std::uint32_t>(g,c+0x34)||read<std::int32_t>(g,c+0x38)!=-1||read<std::uint8_t>(g,c+0x78))return false;
     }
-    for(auto c:{0x946C0u,0x946E0u,0x948F8u,0x94918u,0x94938u,0x94958u,0x94A08u})for(unsigned i=0;i<4;++i)if(read<std::uint64_t>(g,c+8*i))return false;
+    for(auto c:{0x946C0u,0x946E0u,0x948F8u,0x94918u,0x94938u,0x94958u,nrproxy::rva_residuo})for(unsigned i=0;i<4;++i)if(read<std::uint64_t>(g,c+8*i))return false;
     for(unsigned i=0;i<4;++i)if(read<std::uint32_t>(g,0x94A28+4*i))return false;
     return true;
 }
 Config configuration(const Globals& g) noexcept{
     Config c{};unsigned i=0;
 
-    for(auto rva:{0x94A8Du,0x94A8Eu,0x94A8Fu,0x948F4u,0x94710u})c[i++]=read<std::uint8_t>(g,rva);
-    for(auto rva:{0x94A90u,0x94840u,0x94AA0u,0x94AA4u,0x94AA8u,0x94AACu,0x94AB0u,0x94AB4u,0x94BA4u})c[i++]=read<std::uint32_t>(g,rva);
+    for(auto rva:{0x94A8Du,nrproxy::rva_usar_fsr,nrproxy::rva_usar_prof,nrproxy::rva_interop_pedido,nrproxy::rva_inline_pedido})c[i++]=read<std::uint8_t>(g,rva);
+    for(auto rva:{nrproxy::rva_tom_ini,0x94840u,0x94AA0u,nrproxy::rva_estrutura_local,nrproxy::rva_estrutura_pele,nrproxy::rva_escala,nrproxy::rva_mascara_auto,0x94AB4u,0x94BA4u})c[i++]=read<std::uint32_t>(g,rva);
     return c;
 }
 bool cache_matches(const Globals& g,std::uint32_t c,const NrResourceDesc* d,bool require_copy) noexcept{
     if(!known_cache(c))return false;
     if(!d)return read<std::int32_t>(g,c+0x38)<0;
     if(!d->width||d->width>16384||!d->height||d->height>16384||read<std::int32_t>(g,c+0x38)<0||read<std::uint32_t>(g,c+0x3C)!=d->format)return false;
-    const auto job=read<std::int32_t>(g,0x949DC);if(job<0||(require_copy&&job==0))return false;
+    const auto job=read<std::int32_t>(g,nrproxy::rva_job_aceito);if(job<0||(require_copy&&job==0))return false;
     const unsigned slot=static_cast<unsigned>(job)&3u;
 
     unsigned width=static_cast<unsigned>(d->width),height=d->height;
-    if(c==0x94398||c==0x94498){width=(std::max)(width,read<unsigned>(g,0x942C8));height=(std::max)(height,read<unsigned>(g,0x942CC));}
+    if(c==nrproxy::rva_cache_mv||c==nrproxy::rva_cache_prof){width=(std::max)(width,read<unsigned>(g,0x942C8));height=(std::max)(height,read<unsigned>(g,0x942CC));}
     if(width>16384||height>16384||read<unsigned>(g,c+0x30)!=width||read<unsigned>(g,c+0x34)!=height)return false;
     if(!require_copy&&job==0)return true;
     return read<unsigned>(g,c+0x48+4*slot)==d->width&&read<unsigned>(g,c+0x58+4*slot)==d->height;

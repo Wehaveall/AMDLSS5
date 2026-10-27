@@ -73,9 +73,6 @@ inline constexpr unsigned char r55_mh128b_sha256[32]={0xbd,0x4d,0x1e,0xa5,0x1e,0
 inline constexpr std::size_t r55_mh256b_bytes=382976;
 inline constexpr unsigned char r55_mh256b_sha256[32]={0x5d,0x6b,0xea,0x7c,0x23,0x60,0x94,0xdf,0x5b,0x73,0x61,0x7a,0xa5,0xa8,0xe0,0x7a,0x8f,0x47,0x06,0x96,0x6d,0x43,0xe8,0x9a,0x7c,0x5e,0x6f,0x9a,0x44,0xaf,0x29,0xdf};
 
-inline constexpr std::size_t r55_mhp_bytes=1068824;
-inline constexpr unsigned char r55_mhp_sha256[32]={0xea,0xd7,0x6f,0xef,0x8b,0x3e,0x91,0xb3,0xc8,0x9f,0x5d,0x81,0x94,0xca,0x95,0x56,0xb6,0xcb,0xd3,0x74,0x16,0x67,0x0c,0x88,0x38,0xa5,0xdd,0x23,0xc1,0xd1,0x2e,0x43};
-
 inline constexpr std::size_t r55_sw32_bytes=188536;
 inline constexpr unsigned char r55_sw32_sha256[32]={0x45,0x0b,0x04,0x76,0x63,0x3b,0x10,0xaf,0xb9,0xa6,0x32,0x38,0x4f,0xd5,0x58,0x79,0x33,0x1f,0xce,0xbc,0xbf,0xeb,0xaf,0xbc,0x38,0xa4,0x76,0x88,0xc7,0x65,0xa3,0x48};
 
@@ -118,30 +115,6 @@ inline const R55Mh* r55_mh_borda(unsigned w_index) noexcept {
 }
 
 inline bool r55_borda_pedida(int chave,int mascara,unsigned w_index) noexcept {return chave==1&&w_index<3&&((mascara>>w_index)&1)!=0;}
-
-struct R55Mhp {const wchar_t* file;std::size_t bytes;const unsigned char* sha256;const char* names[3][3];};
-inline const R55Mhp* r55_mhp() noexcept {
- static constexpr R55Mhp m{L"nr_r55_mhp.hsaco",contract::r55_mhp_bytes,contract::r55_mhp_sha256,
-  {{"k_mhp64","k_mhp64_e","k_mhp64_d"},{"k_mhp128","k_mhp128_e","k_mhp128_d"},{"k_mhp256","k_mhp256_e","k_mhp256_d"}}};
- return &m;
-}
-
-inline int mhp_variante(unsigned modos) noexcept {return (modos&~0x13u)==0?1:(modos&~0x105u)==0?2:0;}
-
-inline bool mhp_vale(int w_index,unsigned janelas,int modo) noexcept {
- if(modo==2)return true;
- if(modo!=1)return false;
- return w_index==0?janelas<1000u:w_index==1?janelas<400u:w_index==2?janelas>=100u:false;
-}
-
-inline bool mhp_mode(unsigned mh_mode) noexcept {return mh_mode==0||mh_mode==1||mh_mode==2||mh_mode==4||mh_mode==8;}
-
-struct MhpTail {int w;const void* stream;int h,wd;const void* out;unsigned n,items;};
-inline bool mhp_join(const MhpTail& t,int w,const void* stream,int h,int wd,const void* in,unsigned mh_mode,unsigned items,unsigned cap) noexcept {
- return t.n>0&&t.n<8&&t.w==w&&t.stream==stream&&t.h==h&&t.wd==wd&&t.out==in&&!(mh_mode&(1u|8u))&&mhp_mode(mh_mode)&&t.items+items<=cap;
-}
-
-inline bool mhp_closes(unsigned mh_mode,unsigned n_after) noexcept {return (mh_mode&(2u|4u))!=0||n_after>=8;}
 
 inline bool r55_mh_mode(unsigned mode,bool fast43) noexcept {return fast43&&(mode<=5||mode==8||mode==10);}
 

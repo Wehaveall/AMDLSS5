@@ -6,6 +6,9 @@
 #endif
 #include "nr_publico.h"
 #include <windows.h>
+#include "pasta_helper.h"
+#include "proxy_layout.h"
+#include "log_fila.h"
 #include "multipass_runtime.h"
 #include "pre_scale_state.h"
 #include "tone_control.h"
@@ -15,20 +18,28 @@
 #include "reg_swin32.h"
 #include "style_trace.h"
 #include "measurement_live.h"
-#include "hip_priority.h"
 #include "../source/implementation/live-transition-binding/job_timeline.h"
 #endif
 #include "../source/implementation/live-transition-binding/mode_state.h"
 #include "../source/implementation/live-transition-binding/late_state.h"
 #include "multipass_math.h"
+#include "modulos_pin.h"
+#include "caminho_estreito.h"
+#include "sha256.h"
 #include "cena_mascara.h"
+#include "reproj_params.h"
+#include "passes_frac.h"
+#include "geometria_nativa.h"
 #include "reuso_state.h"
 #include "rede_cada.h"
 #include "painel_rede.h"
+#include "gpu_perdida.h"
 
 #include "rosto_jogador_state.h"
 #include "rosto_jogador_detecta.h"
-#include "yunet.h"
+#include "rosto_jogador_ini.h"
+
+#include "rosto_cor_luz.h"
 #include "scrfd.h"
 #include <condition_variable>
 #include <deque>
@@ -46,53 +57,7 @@
 #include <string>
 #include <vector>
 #include <cstdio>
-
-namespace nrmptiming {
-namespace {
-struct Recorder {Snapshot snapshot;std::size_t remaining{};};
-thread_local Recorder recorder;
-}
-void arm_current_thread(std::size_t limit) noexcept {recorder.snapshot={};recorder.remaining=(std::min)(limit,capacity);}
-Snapshot snapshot_current_thread() noexcept {return recorder.snapshot;}
-#ifdef NRMP_CPU_TEST
-std::int64_t test_now() noexcept;
-#endif
-std::int64_t now() noexcept {
-#ifdef NRMP_CPU_TEST
-    return test_now();
-#else
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-#endif
-}
-struct Scope {
-    Sample sample;bool active=false;std::int64_t begin{};int exceptions{};
-    Scope(int width,int height,int input_pitch,int output_pitch,int input_format,int output_format,int tone,void* metadata) noexcept {
-        if(!recorder.remaining)return;
-        --recorder.remaining;active=true;exceptions=std::uncaught_exceptions();begin=now();
-        sample.width=width;sample.height=height;sample.input_pitch=input_pitch;sample.output_pitch=output_pitch;
-        sample.input_format=input_format;sample.output_format=output_format;sample.tone=tone;sample.metadata_present=metadata!=nullptr;
-    }
-    ~Scope() noexcept {
-        if(!active)return;
-        sample.wrapper_wall_ns=now()-begin;
-        sample.remainder_host_wall_ns=sample.wrapper_wall_ns-sample.primary_blocking_wall_ns;
-        sample.wrapper_threw=std::uncaught_exceptions()>exceptions;
-        if(recorder.snapshot.count<capacity)recorder.snapshot.samples[recorder.snapshot.count++]=sample;
-    }
-    struct Primary {
-        Scope& scope;std::int64_t begin{};int exceptions{};
-        explicit Primary(Scope& value) noexcept:scope(value) {
-            if(!scope.active)return;
-            scope.sample.route=Route::direct_primary;exceptions=std::uncaught_exceptions();begin=now();
-        }
-        ~Primary() noexcept {
-            if(!scope.active)return;
-            scope.sample.primary_blocking_wall_ns=now()-begin;
-            scope.sample.primary_returned=std::uncaught_exceptions()==exceptions;
-        }
-    };
-};
-}
+#include <malloc.h>
 
 namespace {
 using Eval=void(*)(void*,void*,int,int,int,int,void*,int,int,int,void*);
@@ -111,31 +76,40 @@ template<class T>T read(const void* p,size_t offset) {T v;std::memcpy(&v,static_
 template<class T>void write(void* p,size_t offset,T v) {std::memcpy(static_cast<char*>(p)+offset,&v,sizeof(v));}
 struct HipFailure:std::runtime_error {
     int status;const char* phase;unsigned pass;bool uncertain;
-    HipFailure(int value,const char* where,unsigned index,bool pending):std::runtime_error("multipass HIP failure"),status(value),phase(where),pass(index),uncertain(pending){}
+
+    HipFailure(int value,const char* where,unsigned index,bool pending):std::runtime_error("multipass HIP failure"),status(value),phase(where),pass(index),uncertain(pending){(void)nrgpu::hip(value,where);}
 };
 void check(int status) {if(status)throw HipFailure(status,"HIP operation",0,false);}
 
 thread_local bool job_assincrono=false;
+
+thread_local bool job_multipasso=false;
 struct PortaoMovimento {bool ligado{};float t0{.01f},t1{.04f};unsigned raio{6},erosao{2};};
 #ifdef NRMP_CPU_TEST
 PortaoMovimento portao_teste{};
+std::atomic<unsigned> teste_linhas{0};char teste_ultima[200]{};
 #endif
 void diagnostic_escreve(const char* phase,unsigned pass,int status,double milliseconds,unsigned request,unsigned long long completed_jobs) noexcept {
 #ifndef NRMP_CPU_TEST
     try {
-        HMODULE self{};wchar_t path[32768]{};
-        if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(&diagnostic_escreve),&self)||!GetModuleFileNameW(self,path,32768))return;
 
     }catch(...){}
 #else
-    (void)phase;(void)pass;(void)status;(void)milliseconds;(void)request;(void)completed_jobs;
+    (void)pass;(void)status;(void)milliseconds;(void)request;(void)completed_jobs;
+    teste_linhas.fetch_add(1);std::snprintf(teste_ultima,sizeof teste_ultima,"%s",phase?phase:"");
 #endif
 }
 void diagnostic(const char* phase,unsigned pass,int status,double milliseconds,unsigned request=0,unsigned long long completed_jobs=0) noexcept {
 
     static std::atomic<unsigned> records{0};if(records.fetch_add(1)>=128)return;
     diagnostic_escreve(phase,pass,status,milliseconds,request,completed_jobs);
+}
+
+void diagnostic_falha(const char* phase,unsigned pass,int status,double milliseconds,unsigned request=0) noexcept {
+    static std::atomic<unsigned long long> falhas{0};
+    const unsigned long long n=falhas.fetch_add(1)+1;
+    if(n>64&&(n&(n-1))!=0)return;
+    diagnostic_escreve(phase,pass,status,milliseconds,request,n);
 }
 
 namespace nrlento {
@@ -170,6 +144,8 @@ struct Hip {
     int (*launch)(void*,unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,void*,void**,void**){};
 
     int (*copy_async)(void*,const void*,size_t,int,void*){};
+
+    int (*load_data)(void**,const void*){};
     template<class T>static T symbol(HMODULE h,const char* n) {
 #ifdef NRMP_CPU_TEST
         (void)h;return reinterpret_cast<T>(test_symbol(n));
@@ -177,15 +153,14 @@ struct Hip {
         auto p=GetProcAddress(h,n);if(!p)throw std::runtime_error("missing HIP API");return reinterpret_cast<T>(p);
 #endif
     }
-    Hip() {
+
+    static const Hip& tabela() {static const Hip t{0};return t;}
+    explicit Hip(int) {
         auto h=GetModuleHandleW(L"amdhip64_7.dll");
 #ifndef NRMP_CPU_TEST
         if(!h)throw std::runtime_error("HIP unavailable");
 #endif
         allocate=symbol<decltype(allocate)>(h,"hipMalloc");release=symbol<decltype(release)>(h,"hipFree");
-#ifndef NRMP_CPU_TEST
-        if(nrorc::modo()>0){allocate=&nrorc_vram::hip_malloc_contado;release=&nrorc_vram::hip_free_contado;}
-#endif
         copy=symbol<decltype(copy)>(h,"hipMemcpy");sync=symbol<decltype(sync)>(h,"hipDeviceSynchronize");
         error=symbol<decltype(error)>(h,"hipGetLastError");device=symbol<decltype(device)>(h,"hipGetDevice");
         set=symbol<decltype(set)>(h,"hipMemset");
@@ -194,16 +169,41 @@ struct Hip {
         launch=symbol<decltype(launch)>(h,"hipModuleLaunchKernel");
 #ifndef NRMP_CPU_TEST
         copy_async=reinterpret_cast<decltype(copy_async)>(GetProcAddress(h,"hipMemcpyAsync"));
+        load_data=reinterpret_cast<decltype(load_data)>(GetProcAddress(h,"hipModuleLoadData"));
 #endif
     }
+    Hip():Hip(tabela()) {
+#ifndef NRMP_CPU_TEST
+        if(nrorc::modo()>0){allocate=&nrorc_vram::hip_malloc_contado;release=&nrorc_vram::hip_free_contado;}
+#endif
+    }
+    Hip(const Hip&)=default;
 
-    static inline bool async_on=false;
-    int d2d(void* dst,const void* src,size_t n){return async_on&&copy_async?copy_async(dst,src,n,3,nullptr):copy(dst,src,n,3);}
+    static inline std::atomic<bool> async_on{false};
+    int d2d(void* dst,const void* src,size_t n){return async_on.load(std::memory_order_relaxed)&&copy_async?copy_async(dst,src,n,3,nullptr):copy(dst,src,n,3);}
     void completed(const char* phase="completion",unsigned pass=0){
         const int synced=sync();if(synced)throw HipFailure(synced,phase,pass,true);
         const int pending=error();if(pending)throw HipFailure(pending,phase,pass,true);
     }
 };
+
+#ifndef NRMP_CPU_TEST
+const std::filesystem::path& pasta_helper() {return nrpasta::helper();}
+#endif
+int carregar_modulo(Hip& hip,void** module,const nrmodpin::Pin& pin,std::vector<unsigned char>& guarda,nrmodpin::Leitura& leitura) {
+#ifdef NRMP_CPU_TEST
+    (void)pin;(void)guarda;leitura=nrmodpin::Leitura::ok;return hip.load_module(module,"nr_cpu_test.hsaco");
+#else
+    const auto& pasta=pasta_helper();
+    if(pasta.empty()){leitura=nrmodpin::Leitura::ausente;return 301;}
+    leitura=nrmodpin::ler(pasta/pin.arquivo,&pin,&nrliveimage::detail::sha256_matches,guarda);
+    if(leitura!=nrmodpin::Leitura::ok)return 301;
+    if(!hip.load_data)return 301;
+    return hip.load_data(module,guarda.data());
+#endif
+}
+
+#include "contexto_nativo.h"
 }
 
 namespace nrmpsessao {inline std::atomic<unsigned long long> t0{0};
@@ -259,24 +259,18 @@ const nrcena::Config& cena_config(char* base) {
         c.parado_max=inteiro(L"NeuralPassoExtraParadoMax",c.parado_max);c.reusa=inteiro(L"NeuralPassoExtraReusa",c.reusa);
         c.guia=real(L"NeuralPassoExtraGuia",c.guia);
 
-        c.cam_px=real(L"NeuralPassoExtraCamPx",c.cam_px);c.cam_frac=real(L"NeuralPassoExtraCamFrac",c.cam_frac);
+        c.cam_px=nrinijogo::passo_extra_cam_px(ini.c_str());c.cam_frac=real(L"NeuralPassoExtraCamFrac",c.cam_frac);
         c.cam_reusa=inteiro(L"NeuralPassoExtraCamReusa",c.cam_reusa);
 
-        c.warp=inteiro(L"NeuralPassoExtraWarp",c.warp);c.warp_fator=real(L"NeuralPassoExtraWarpFator",c.warp_fator);
         c.crono=inteiro(L"NeuralPassoExtraCrono",c.crono);c.dilata_sep=inteiro(L"NeuralPassoExtraDilataSep",c.dilata_sep);c.mascara_pulo=inteiro(L"NeuralPassoExtraMascaraPulo",c.mascara_pulo);c.copia_async=inteiro(L"NeuralPassoExtraCopiaAsync",c.copia_async);c.menos_esperas=inteiro(L"NeuralPassoExtraMenosEsperas",c.menos_esperas);
 
         c.ret_mov=real(L"NeuralPassoExtraRetMovPx",c.ret_mov);c.ret_tudo=inteiro(L"NeuralPassoExtraRetMovTudo",c.ret_tudo);
         c.ret_idade=real(L"NeuralPassoExtraRetIdade",c.ret_idade);c.ret_gama=real(L"NeuralPassoExtraRetGama",c.ret_gama);
         c.ret_gama_mov=real(L"NeuralPassoExtraRetGamaMovPx",c.ret_gama_mov);c.ret_escuro=real(L"NeuralPassoExtraRetEscuro",c.ret_escuro);
         c.ret_raio=inteiro(L"NeuralPassoExtraRetRaio",c.ret_raio);
-        c.alinha=inteiro(L"NeuralPassoExtraAlinha",c.alinha);c.ret_v1=inteiro(L"NeuralPassoExtraRetV1",c.ret_v1);
+        c.alinha=inteiro(L"NeuralPassoExtraAlinha",c.alinha);
         c.fade=inteiro(L"NeuralPassoExtraFade",c.fade);c.fade_sobe=inteiro(L"NeuralPassoExtraFadeSobe",c.fade_sobe);
         c.protege=inteiro(L"NeuralPassoExtraProtege",c.protege);c.protege_sessao=inteiro(L"NeuralPassoExtraProtegeSessao",c.protege_sessao);c.protege_ini_s=inteiro(L"NeuralPassoExtraProtegeInicioS",c.protege_ini_s);c.protege_frac=real(L"NeuralPassoExtraProtegeFrac",c.protege_frac);c.fade_curva=inteiro(L"NeuralPassoExtraFadeCurva",c.fade_curva);
-
-        c.comp=real(L"NeuralPassoExtraCompensa",c.comp);c.comp_max=real(L"NeuralPassoExtraCompensaMax",c.comp_max);
-        c.comp_ini=real(L"NeuralPassoExtraCompensaIni",c.comp_ini);c.comp_mascara=inteiro(L"NeuralPassoExtraCompensaMascara",c.comp_mascara);
-        c.comp_escuro=real(L"NeuralPassoExtraCompensaEscuro",c.comp_escuro);c.comp_media=real(L"NeuralPassoExtraCompensaMedia",c.comp_media);
-        c.comp_baixa=inteiro(L"NeuralPassoExtraCompensaBaixa",c.comp_baixa);c.comp_baixa_k=real(L"NeuralPassoExtraCompensaBaixaGanho",c.comp_baixa_k);
 
         c.pre_carrega=inteiro(L"NeuralPassoExtraPreCarrega",c.pre_carrega);c.trava_ms=inteiro(L"NeuralPassoExtraTravaMs",c.trava_ms);
         c.trava_n=inteiro(L"NeuralPassoExtraTravaN",c.trava_n);c.trava_janela_s=inteiro(L"NeuralPassoExtraTravaJanelaS",c.trava_janela_s);
@@ -289,22 +283,21 @@ const nrcena::Config& cena_config(char* base) {
         c.sobe_prof=real(L"NeuralPassoExtraSobeProf",c.sobe_prof);c.sobe_raio=real(L"NeuralPassoExtraSobeRaio",c.sobe_raio);
         c=nrcena::limitar(c);
 
-        nrcena::quer_mv.store(c.modo>0||c.warp>0||c.cam_px>0.f,std::memory_order_relaxed);
-        char line[800];std::snprintf(line,sizeof line,"cena_config modo=%d perto=%.2f..%.2f forca=%.2f t0=%.2f t1=%.2f rel=%.3f base_px=%.2f raio=%d borra=%d decai=%.2f passo=%d iter=%d c=%.2f ganho=%.2f escala=%d pele=%s%.2f parado=%.3f cada=%d parado_max=%d reusa=%d guia=%.3f cam_px=%.2f cam_frac=%.2f cam_reusa=%d warp=%d warp_fator=%.2f crono=%d dilata_sep=%d mascara_pulo=%d copia_async=%d menos_esperas=%d",
-            c.modo,double(c.perto_k0),double(c.perto_k1),double(c.forca),double(c.t0),double(c.t1),double(c.rel),double(c.base_px),c.raio,c.borra,double(c.decai),c.passo,c.iter,double(c.c),double(c.ganho),c.escala,c.pele_ligada?"":"(nao) ",double(c.pele),double(c.parado),c.cada,c.parado_max,c.reusa,double(c.guia),double(c.cam_px),double(c.cam_frac),c.cam_reusa,c.warp,double(c.warp_fator),c.crono,c.dilata_sep,c.mascara_pulo,c.copia_async,c.menos_esperas);
+        {wchar_t pf[32]{};NRCFG_STR(L"DlssNrOnAmd",L"NeuralPasses",L"",pf,32,ini.c_str());const int t=nrpassesfrac::ler(pf);
+         if(t>0&&!nrpassesfrac::semeado.load(std::memory_order_acquire))nrpassesfrac::semear(t);
+         char l2[96];std::snprintf(l2,sizeof l2,"passes_frac_config ini=%d decimos=%d",t,nrpassesfrac::decimos.load());diagnostic(l2,0,0,0);}
+
+        nrcena::quer_mv.store(c.modo>0||c.cam_px>0.f,std::memory_order_relaxed);
+        char line[800];std::snprintf(line,sizeof line,"cena_config modo=%d perto=%.2f..%.2f forca=%.2f t0=%.2f t1=%.2f rel=%.3f base_px=%.2f raio=%d borra=%d decai=%.2f passo=%d iter=%d c=%.2f ganho=%.2f escala=%d pele=%s%.2f parado=%.3f cada=%d parado_max=%d reusa=%d guia=%.3f cam_px=%.2f cam_frac=%.2f cam_reusa=%d crono=%d dilata_sep=%d mascara_pulo=%d copia_async=%d menos_esperas=%d",
+            c.modo,double(c.perto_k0),double(c.perto_k1),double(c.forca),double(c.t0),double(c.t1),double(c.rel),double(c.base_px),c.raio,c.borra,double(c.decai),c.passo,c.iter,double(c.c),double(c.ganho),c.escala,c.pele_ligada?"":"(nao) ",double(c.pele),double(c.parado),c.cada,c.parado_max,c.reusa,double(c.guia),double(c.cam_px),double(c.cam_frac),c.cam_reusa,c.crono,c.dilata_sep,c.mascara_pulo,c.copia_async,c.menos_esperas);
         diagnostic(line,0,0,0);
         if(c.retifica()||c.alinha>0||c.fade>0){
-            std::snprintf(line,sizeof line,"ret_config v1=%d alinha=%d mov_px=%.2f tudo=%d idade=%.2f gama=%.2f gama_mov=%.2f escuro=%.2f raio=%d fade=%d sobe=%d curva=%d protege=%d/%ds/%.4f",
-                c.ret_v1,c.alinha,double(c.ret_mov),c.ret_tudo,double(c.ret_idade),double(c.ret_gama),double(c.ret_gama_mov),double(c.ret_escuro),c.ret_raio,c.fade,c.fade_sobe,c.fade_curva,c.protege,c.protege_ini_s,double(c.protege_frac));
+            std::snprintf(line,sizeof line,"ret_config alinha=%d mov_px=%.2f tudo=%d idade=%.2f gama=%.2f gama_mov=%.2f escuro=%.2f raio=%d fade=%d sobe=%d curva=%d protege=%d/%ds/%.4f",
+                c.alinha,double(c.ret_mov),c.ret_tudo,double(c.ret_idade),double(c.ret_gama),double(c.ret_gama_mov),double(c.ret_escuro),c.ret_raio,c.fade,c.fade_sobe,c.fade_curva,c.protege,c.protege_ini_s,double(c.protege_frac));
             diagnostic(line,0,0,0);
         }
         if(c.pre_carrega||c.trava_ms>0){
             std::snprintf(line,sizeof line,"trava_config pre_carrega=%d trava_ms=%d trava_n=%d janela_s=%d",c.pre_carrega,c.trava_ms,c.trava_n,c.trava_janela_s);
-            diagnostic(line,0,0,0);
-        }
-        if(c.comp>0.f){
-            std::snprintf(line,sizeof line,"comp_config comp=%.2f max=%.2f ini=%.2f mascara=%d escuro=%.2f media=%.2f baixa=%d baixa_k=%.2f",
-                double(c.comp),double(c.comp_max),double(c.comp_ini),c.comp_mascara,double(c.comp_escuro),double(c.comp_media),c.comp_baixa,double(c.comp_baixa_k));
             diagnostic(line,0,0,0);
         }
         if(c.cont>0||c.sobe>0){
@@ -312,6 +305,27 @@ const nrcena::Config& cena_config(char* base) {
                 c.cont,nrcena::continuo(c)?1:0,c.cont_escala,double(c.cont_raio),double(c.cont_forca),c.cont_portao,double(c.cont_mov),c.cont_mascara,c.sobe,double(c.sobe_luma),double(c.sobe_prof),double(c.sobe_raio));
             diagnostic(line,0,0,0);
         }
+        return c;}();
+    return lido;
+#endif
+}
+
+struct SoltaConfig {bool pesos_comuns=true;unsigned solta_jobs=600;unsigned rascunho_jobs=300;};
+const SoltaConfig& solta_config(char* base) {
+#ifdef NRMP_CPU_TEST
+    (void)base;static SoltaConfig c{};return c;
+#else
+    static const SoltaConfig lido=[base]{
+        SoltaConfig c{};
+        try{
+            const std::wstring ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&job_assincrono));
+            if(ini.empty())return c;
+            c.pesos_comuns=NRCFG_INT(L"DlssNrOnAmd",L"NeuralPassoExtraPesosComuns",1,ini.c_str())!=0;
+            c.solta_jobs=unsigned(std::clamp<int>(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralPassoExtraSoltaJobs",600,ini.c_str())),0,1000000));
+            c.rascunho_jobs=unsigned(std::clamp<int>(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralCenaRascunhoSoltaJobs",300,ini.c_str())),0,1000000));
+        }catch(...){}
+        char l[160];std::snprintf(l,sizeof l,"solta_config pesos_comuns=%d solta_jobs=%u rascunho_jobs=%u",c.pesos_comuns?1:0,c.solta_jobs,c.rascunho_jobs);
+        diagnostic(l,0,0,0);
         return c;}();
     return lido;
 #endif
@@ -332,6 +346,12 @@ struct Cache {
     unsigned long long gate_jobs{},gate_sum{},gate_pixels{};
 
     unsigned gate_fail_w{},gate_fail_h{};bool gate_fail_logged{};
+
+    std::vector<unsigned char> modulo_bytes;
+
+    bool pesos_comuns[2]{};
+
+    size_t vram_falha_bytes{};unsigned vram_espera{};unsigned long long vram_falhas{};
     std::mutex mutex;
     bool gate_alloc_failed(Hip& hip,unsigned w,unsigned h,int erro) noexcept {
         (void)hip.error();
@@ -361,6 +381,14 @@ struct Cache {
         if(!gate_stats)if(const int r=hip.allocate(&gate_stats,4)){gate_stats=nullptr;return gate_alloc_failed(hip,w,h,r);}
         return true;
     }
+
+    void diff_erode(Hip& hip,unsigned grid,void* imported,unsigned w,unsigned h,unsigned pw,unsigned erosao) {
+        unsigned valido=gate_valid?1u:0u;
+        void* diff_args[]={&imported,&previous,&diff,&w,&h,&pw,&valido};
+        check(hip.launch(diff_kernel,grid,1,1,256,1,1,0,nullptr,diff_args,nullptr));
+        void* erode_args[]={&diff,&eroded,&w,&h,&erosao};
+        check(hip.launch(erode_kernel,grid,1,1,256,1,1,0,nullptr,erode_args,nullptr));
+    }
     void ensure_buffers(Hip& hip,size_t bytes) {
         if(capacity>=bytes)return;
         void* fresh[4]{};
@@ -373,46 +401,54 @@ struct Cache {
     void ensure_kernels(Hip& hip) {
         if(fold_kernel && status)return;
         if(!module) {
-            wchar_t path[32768];HMODULE self{};
-#ifndef NRMP_CPU_TEST
-            if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCWSTR>(&NRMultipassEval_v1),&self))throw std::runtime_error("helper path unavailable");
-#endif
-            const auto length=GetModuleFileNameW(self,path,32768);
-            if(!length || length>=32768)throw std::runtime_error("helper path unavailable");
-            const auto file=(std::filesystem::path(path).parent_path()/L"nr_multipass.hsaco").string();
-            check(hip.load_module(&module,file.c_str()));
+
+            nrmodpin::Leitura leitura{};
+            const int r=carregar_modulo(hip,&module,nrmodpin::multipass,modulo_bytes,leitura);
+            if(r){module=nullptr;(void)hip.error();diagnostic(leitura==nrmodpin::Leitura::ok?"multipass_modulo_recusado":nrmodpin::texto(leitura),0,r,0);}
+            check(r);
         }
         check(hip.get_kernel(&compose_kernel,module,"nrmp_compose"));
         check(hip.get_kernel(&sanitize_kernel,module,"nrmp_sanitize"));
         check(hip.get_kernel(&fold_kernel,module,"nrmp_fold"));
         if(!status)check(hip.allocate(&status,4));
     }
+
+    void compartilhar_pesos(Hip& hip,unsigned index) noexcept {
+        if(index>1||pesos_comuns[index]||!primary)return;
+        auto p=contexts[index].data();
+        void* meu=read<void*>(p,0x10);void* dele=read<void*>(primary,0x10);const size_t n=read<size_t>(p,0x160);
+        if(!meu||!dele||meu==dele||!n||n!=read<size_t>(primary,0x160)){diagnostic("pesos_comuns_recusado",index,0,0);return;}
+        try{
+            const auto t=std::chrono::steady_clock::now();
+            constexpr size_t bloco=size_t(4)<<20;std::vector<unsigned char> a((std::min)(n,bloco)),b(a.size());
+            bool iguais=true;
+            const size_t ultimo=n>bloco?n-bloco:0;
+            const size_t amostras[4]={0,(n/3)&~size_t(255),(2*(n/3))&~size_t(255),ultimo};
+            for(size_t o:amostras){
+                if(!iguais)break;
+                if(o>ultimo)o=ultimo;
+                const size_t k=(std::min)(bloco,n-o);
+                if(hip.copy(a.data(),static_cast<const char*>(dele)+o,k,2)||hip.copy(b.data(),static_cast<const char*>(meu)+o,k,2)){
+                    (void)hip.error();diagnostic("pesos_comuns_copia_falhou",index,0,0);return;}
+                iguais=std::memcmp(a.data(),b.data(),k)==0;
+            }
+            if(!iguais){diagnostic("pesos_comuns_diferentes",index,0,0);return;}
+            write<void*>(p,0x10,dele);pesos_comuns[index]=true;
+            if(hip.release(meu))(void)hip.error();
+            const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t).count();
+            diagnostic("pesos_comuns contexto_extra_le_os_pesos_do_principal (4 blocos amostrados)",index,0,ms,0,(unsigned long long)n);
+        }catch(...){}
+    }
     void* context(Hip& hip,unsigned index,const float* controls) {
         auto p=contexts[index].data();
-        if(!constructed[index]) {
-            native<void*(*)(void*)>(base,0x1ce20)(p);constructed[index]=true;
-        }
         if(!loaded[index]) {
-            wchar_t path[32768];
-#ifdef NRMP_CPU_TEST
-            auto weight_module=HMODULE{};
-#else
-            auto weight_module=reinterpret_cast<HMODULE>(base);
-#endif
-            auto length=GetModuleFileNameW(weight_module,path,32768);
-            if(!length||length>=32768)throw std::runtime_error("proxy path unavailable");
-            std::string weights=(std::filesystem::path(path).parent_path()/L"dlssnr_on_amd_weights.bin").string();
-            bool ok=native<bool(*)(void*,const std::string*)>(base,0x1e120)(p,&weights);
-            hip.completed();
-            if(!ok||!read<void*>(p,0x10)||!read<void*>(p,0x168)||!read<size_t>(p,0x160))
-                throw std::runtime_error("extra context weights unavailable");
+
+            nrctx::carregar(hip,base,p,constructed[index],nrctx::pasta_pesos(base)/L"dlssnr_on_amd_weights.bin",nrctx::Pesos::conhecidos,index+2);
             loaded[index]=true;
+            if(solta_config(base).pesos_comuns)compartilhar_pesos(hip,index);
         }
         std::memcpy(p+0x20,controls,20);
-
-        write<unsigned>(p,0xf0,0);write<unsigned>(p,0x120,0);write<unsigned>(p,0x38,0);
-        write<void*>(p,0x118,nullptr);
+        nrctx::sem_estado(p);
         return p;
     }
 };
@@ -420,9 +456,16 @@ struct Cache {
 
 Cache& cache() {static Cache* p=new Cache;return *p;}
 
-struct CenaMv {const void* mv;int pitch,fmt,mvw,mvh;float sx,sy;int neth,netw;const void* dep;int dpitch,dfmt,dw,dh,dinv;};
-static_assert(sizeof(CenaMv)==72,"CenaMv 72 B");
+using CenaMv=nrreproj::Mv;
+
+inline bool mv_de_params(const unsigned char* p,CenaMv& m) noexcept {
+        nrreproj::copiar(p,m);
+        if(m.dep&&(m.dw<=0||m.dh<=0||m.dw>16384||m.dh>16384||m.dpitch<m.dw*4))m.dep=nullptr;
+        const int bpp=m.fmt==1||m.fmt==2?8:4;
+        return m.mv&&m.fmt>=0&&m.fmt<=2&&m.mvw>=16&&m.mvh>=16&&m.mvw<=8192&&m.mvh<=8192&&m.pitch>=m.mvw*bpp&&m.netw>0&&m.neth>0&&std::isfinite(m.sx)&&std::isfinite(m.sy);
+}
 struct CenaGpu {
+    std::vector<unsigned char> modulo_bytes;
     bool tentou{},pronto{};void* k_reduz{};void* k_fold_baixo{};void* l0{};void* la{};void* lb{};size_t lcap{};void* module{};void* k_dmax{};void* k_acum{};void* k_resolve{};void* k_bruta{};void* k_filtro{};void* k_persiste{};void* k_fold{};
     void* dmax{};void* acc{};void* coef{};void* stats{};void* a{};void* b{};void* prev{};size_t cap{};int pw{},ph{};bool prev_ok{};
     unsigned long long q_ant{};unsigned long long jobs{},sem_mv{},mascaras{},invalidos{};double soma_w{},soma_m{},px{};float coef_host[20]{};
@@ -433,18 +476,12 @@ struct CenaGpu {
 
     void* k_mv_conta{};void* cnt2{};unsigned long long p_cam{};double p_fcam{};
 
-    unsigned cnt_pend{};void* k_diff_warp{};void* k_fold_warp{};unsigned long long anc_q{},p_warp{},levadas{};double p_nq{};
+    unsigned cnt_pend{};unsigned long long levadas{};
     double cr_ms[2][6]{};unsigned long long cr_n[2]{};
 
     bool ler_mv(CenaMv& m) const noexcept {
         if(!nrcena::params_ok)return false;
-        const unsigned char* p=nrcena::params;
-        std::memcpy(&m.mv,p+0x10,8);std::memcpy(&m.pitch,p+0x18,4);std::memcpy(&m.fmt,p+0x1c,4);std::memcpy(&m.mvw,p+0x20,4);std::memcpy(&m.mvh,p+0x24,4);
-        std::memcpy(&m.sx,p+0x58,4);std::memcpy(&m.sy,p+0x5c,4);std::memcpy(&m.neth,p+0x68,4);std::memcpy(&m.netw,p+0x6c,4);
-        std::memcpy(&m.dep,p+0x30,8);std::memcpy(&m.dpitch,p+0x38,4);std::memcpy(&m.dfmt,p+0x3c,4);std::memcpy(&m.dw,p+0x40,4);std::memcpy(&m.dh,p+0x44,4);std::memcpy(&m.dinv,p+0x48,4);
-        if(m.dep&&(m.dw<=0||m.dh<=0||m.dw>16384||m.dh>16384||m.dpitch<m.dw*4))m.dep=nullptr;
-        const int bpp=m.fmt==1||m.fmt==2?8:4;
-        return m.mv&&m.fmt>=0&&m.fmt<=2&&m.mvw>=16&&m.mvh>=16&&m.mvw<=8192&&m.mvh<=8192&&m.pitch>=m.mvw*bpp&&m.netw>0&&m.neth>0&&std::isfinite(m.sx)&&std::isfinite(m.sy);
+        return mv_de_params(nrcena::params,m);
     }
 
     void* k_fold_ret{};void* k_ret_delta{};void* k_ret_baixa{};void* k_fold_ret2{};void* ret_dl{};void* ret_dlb{};size_t ret_cap{};CenaMv m_ult{};bool m_ok{};unsigned long long q_ret_ant{},q_ancora{};int entre_ret=2;
@@ -453,8 +490,6 @@ struct CenaGpu {
     float fade_v=1.f;unsigned long long q_fade{},p_fade{};
 
     unsigned long long t_ini{},n_prot{};bool prot_ant=false;unsigned long long jobs_log=~0ull;
-
-    void* k_cp_mede{};void* k_cp_aplica{};void* cp_soma{};float cp_r{};bool cp_mediu{};unsigned long long cp_jobs{},cp_comp{},cp_med{};double cp_g{};
 
     void* k_cont_borra{};void* k_fold_cont{};void* cont_tmp{};size_t cont_cap{};
     unsigned long long c_jobs{},c_cont{},c_andando{},c_barato{},c_guiado{};double c_kd{},c_lw{};unsigned c_masc{};
@@ -466,12 +501,10 @@ struct CenaGpu {
     bool carregar(Hip& hip) {
         if(tentou)return pronto;tentou=true;
 #ifndef NRMP_CPU_TEST
-        wchar_t path[32768];HMODULE self{};
-        if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&NRMultipassEval_v1),&self))return false;
-        const auto length=GetModuleFileNameW(self,path,32768);if(!length||length>=32768)return false;
-        const auto file=std::filesystem::path(path).parent_path()/L"nr_cena.hsaco";std::error_code ec;
-        if(!std::filesystem::is_regular_file(file,ec)){diagnostic("cena_modulo_ausente",0,0,0);return false;}
-        if(hip.load_module(&module,file.string().c_str())){(void)hip.error();diagnostic("cena_modulo_recusado",0,0,0);return false;}
+
+        {nrmodpin::Leitura leitura{};
+         if(const int r=carregar_modulo(hip,&module,nrmodpin::cena,modulo_bytes,leitura)){module=nullptr;(void)hip.error();
+             diagnostic(leitura==nrmodpin::Leitura::ausente?"cena_modulo_ausente":leitura==nrmodpin::Leitura::ok?"cena_modulo_recusado":"cena_modulo_pin_diferente",0,r,0);return false;}}
         const char* nomes[]={"cn_dmax","cn_acum","cn_resolve","cn_bruta","cn_filtro","cn_persiste","cn_fold"};
         void** alvos[]={&k_dmax,&k_acum,&k_resolve,&k_bruta,&k_filtro,&k_persiste,&k_fold};
         for(int i=0;i<7;++i)if(hip.get_kernel(alvos[i],module,nomes[i])){(void)hip.error();diagnostic("cena_kernel_ausente",unsigned(i),0,0);return false;}
@@ -482,13 +515,10 @@ struct CenaGpu {
         if(hip.get_kernel(&k_ret_delta,module,"cn_ret_delta")||hip.get_kernel(&k_ret_baixa,module,"cn_ret_baixa")||hip.get_kernel(&k_fold_ret2,module,"cn_fold_ret2")){
             (void)hip.error();k_ret_delta=k_ret_baixa=k_fold_ret2=nullptr;diagnostic("cena_ret2_ausente",0,0,0);}
         else if(hip.allocate(&cnt,4)){(void)hip.error();cnt=nullptr;k_diff_ancora=k_conta=k_fold_baixo2=nullptr;diagnostic("cena_ghost2_alloc",0,0,0);}
-        if(hip.get_kernel(&k_cp_mede,module,"cp_mede")||hip.get_kernel(&k_cp_aplica,module,"cp_aplica")){(void)hip.error();k_cp_mede=k_cp_aplica=nullptr;diagnostic("cena_comp_ausente",0,0,0);}
-        else if(hip.allocate(&cp_soma,8)){(void)hip.error();cp_soma=nullptr;k_cp_mede=k_cp_aplica=nullptr;diagnostic("cena_comp_alloc",0,0,0);}
         if(hip.get_kernel(&k_cont_borra,module,"cn_cont_borra")||hip.get_kernel(&k_fold_cont,module,"cn_fold_cont")){(void)hip.error();k_cont_borra=k_fold_cont=nullptr;diagnostic("cena_cont_ausente",0,0,0);}
         if(hip.get_kernel(&k_mv_conta,module,"cn_mv_conta")){(void)hip.error();k_mv_conta=nullptr;diagnostic("cena_camera_ausente",0,0,0);}
         else if(hip.allocate(&cnt2,8)){(void)hip.error();cnt2=nullptr;k_mv_conta=nullptr;diagnostic("cena_camera_alloc",0,0,0);}
-        if(hip.get_kernel(&k_diff_warp,module,"cn_diff_ancora_warp")||hip.get_kernel(&k_fold_warp,module,"cn_fold_baixo_warp")){
-            (void)hip.error();k_diff_warp=k_fold_warp=nullptr;diagnostic("cena_warp_ausente",0,0,0);}
+
         void** bufs[]={&dmax,&acc,&coef,&stats};const size_t tam[]={64,65*4,20*4,64};
         for(int i=0;i<4;++i)if(hip.allocate(bufs[i],tam[i])){(void)hip.error();*bufs[i]=nullptr;diagnostic("cena_alloc",unsigned(i),0,0);return false;}
         pronto=true;diagnostic("cena_pronto",0,0,0);
@@ -497,6 +527,7 @@ struct CenaGpu {
 #endif
         return pronto;
     }
+
     bool tamanho(Hip& hip,int w,int h) {
         const size_t need=size_t(w)*size_t(h)*4;
         if(need<=cap&&w==pw&&h==ph)return true;
@@ -529,34 +560,27 @@ struct CenaGpu {
 
     static bool mv_do_job(CenaMv& m) {
         if(!nrcena::params_ok)return false;
-        const unsigned char* p=nrcena::params;m=CenaMv{};
-        std::memcpy(&m.mv,p+0x10,8);std::memcpy(&m.pitch,p+0x18,4);std::memcpy(&m.fmt,p+0x1c,4);std::memcpy(&m.mvw,p+0x20,4);std::memcpy(&m.mvh,p+0x24,4);
-        std::memcpy(&m.sx,p+0x58,4);std::memcpy(&m.sy,p+0x5c,4);std::memcpy(&m.neth,p+0x68,4);std::memcpy(&m.netw,p+0x6c,4);
-        std::memcpy(&m.dep,p+0x30,8);std::memcpy(&m.dpitch,p+0x38,4);std::memcpy(&m.dfmt,p+0x3c,4);std::memcpy(&m.dw,p+0x40,4);std::memcpy(&m.dh,p+0x44,4);std::memcpy(&m.dinv,p+0x48,4);
-        if(m.dep&&(m.dw<=0||m.dh<=0||m.dw>16384||m.dh>16384||m.dpitch<m.dw*4))m.dep=nullptr;
-        const int bpp=m.fmt==1||m.fmt==2?8:4;
-        return m.mv&&m.fmt>=0&&m.fmt<=2&&m.mvw>=16&&m.mvh>=16&&m.mvw<=8192&&m.mvh<=8192&&m.pitch>=m.mvw*bpp&&m.netw>0&&m.neth>0&&std::isfinite(m.sx)&&std::isfinite(m.sy);
+        m=CenaMv{};return mv_de_params(nrcena::params,m);
     }
 
+    nrcena::MedidaCamera cam_memo;
+    bool cam_lembra(float lim,float& f) noexcept {return cam_memo.lembra(nrreusostate::quadro_cena,lim,f);}
+    void cam_guarda(float lim,float f) noexcept {cam_memo.guarda(nrreusostate::quadro_cena,lim,f);}
     float frac_camera(Hip& hip,float lim) {
+        float f=-1.f;if(cam_lembra(lim,f))return f;
         CenaMv m{};if(!k_mv_conta||!cnt2||!mv_do_job(m))return -1.f;
         int passo=8;const unsigned gw=unsigned((m.mvw+passo-1)/passo),gh=unsigned((m.mvh+passo-1)/passo);
         check(hip.set(cnt2,0,8));
         void* am[]={&m,&passo,&lim,&cnt2};check(hip.launch(k_mv_conta,(gw+255)/256u,gh,1,256,1,1,0,nullptr,am,nullptr));
         unsigned c[2]{};check(hip.copy(c,cnt2,8,2));
-        return c[1]?float(double(c[0])/double(c[1])):-1.f;
+        f=c[1]?float(double(c[0])/double(c[1])):-1.f;cam_guarda(lim,f);return f;
     }
 
     const float* mascara(Hip& hip,const nrcena::Config& c,int& mw,int& mh) {
         ++jobs;mw=mh=0;m_ok=false;
         if(!nrcena::params_ok){++sem_mv;return nullptr;}
-        CenaMv m{};const unsigned char* p=nrcena::params;
-        std::memcpy(&m.mv,p+0x10,8);std::memcpy(&m.pitch,p+0x18,4);std::memcpy(&m.fmt,p+0x1c,4);std::memcpy(&m.mvw,p+0x20,4);std::memcpy(&m.mvh,p+0x24,4);
-        std::memcpy(&m.sx,p+0x58,4);std::memcpy(&m.sy,p+0x5c,4);std::memcpy(&m.neth,p+0x68,4);std::memcpy(&m.netw,p+0x6c,4);
-        std::memcpy(&m.dep,p+0x30,8);std::memcpy(&m.dpitch,p+0x38,4);std::memcpy(&m.dfmt,p+0x3c,4);std::memcpy(&m.dw,p+0x40,4);std::memcpy(&m.dh,p+0x44,4);std::memcpy(&m.dinv,p+0x48,4);
-        if(m.dep&&(m.dw<=0||m.dh<=0||m.dw>16384||m.dh>16384||m.dpitch<m.dw*4))m.dep=nullptr;
-        const int bpp=m.fmt==1||m.fmt==2?8:4;
-        if(!(m.mv&&m.fmt>=0&&m.fmt<=2&&m.mvw>=16&&m.mvh>=16&&m.mvw<=8192&&m.mvh<=8192&&m.pitch>=m.mvw*bpp&&m.netw>0&&m.neth>0&&std::isfinite(m.sx)&&std::isfinite(m.sy))){++invalidos;return nullptr;}
+        CenaMv m{};
+        if(!mv_de_params(nrcena::params,m)){++invalidos;return nullptr;}
         m_ult=m;m_ok=true;
         if(!tamanho(hip,m.mvw,m.mvh))return nullptr;
         int passo=c.passo,gw=(m.mvw+passo-1)/passo,gh=(m.mvh+passo-1)/passo;
@@ -600,18 +624,6 @@ CenaGpu& cena_gpu() {static CenaGpu* p=new CenaGpu;return *p;}
 #ifndef NRMP_CPU_TEST
 #include "rosto_jogador_runtime.h"
 #endif
-#ifndef NRMP_CPU_TEST
-
-void cadencia_camera() noexcept {
- namespace c=nrredecada::cam;
- nrcena::quer_mv.store(true,std::memory_order_relaxed);
- int e=-1;
- try{Hip hip;auto& cg=cena_gpu();
-  if(cg.carregar(hip)){const float f=cg.frac_camera(hip,c::px.load(std::memory_order_relaxed));e=f<0.f?-1:c::anda(f,c::frac.load(std::memory_order_relaxed))?1:0;}
- }catch(...){e=-1;}
- c::estado.store(e,std::memory_order_release);c::medidos.fetch_add(1,std::memory_order_relaxed);if(e>0)c::andando.fetch_add(1,std::memory_order_relaxed);
-}
-#endif
 void acknowledge(char* base,unsigned value) {
     const LONG prior=InterlockedExchange(reinterpret_cast<volatile LONG*>(base+0x71d094),LONG(value));
 
@@ -628,14 +640,14 @@ static void job1_log(const char* linha) noexcept {
 extern "C" bool NRAquecerJob1_v1(void* proxy_base,int width,int height) noexcept {
     auto base=static_cast<char*>(proxy_base);
     if(!base)return false;
-    volatile auto& feito=*reinterpret_cast<volatile std::uint8_t*>(base+0x948B0);
+    volatile auto& feito=*reinterpret_cast<volatile std::uint8_t*>(base+nrproxy::rva_aquecido);
     if(feito)return false;
     static int chave=-1;
     if(chave<0){chave=job1_teto_padrao;try{const auto ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&job1_log));
         if(!ini.empty())chave=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralCenaJob1Teto",job1_teto_padrao,ini.c_str()));}catch(...){}
         if(chave!=1){char l[160];std::snprintf(l,sizeof l,"PRE_SCALE_AQUECE pid=%lu desligado NeuralCenaJob1Teto=%d (o proxy aquece no tamanho da captura)",GetCurrentProcessId(),chave);job1_log(l);}}
     if(chave!=1)return false;
-    void* primary=base+0x93f48;
+    void* primary=base+nrproxy::rva_contexto;
     const unsigned request=nrmp::valid_config(unsigned(InterlockedCompareExchange(reinterpret_cast<volatile LONG*>(base+0x71d090),0,0)));
     unsigned w{},h{};double pct{};
     try{if(!nrprescale_runtime::aquecer_tamanho(primary,width,height,request,w,h,pct)){
@@ -644,8 +656,8 @@ extern "C" bool NRAquecerJob1_v1(void* proxy_base,int width,int height) noexcept
         return false;}}
     catch(...){return false;}
 
-    std::unique_lock<std::recursive_mutex> trava_rj(nrregswin::rjsync::trava(),std::defer_lock);
-    if(nrregswin::rjsync::ligado.load(std::memory_order_relaxed))trava_rj.lock();
+    nrregswin::rjsync::Dono trava_rj;
+    if(nrregswin::rjsync::ligado.load(std::memory_order_relaxed))trava_rj.travar();
     void* in{};void* out{};bool chamou=false;const auto t0=std::chrono::steady_clock::now();int profile=0;
     try{
         Hip hip;const size_t bytes=size_t(w)*h*8;
@@ -653,7 +665,7 @@ extern "C" bool NRAquecerJob1_v1(void* proxy_base,int width,int height) noexcept
         feito=1;
         profile=read<int>(base,0x9487C)!=0?2:0;*reinterpret_cast<volatile int*>(static_cast<char*>(primary)+0x98)=profile;
         chamou=true;
-        native<Eval>(base,0x2a080)(primary,in,int(w*8),0,int(h),int(w),out,int(w*8),0,read<int>(base,0x94698),nullptr);
+        native<Eval>(base,0x2a080)(primary,in,int(w*8),0,int(h),int(w),out,int(w*8),0,read<int>(base,nrproxy::rva_tom_ef),nullptr);
         *reinterpret_cast<volatile int*>(static_cast<char*>(primary)+0x38)=0;
         *reinterpret_cast<volatile std::uint8_t*>(static_cast<char*>(primary)+0x120)=0;
         hip.completed("aquecer_job1");
@@ -671,19 +683,58 @@ extern "C" bool NRAquecerJob1_v1(void* proxy_base,int width,int height) noexcept
 }
 #endif
 
+#ifndef NRMP_CPU_TEST
+
+static bool cabe_na_imagem(const void* base,std::uintptr_t rva,std::uintptr_t n) noexcept {
+    const auto* b=static_cast<const unsigned char*>(base);
+    if(!b||b[0]!='M'||b[1]!='Z')return false;
+    std::int32_t lfanew{};std::memcpy(&lfanew,b+0x3c,4);
+    if(lfanew<=0||lfanew>0x1000||std::memcmp(b+lfanew,"PE\0\0",4)!=0)return false;
+    std::uint32_t tamanho{};std::memcpy(&tamanho,b+lfanew+0x18+0x38,4);
+    return tamanho&&rva<=tamanho&&n<=tamanho-rva;
+}
+static void geometria_nativa_instalar(char* base) noexcept {
+    try{
+        const std::wstring ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&geometria_nativa_instalar));
+        const int pedido=ini.empty()?0:int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralGeometriaNativa",0,ini.c_str()));
+
+        const bool marca=cabe_na_imagem(base,nrgeo::rva_chave,4)&&read<unsigned>(base,nrgeo::rva_marca)==nrgeo::marca;
+        bool ligou=false;
+        if(pedido==1&&marca){
+            DWORD antigo=0,tmp=0;
+            if(VirtualProtect(base+nrgeo::rva_chave,4,PAGE_EXECUTE_READWRITE,&antigo)){
+                InterlockedExchange(reinterpret_cast<volatile LONG*>(base+nrgeo::rva_chave),1);
+                VirtualProtect(base+nrgeo::rva_chave,4,antigo,&tmp);ligou=true;}
+        }
+        nrgeo::ligada.store(ligou,std::memory_order_release);
+        char l[200];std::snprintf(l,sizeof l,"GEOMETRIA_NATIVA pid=%lu pedido=%d marca_no_proxy=%d ligada=%d (campo/niveis da NVIDIA; tamanhos de rede compativeis)",
+            GetCurrentProcessId(),pedido,marca?1:0,ligou?1:0);job1_log(l);
+    }catch(...){nrgeo::ligada.store(false);}
+}
+#endif
+
+#ifdef NRMP_CPU_TEST
+bool test_proxy_admitido(const void* base) noexcept;
+static bool proxy_admitido(char* base) noexcept {return test_proxy_admitido(base);}
+#else
+static bool proxy_admitido(char* base) noexcept {return nrproxy::admitido(base);}
+#endif
 extern "C" bool NRMultipassInstall_v1(void* proxy_base) noexcept {
     if(!proxy_base)return false;
     auto base=static_cast<char*>(proxy_base);
-
+    if(!proxy_admitido(base)){diagnostic_escreve("install_recusado proxy_nao_admitido (digest do disco)",0,0,0,0,0);return false;}
     if(read<unsigned>(base,0x71d098)!=0x3153504du)return false;
+#ifndef NRMP_CPU_TEST
+    geometria_nativa_instalar(base);
+#endif
     void* empty=nullptr;
     if(!nrtone::owner.compare_exchange_strong(empty,base) && empty!=base)return false;
 #ifndef NRMP_CPU_TEST
     (void)nrneuraltone::install(base);
-    (void)nrregswin::install(base);
+
+    if(!nrregswin::install(base)){diagnostic_escreve("install_recusado reg_swin32=0 (ver nr_reg_swin32.log): callback do Eval nao instalado",0,0,0,0,0);return false;}
     (void)nrstyletrace::install(base);
     (void)nrmeasurelive::install(base);
-    (void)nrhipprio::install(base);
 #endif
     InterlockedExchangePointer(reinterpret_cast<void* volatile*>(base+0x71d0a0),
         reinterpret_cast<void*>(&NRMultipassEval_v1));
@@ -702,7 +753,7 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
     try {
         Hip hip;hip.completed("primary_completion",1);
         const auto passo1_pronto=std::chrono::steady_clock::now();
-        Hip::async_on=cena_config(base).copia_async!=0;
+        Hip::async_on.store(cena_config(base).copia_async!=0,std::memory_order_relaxed);
         const unsigned passes=request&255u;
 
         static const unsigned long long t_sessao_mp=GetTickCount64();
@@ -743,8 +794,21 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
         const size_t imported_bytes=size_t(padded_w)*padded_h*12;
         if(stage_bytes>size_t(512)*1024*1024||output_bytes>size_t(512)*1024*1024||imported_bytes>size_t(512)*1024*1024)
             throw std::runtime_error("staging size limit");
-        state.ensure_kernels(hip);
-        state.ensure_buffers(hip,(std::max)(stage_bytes,output_bytes));
+
+        const size_t buffer_bytes=(std::max)(stage_bytes,output_bytes);
+        if(state.vram_espera&&buffer_bytes>state.capacity&&buffer_bytes>=state.vram_falha_bytes){--state.vram_espera;return done((request&0xff00u)|1u);}
+        try{
+            state.ensure_kernels(hip);
+            state.ensure_buffers(hip,buffer_bytes);
+        }catch(const HipFailure& f){
+            if(f.status!=2||f.uncertain)throw;
+            (void)hip.error();
+            state.vram_falha_bytes=buffer_bytes;state.vram_espera=60;++state.vram_falhas;
+            char l[200];std::snprintf(l,sizeof l,"passos_extras_sem_vram bytes=%zu falhas=%llu (job em 1 passo; nova tentativa em 60 jobs)",buffer_bytes,state.vram_falhas);
+            diagnostic_falha(l,passes,f.status,0,request);
+            return done((request&0xff00u)|1u);
+        }
+        state.vram_espera=0;state.vram_falha_bytes=0;
         check(hip.set(state.status,0,4));
 
         const bool no_lugar=cena_config(base).menos_esperas&&cena_config(base).fold_proprio()&&cena_gpu().carregar(hip);
@@ -766,16 +830,19 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
         const PortaoMovimento pm=job_assincrono?portao(base):PortaoMovimento{};
         const bool pesar=pm.ligado&&state.ensure_gate(hip,w,h);
         auto& cg=cena_gpu();
-        const bool proprio=cena.fold_proprio()&&cg.carregar(hip);
+
+        const int pf_dec=nrpassesfrac::decimos.load(std::memory_order_relaxed);
+        const bool pf_frac=passes==2u&&pf_dec<10;
+        const bool proprio=(cena.fold_proprio()||pf_frac)&&cg.carregar(hip);
+        {static int pf_ant=-1;static bool pf_sem=false;
+         if(pf_frac&&!proprio&&!pf_sem){pf_sem=true;diagnostic("passes_frac_sem_cena",passes,0,0,request,0);}
+         if(passes==2u&&pf_dec!=pf_ant){pf_ant=pf_dec;char l[96];std::snprintf(l,sizeof l,"passes_frac decimos=%d ganho=%.2f proprio=%d",pf_dec,double(nrpassesfrac::ganho(pf_dec)),proprio?1:0);diagnostic(l,passes,0,0,request,0);}}
         const float* eroded=nullptr;bool eroded_feito=false;
         const bool pulavel=proprio&&job_assincrono&&cena.pula()&&pesar&&cg.k_conta&&cg.k_diff_ancora&&cg.cnt;
         float frac=-1.f;
         if(pulavel){
-            const bool tinha=state.gate_valid;unsigned valido=tinha?1u:0u,erosao=pm.erosao;
-            void* diff_args[]={&imported,&state.previous,&state.diff,&w,&h,&pw,&valido};
-            check(hip.launch(state.diff_kernel,grid,1,1,256,1,1,0,nullptr,diff_args,nullptr));
-            void* erode_args[]={&state.diff,&state.eroded,&w,&h,&erosao};
-            check(hip.launch(state.erode_kernel,grid,1,1,256,1,1,0,nullptr,erode_args,nullptr));
+            const bool tinha=state.gate_valid;
+            state.diff_erode(hip,grid,imported,w,h,pw,pm.erosao);
             eroded=static_cast<const float*>(state.eroded);state.gate_valid=true;eroded_feito=true;
 
             if(cena.menos_esperas&&cg.cnt_pend){unsigned conta=0;check(hip.copy(&conta,cg.cnt,4,2));frac=float(double(conta)/double(cg.cnt_pend));cg.cnt_pend=0;}
@@ -819,16 +886,13 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
         }
 
         float peso_fade=1.f;
-
-        float peso_comp=1.f;
-        if(pulavel&&cena.fade<=0)peso_comp=(calcula||reusa_job)?1.f:0.f;
         bool fade_alvo=true;
         if(pulavel&&cena.fade>0){
             const unsigned long long q=nrreusostate::quadro_cena;const int k=nrcena::quadros_entre(q,cg.q_fade);cg.q_fade=q;
             const bool alvo=(calcula||reusa_job)&&!protegido;fade_alvo=alvo;
             cg.fade_v=protegido?0.f:nrcena::passo_fade2(cg.fade_v,alvo,k,cena.fade,cena.fade_sobe,cena.fade_curva);
             if(!alvo&&cg.fade_v>0.f){calcula=true;reusa_job=false;++cg.p_fade;}
-            peso_fade=cg.fade_v;peso_comp=peso_fade;
+            peso_fade=cg.fade_v;
         }
 
         bool cont_job=false;nrcena::Bandas bandas{};
@@ -883,9 +947,6 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
 
         const bool sem_fold=!calcula&&!reusa_job;
 
-        const float g_comp=pulavel&&cg.k_cp_aplica?nrcena::comp_ganho(cena,cg.cp_r,peso_comp):1.f;
-        if(proprio&&cena.modo>0&&!cmask&&cena.mascara_pulo&&sem_fold&&g_comp>1.f&&cena.comp_mascara)cmask=cg.mascara_levada(hip,cena,cmw,cmh);
-
         if(proprio&&cena.modo>0&&!cmask&&cont_job&&!fade_alvo&&cena.cont_mascara>1){
             if(++cg.c_masc%unsigned(cena.cont_mascara)!=0)cmask=cg.mascara_levada(hip,cena,cmw,cmh);
         }else if(cont_job)cg.c_masc=0;
@@ -897,15 +958,12 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
         if(proprio){
 
             if(pesar&&!eroded_feito){
-                unsigned valido=state.gate_valid?1u:0u,erosao=pm.erosao;
-                void* diff_args[]={&imported,&state.previous,&state.diff,&w,&h,&pw,&valido};
-                check(hip.launch(state.diff_kernel,grid,1,1,256,1,1,0,nullptr,diff_args,nullptr));
-                void* erode_args[]={&state.diff,&state.eroded,&w,&h,&erosao};
-                check(hip.launch(state.erode_kernel,grid,1,1,256,1,1,0,nullptr,erode_args,nullptr));
+                state.diff_erode(hip,grid,imported,w,h,pw,pm.erosao);
                 eroded=static_cast<const float*>(state.eroded);state.gate_valid=true;
             }else if(!pesar)state.gate_valid=false;
             check(hip.set(cg.stats,0,16));
             unsigned raio=pm.raio;float t0=pm.t0,t1=pm.t1,forca=cena.forca,ganho=cena.ganho*peso_fade;int mw=cmw,mh=cmh;
+            if(pf_frac)ganho*=nrpassesfrac::ganho(pf_dec);
 
             const auto dilata=[&](const float*& g){
                 if(!cena.dilata_sep||!g||raio==0||!cg.k_filtro||g!=static_cast<const float*>(state.eroded))return;
@@ -955,7 +1013,7 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
 
                     void* fr[]={&lin,&lout,&lwi,&lhi,&resid,&r1s,&gate,&cmask,&mw,&mh,&w,&h,&pitch,&raio,&t0,&t1,&forca,&ganho,&cg.stats,&state.status,
                                 &mv,&mvok,&idade_q,&movpx,&tudo,&gama,&gamamov,&escuro,&rr};
-                    if(!cena.ret_v1&&cg.k_fold_ret2&&cg.ret_tamanho(hip,flw,flh)){
+                    if(cg.k_fold_ret2&&cg.ret_tamanho(hip,flw,flh)){
 
                         void* da[]={&lin,&lout,&lwi,&lhi,&cg.ret_dl,&state.status};check(hip.launch(cg.k_ret_delta,(flw+255)/256,flh,1,256,1,1,0,nullptr,da,nullptr));
                         if(movpx>0.f&&!tudo){void* ba[]={&cg.ret_dl,&lwi,&lhi,&cg.ret_dlb};check(hip.launch(cg.k_ret_baixa,(flw+255)/256,flh,1,256,1,1,0,nullptr,ba,nullptr));}
@@ -981,42 +1039,10 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
             }else if(reusa_job){
 
                 unsigned erosao=pm.erosao;
-
-                const float nq=cena.warp?nrcena::quadros_warp(nrreusostate::quadro_cena,cg.anc_q,cena.warp_fator):0.f;
-                CenaMv mvj{};
-                if(nq!=0.f&&cg.k_diff_warp&&cg.k_fold_warp&&!guiado&&cg.ler_mv(mvj)){
-                    float nqa=nq;
-                    void* da[]={&imported,&cg.ancora,&state.diff,&w,&h,&pw,&mvj,&nqa};check(hip.launch(cg.k_diff_warp,grid,1,1,256,1,1,0,nullptr,da,nullptr));
-                    void* ea[]={&state.diff,&state.eroded,&w,&h,&erosao};check(hip.launch(state.erode_kernel,grid,1,1,256,1,1,0,nullptr,ea,nullptr));
-                    int lwi=int(cg.delta_lw),lhi=int(cg.delta_lh);const float* gate=static_cast<const float*>(state.eroded);dilata(gate);
-                    void* fb[]={&cg.l0,&cg.la,&lwi,&lhi,&resid,&gate,&cmask,&mw,&mh,&w,&h,&pitch,&raio,&t0,&t1,&forca,&ganho,&cg.stats,&state.status,&mvj,&nqa};
-                    check(hip.launch(cg.k_fold_warp,grid,1,1,256,1,1,0,nullptr,fb,nullptr));
-                    ++cg.p_warp;cg.p_nq+=double(nq);
-                }else{
                 void* da[]={&imported,&cg.ancora,&state.diff,&w,&h,&pw};check(hip.launch(cg.k_diff_ancora,grid,1,1,256,1,1,0,nullptr,da,nullptr));
                 void* ea[]={&state.diff,&state.eroded,&w,&h,&erosao};check(hip.launch(state.erode_kernel,grid,1,1,256,1,1,0,nullptr,ea,nullptr));
                 const float* gate=static_cast<const float*>(state.eroded);dilata(gate);
                 fold_baixo(cg.l0,cg.la,cg.delta_lw,cg.delta_lh,gate);
-                }
-            }
-
-            cg.cp_mediu=false;
-            if(pulavel&&cena.comp>0.f&&cg.k_cp_aplica){
-                const float* pm2=cena.comp_mascara?cmask:nullptr;int mw2=cena.comp_mascara?cmw:0,mh2=cena.comp_mascara?cmh:0;float fo=forca;
-                void* r1s=state.rollback;
-                if(g_comp>1.f){
-                    float g=g_comp,esc=cena.comp_escuro;int rb=cena.comp_baixa;
-                    void* ca[]={&resid,&r1s,&w,&h,&pitch,&pm2,&mw2,&mh2,&fo,&g,&esc,&rb,&state.status};
-                    check(hip.launch(cg.k_cp_aplica,grid,1,1,256,1,1,0,nullptr,ca,nullptr));
-                    ++cg.cp_comp;cg.cp_g+=double(g);
-                }else if(calcula&&peso_comp>=.999f){
-                    check(hip.set(cg.cp_soma,0,8));
-                    const unsigned mg=unsigned((size_t((w+1)/2)*((h+1)/2)+255)/256);
-                    void* ma[]={&resid,&r1s,&imported,&w,&h,&pw,&pitch,&pm2,&mw2,&mh2,&fo,&cg.cp_soma};
-                    check(hip.launch(cg.k_cp_mede,mg,1,1,256,1,1,0,nullptr,ma,nullptr));
-                    cg.cp_mediu=true;
-                }
-                ++cg.cp_jobs;
             }
             if(pulavel){
                 ++cg.p_jobs;cg.p_frac+=frac>0.f?double(frac):0.;if(cam_anda)++cg.p_cam;cg.p_fcam+=frac_cam>0.f?double(frac_cam):0.;
@@ -1025,14 +1051,14 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
                     ++cg.p_calc;cg.sem=0;
 
                     const size_t anc=size_t(w)*h*12;
-                    if(baixo&&cg.ancora_tamanho(hip,anc)){check(hip.d2d(cg.ancora,state.previous,anc));cg.delta_ok=true;cg.delta_lw=lw;cg.delta_lh=lh;cg.anc_q=nrreusostate::quadro_cena;}
+                    if(baixo&&cg.ancora_tamanho(hip,anc)){check(hip.d2d(cg.ancora,state.previous,anc));cg.delta_ok=true;cg.delta_lw=lw;cg.delta_lh=lh;}
                     else cg.delta_ok=false;
                 }else{++cg.p_pul;++cg.sem;if(reusa_job)++cg.p_reus;}
                 if(cg.p_jobs<=1||cg.p_jobs%64==0){
-                    char line[480];std::snprintf(line,sizeof line,"parado jobs=%llu calculados=%llu pulados=%llu reusados=%llu frac_media=%.3f frac=%.3f hist=%llu,%llu,%llu,%llu,%llu,%llu,%llu camera=%llu fcam_media=%.3f fcam=%.3f warp=%llu nq_medio=%.2f fade=%.2f fade_calc=%llu",
+                    char line[480];std::snprintf(line,sizeof line,"parado jobs=%llu calculados=%llu pulados=%llu reusados=%llu frac_media=%.3f frac=%.3f hist=%llu,%llu,%llu,%llu,%llu,%llu,%llu camera=%llu fcam_media=%.3f fcam=%.3f fade=%.2f fade_calc=%llu",
                         cg.p_jobs,cg.p_calc,cg.p_pul,cg.p_reus,cg.p_jobs?cg.p_frac/double(cg.p_jobs):0.,double(frac),
                         cg.p_hist[0],cg.p_hist[1],cg.p_hist[2],cg.p_hist[3],cg.p_hist[4],cg.p_hist[5],cg.p_hist[6],
-                        cg.p_cam,cg.p_jobs?cg.p_fcam/double(cg.p_jobs):0.,double(frac_cam),cg.p_warp,cg.p_warp?cg.p_nq/double(cg.p_warp):0.,double(cg.fade_v),cg.p_fade);
+                        cg.p_cam,cg.p_jobs?cg.p_fcam/double(cg.p_jobs):0.,double(frac_cam),double(cg.fade_v),cg.p_fade);
                     diagnostic(line,passes,0,0,request,cg.p_jobs);
                     if(nrcena::continuo(cena)||cena.sobe){
                         std::snprintf(line,sizeof line,"continuo jobs=%llu cont=%llu andando=%llu baratos=%llu guiados=%llu kd_medio=%.3f lw_medio=%.0f",
@@ -1042,12 +1068,9 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
                 }
             }
         }else if(pesar){
-            unsigned valido=state.gate_valid?1u:0u,raio=pm.raio,erosao=pm.erosao;float t0=pm.t0,t1=pm.t1;
+            unsigned raio=pm.raio;float t0=pm.t0,t1=pm.t1;
             check(hip.set(state.gate_stats,0,4));
-            void* diff_args[]={&imported,&state.previous,&state.diff,&w,&h,&pw,&valido};
-            check(hip.launch(state.diff_kernel,grid,1,1,256,1,1,0,nullptr,diff_args,nullptr));
-            void* erode_args[]={&state.diff,&state.eroded,&w,&h,&erosao};
-            check(hip.launch(state.erode_kernel,grid,1,1,256,1,1,0,nullptr,erode_args,nullptr));
+            state.diff_erode(hip,grid,imported,w,h,pw,pm.erosao);
             void* gated_args[]={&imported,&state.input,&state.temporary,&state.eroded,&w,&h,&pw,&pitch,&raio,&t0,&t1,&state.gate_stats,&state.status};
             check(hip.launch(state.gated_kernel,grid,1,1,256,1,1,0,nullptr,gated_args,nullptr));
             state.gate_valid=true;
@@ -1090,16 +1113,6 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
         unsigned invalid=0;check(hip.copy(&invalid,state.status,4,2));nrlento::marca(4);
         if(invalid){if(no_lugar){check(hip.copy(destination,state.rollback,output_bytes,3));hip.completed();}throw std::runtime_error("invalid GPU working RGB");}
 
-        if(proprio&&cg.cp_mediu){
-            float sm[2]{};check(hip.copy(sm,cg.cp_soma,8,2));cg.cp_mediu=false;
-            if(sm[0]>0.f){cg.cp_r=nrcena::comp_mede(cena,cg.cp_r,sm[1]/sm[0]);++cg.cp_med;}
-        }
-        if(proprio&&cena.comp>0.f&&cg.cp_jobs&&(cg.cp_jobs<=1||cg.cp_jobs%64==0)){
-            char line[200];std::snprintf(line,sizeof line,"comp jobs=%llu medidas=%llu r=%.3f compensados=%llu ganho_medio=%.3f",
-                cg.cp_jobs,cg.cp_med,double(cg.cp_r),cg.cp_comp,cg.cp_comp?cg.cp_g/double(cg.cp_comp):1.);
-            diagnostic(line,passes,0,0,request,cg.cp_jobs);cg.cp_g=0.;cg.cp_comp=0;
-        }
-
         baseline_preserved=false;
         int published=no_lugar?0:hip.d2d(destination,state.temporary,output_bytes);
         if(published) {
@@ -1139,7 +1152,7 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
     }catch(const HipFailure& failure) {
         auto& state=cache();{std::lock_guard<std::mutex> lock(state.mutex);state.poisoned=true;
             if(failure.uncertain)state.completion_uncertain.store(true,std::memory_order_release);}
-        diagnostic(failure.phase,failure.pass,failure.status,0);
+        diagnostic_falha(failure.phase,failure.pass,failure.status,0,request);
         if(failure.uncertain){acknowledge(base,0u);throw;}
         return done(baseline_preserved?((request&0xff00u)|1u):0u);
     }catch(...) {
@@ -1147,24 +1160,58 @@ static unsigned extra_passes(Eval eval,char* base,void* primary,int height,int w
         try {auto& state=cache();std::lock_guard<std::mutex> lock(state.mutex);state.poisoned=true;}catch(...){}
 
         NRDIAG(OutputDebugStringA("NR multipass incomplete; effective onepass or unknown\n");)
-        diagnostic("incomplete_poisoned",request&255u,0,0,request,0);
+        diagnostic_falha("incomplete_poisoned",request&255u,0,0,request);
         return done(baseline_preserved?((request&0xff00u)|1u):0u);
     }
 }
 
 #ifndef NRMP_CPU_TEST
+
+namespace cena_ht {
+alignas(64) inline std::array<unsigned char,0x400> ctx{};inline bool construido=false,carregado=false,falhou=false;
+
+inline int modo(char* base){
+    static const int v=[base]{int c=0;try{const std::wstring ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&job_assincrono));
+        if(!ini.empty())c=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralCenaRedeVelha",0,ini.c_str()));}catch(...){}
+        char l[96];std::snprintf(l,sizeof l,"cena_ht NeuralCenaRedeVelha=%d",c);diagnostic(l,0,0,0);return c==1||c==2?c:0;}();
+    return v;}
+inline bool ligado(char* base){return modo(base)!=0;}
+inline void* contexto(char* base,void* primary,int width,int height){
+    if(falhou)return primary;
+    auto p=ctx.data();
+    if(!carregado){
+        try{
+            Hip hip;
+            const auto t=std::chrono::steady_clock::now();
+
+            nrctx::carregar(hip,base,p,construido,nrctx::pasta_pesos(base)/L"dlssnr_on_amd_weights_legado.bin",nrctx::Pesos::so_velha,0);
+            carregado=true;
+            diagnostic("cena_ht pesos_legado_carregados",0,0,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t).count());
+        }catch(...){falhou=true;diagnostic("cena_ht FALHOU: a cena segue na Small",0,0,0);return primary;}
+    }
+    std::memcpy(p+0x20,static_cast<const char*>(primary)+0x20,20);
+    write<int>(p,0x98,read<int>(primary,0x98));
+
+    static bool zerado=false;static int w_ant=0,h_ant=0;
+    const bool troca=zerado&&(width!=w_ant||height!=h_ant);w_ant=width;h_ant=height;
+    if(modo(base)==1||!zerado||troca){nrctx::sem_estado(p);zerado=true;}
+    if(troca){char l[96];std::snprintf(l,sizeof l,"cena_ht historico zerado: rede %dx%d",width,height);diagnostic(l,0,0,0);}
+    write<std::uint64_t>(p,0x3f8,nrctx::marca_legado);
+    return p;}
+}
 namespace reuso_cena {
-thread_local Eval nativo{};thread_local unsigned chamadas{};
+thread_local Eval nativo{};thread_local unsigned chamadas{};thread_local void* principal{};
 static void chamar(void* primary,void* source,int input_pitch,int input_format,int height,int width,void* destination,
     int output_pitch,int output_format,int tone,void* metadata) noexcept(false) {
     nrreusostate::EscopoCena escopo(chamadas++==0);
+    if(primary==principal&&cena_ht::ligado(static_cast<char*>(primary)-nrproxy::rva_contexto))primary=cena_ht::contexto(static_cast<char*>(primary)-nrproxy::rva_contexto,primary,width,height);
     nativo(primary,source,input_pitch,input_format,height,width,destination,output_pitch,output_format,tone,metadata);
 }
 }
 #endif
 static void run_multipass_eval(void* primary,void* source,int input_pitch,int input_format,
-    int height,int width,void* destination,int output_pitch,int output_format,int tone,void* metadata,nrmptiming::Scope& timing) noexcept(false) {
-    auto base=static_cast<char*>(primary)-0x93f48;
+    int height,int width,void* destination,int output_pitch,int output_format,int tone,void* metadata) noexcept(false) {
+    auto base=static_cast<char*>(primary)-nrproxy::rva_contexto;
     if(cache().completion_uncertain.load(std::memory_order_acquire)){
         acknowledge(base,0);throw std::runtime_error("multipass device completion uncertain");
     }
@@ -1172,7 +1219,7 @@ static void run_multipass_eval(void* primary,void* source,int input_pitch,int in
     (void)cena_config(base);nrcena::params_ok=false;
 #ifndef NRMP_CPU_TEST
 
-    reuso_cena::nativo=eval;reuso_cena::chamadas=0;eval=&reuso_cena::chamar;
+    reuso_cena::nativo=eval;reuso_cena::chamadas=0;reuso_cena::principal=primary;eval=&reuso_cena::chamar;
 #endif
     unsigned request=nrmp::valid_config(unsigned(InterlockedCompareExchange(
         reinterpret_cast<volatile LONG*>(base+0x71d090),0,0)));
@@ -1185,19 +1232,18 @@ static void run_multipass_eval(void* primary,void* source,int input_pitch,int in
      for(const auto& p:plano)if(a>=p.first)request=nrmp::valid_config(p.second);}
 #endif
     nrprescale::passos_pedidos.store(request&255u,std::memory_order_relaxed);
+    job_multipasso=(request&255u)>1&&nrmp::multiplier(request)!=0;
 #ifndef NRMP_CPU_TEST
 
     if(nrneuraltone::requested&&!nrneuraltone::multipass_ok&&(request&255u)>1)
         throw std::runtime_error("ToneCurve requires one neural pass");
 #endif
-    if(timing.active){timing.sample.request=request;timing.sample.request_known=true;}
     nrtone::State legacy_state; nrtone::Worker legacy_worker;
     const bool tone_bound=nrtone::owner.load(std::memory_order_acquire)==base;
     auto tone_ticket=(tone_bound ? nrtone::worker : legacy_worker).prepare(
-        tone_bound ? nrtone::state : legacy_state,primary,read<float>(base,0x94aa4));
+        tone_bound ? nrtone::state : legacy_state,primary,read<float>(base,nrproxy::rva_estrutura_local));
     float controls[5];std::memcpy(controls,static_cast<char*>(primary)+0x20,20);
 #ifndef NRMP_CPU_TEST
-    if(timing.active)timing.sample.route=nrmptiming::Route::prescale_unattributed;
 
     unsigned effective=request;bool chained=false;
     try{
@@ -1205,7 +1251,6 @@ static void run_multipass_eval(void* primary,void* source,int input_pitch,int in
             tone_ticket.complete();acknowledge(base,chained?effective:request);return;
         }
     }catch(...){if(chained)acknowledge(base,0u);throw;}
-    if(timing.active)timing.sample.route=nrmptiming::Route::not_reached;
 #endif
 #ifndef NRMP_CPU_TEST
     nrstyletrace::begin(base);
@@ -1215,10 +1260,8 @@ static void run_multipass_eval(void* primary,void* source,int input_pitch,int in
 
     if((request&255u)>1 && nrmp::multiplier(request)!=0){
         SlowPhase slow{"primary",1};
-        nrmptiming::Scope::Primary primary_timing{timing};
         eval(primary,source,input_pitch,input_format,height,width,destination,output_pitch,output_format,tone,metadata);
     }else {
-        nrmptiming::Scope::Primary primary_timing{timing};
         eval(primary,source,input_pitch,input_format,height,width,destination,output_pitch,output_format,tone,metadata);
     }
     nrlento::marca(0);
@@ -1253,7 +1296,7 @@ inline double ms(std::int64_t a,std::int64_t b) noexcept {return nrjob::timeline
 inline std::int64_t a_top{},a_d{},a_fim{},a_cerca{},a_subm{},a_capt{};inline int a_job{},a_flush{};
 struct Fim {bool on{false};~Fim(){if(on)a_fim=nrjob::qpc();}};
 
-inline void gravar(std::string&& texto) noexcept {try{std::thread([t=std::move(texto)]{FILE* f{};if(fopen_s(&f,"nr_pico_rede.log","a")==0&&f){std::fputs(t.c_str(),f);std::fclose(f);}}).detach();}catch(...){}}
+inline void gravar(std::string&&) noexcept {}
 }
 
 namespace nrpainel {
@@ -1263,40 +1306,146 @@ inline void no_eval(char* base) noexcept {
   if(!ini.empty())n=std::clamp(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralPainelRedeJobs",0,ini.c_str())),0,31);}catch(...){n=0;}
   jobs.store(n,std::memory_order_relaxed);}
  if(n<=0)return;
- const int pj=read<int>(base,0x94b98);const unsigned long long pm=read<unsigned long long>(base,0x94b90);
+ const int pj=read<int>(base,nrproxy::rva_painel_job);const unsigned long long pm=read<unsigned long long>(base,nrproxy::rva_painel_ms);
  if(pj<=0||pm>100000ull)return;
  mediana_ms.store(janela().empurra(pj,std::uint32_t(pm),unsigned(n)),std::memory_order_relaxed);
 }
 }
+
+namespace nrmpsolta {
+
+inline void passos_extras(Hip& hip,char* base) noexcept {
+    static unsigned seguidos=0;
+    const auto& c=solta_config(base);
+    if(job_multipasso){seguidos=0;return;}
+    if(!c.solta_jobs||seguidos>c.solta_jobs||++seguidos!=c.solta_jobs)return;
+    try{
+        auto& s=cache();std::lock_guard<std::mutex> lock(s.mutex);
+        size_t soltos=0;
+        for(void** q:{&s.input,&s.output,&s.temporary,&s.rollback})if(*q){if(hip.release(*q))(void)hip.error();*q=nullptr;soltos+=s.capacity;}
+        s.capacity=0;
+
+        for(unsigned i=0;i<2;++i)if(s.constructed[i]){
+            auto p=s.contexts[i].data();
+            if(void* r=read<void*>(p,0x180)){soltos+=read<size_t>(p,0x188);if(hip.release(r))(void)hip.error();}
+            write<void*>(p,0x180,nullptr);write<size_t>(p,0x188,0);
+        }
+        if(soltos)diagnostic("passos_extras_soltos",1,0,double(soltos)/1048576.0,0,c.solta_jobs);
+    }catch(...){}
+}
+
+inline void rascunho_principal(Hip& hip,char* base,void* primary) noexcept {
+    const unsigned jobs=solta_config(base).rascunho_jobs;
+    if(!jobs||!primary)return;
+    static size_t cap_vista=0;static unsigned long long area_cresceu=0;static unsigned menores=0;
+    const size_t cap=read<size_t>(primary,0x188);void* p=read<void*>(primary,0x180);
+    const int h=read<int>(primary,0x18),w=read<int>(primary,0x1c);
+    const unsigned long long area=h>0&&w>0?(unsigned long long)h*(unsigned long long)w:0ull;
+    if(cap!=cap_vista){cap_vista=cap;area_cresceu=area;menores=0;return;}
+    if(!p||!cap||!area||area*2>area_cresceu){menores=0;return;}
+    if(++menores<jobs)return;
+    menores=0;
+    if(hip.release(p)){(void)hip.error();return;}
+    write<void*>(primary,0x180,nullptr);write<size_t>(primary,0x188,0);cap_vista=0;
+    diagnostic("rascunho_principal_solto",1,0,double(cap)/1048576.0,0,area);
+}
+}
+
+namespace nrmpcontida {
+inline std::atomic<unsigned long long> excecoes{0};
+inline std::atomic<unsigned long long> seh{0};
+
+inline thread_local int job_eval=0;inline thread_local bool publicado=false;
+inline void neutralizar(void* destination,int output_pitch,int height,int output_format) noexcept {
+    if(nrgpu::perdida())return;
+    if(!destination||output_format!=0||output_pitch<=0||height<=0)return;
+    const size_t n=size_t(output_pitch)*size_t(height);if(n>size_t(1024)<<20)return;
+    try{Hip hip;if(hip.set(destination,0,n)){(void)hip.error();return;}(void)hip.sync();(void)hip.error();}catch(...){}
+}
+}
+#ifndef NRMP_CPU_TEST
+
+static void publicar_job(int job,int status) noexcept {
+    if(job<=0)return;
+
+    nrjob::timeline().stamp(job,nrjob::Publicado,nrjob::qpc());
+    nrmode::async_completion_status.store(status,std::memory_order_relaxed);
+    nrmode::async_completed_job.store(job,std::memory_order_release);
+    nrjob::signal_completion();
+    nrmpcontida::publicado=true;
+}
+#endif
+static void avaliar_job(void* primary,void* source,int input_pitch,int input_format,
+    int height,int width,void* destination,int output_pitch,int output_format,int tone,void* metadata) noexcept(false);
+
+struct FalhaContida {char motivo[160]="desconhecida";int status=-1;bool houve=false;};
+static void avaliar_cpp(void* primary,void* source,int input_pitch,int input_format,int height,int width,void* destination,
+    int output_pitch,int output_format,int tone,void* metadata,FalhaContida& r) {
+    try{
+        avaliar_job(primary,source,input_pitch,input_format,height,width,destination,output_pitch,output_format,tone,metadata);
+        return;
+    }catch(const HipFailure& f){std::snprintf(r.motivo,sizeof r.motivo,"%s",f.phase?f.phase:"hip");r.status=f.status;}
+    catch(const std::exception& e){std::snprintf(r.motivo,sizeof r.motivo,"%s",e.what());}
+    catch(...){}
+    r.houve=true;
+}
+static unsigned long avaliar_seh(void* primary,void* source,int input_pitch,int input_format,int height,int width,void* destination,
+    int output_pitch,int output_format,int tone,void* metadata,FalhaContida* r) {
+    __try{
+        avaliar_cpp(primary,source,input_pitch,input_format,height,width,destination,output_pitch,output_format,tone,metadata,*r);
+        return 0;
+    }__except(EXCEPTION_EXECUTE_HANDLER){
+        const unsigned long codigo=GetExceptionCode();
+        if(codigo==EXCEPTION_STACK_OVERFLOW)(void)_resetstkoflw();
+        return codigo?codigo:1ul;
+    }
+}
 extern "C" __declspec(dllexport) void NRMultipassEval_v1(void* primary,void* source,int input_pitch,int input_format,
+    int height,int width,void* destination,int output_pitch,int output_format,int tone,void* metadata) noexcept {
+    FalhaContida r{};
+    nrmpcontida::job_eval=0;nrmpcontida::publicado=false;
+    if(const unsigned long codigo=avaliar_seh(primary,source,input_pitch,input_format,height,width,destination,output_pitch,output_format,tone,metadata,&r)){
+#ifndef NRMP_CPU_TEST
+        nrregswin::rjsync::soltar_tudo();
+#endif
+        nrmpcontida::seh.fetch_add(1,std::memory_order_relaxed);nrmpcontida::excecoes.fetch_add(1,std::memory_order_relaxed);
+        (void)nrgpu::marcar("seh_eval_cena",long(codigo));
+#ifndef NRMP_CPU_TEST
+        if(nrmpcontida::job_eval>0&&!nrmpcontida::publicado)publicar_job(nrmpcontida::job_eval,-1);
+#endif
+        char l[200];std::snprintf(l,sizeof l,"excecao_seh codigo=0x%08lX job=%d: sessao envenenada, o jogo segue sem a rede",codigo,nrmpcontida::job_eval);
+        diagnostic_falha(l,0,int(codigo),0);
+        return;
+    }
+    if(!r.houve)return;
+    nrmpcontida::excecoes.fetch_add(1,std::memory_order_relaxed);
+    nrmpcontida::neutralizar(destination,output_pitch,height,output_format);
+    char l[200];std::snprintf(l,sizeof l,"excecao_contida motivo=%s",r.motivo);diagnostic_falha(l,0,r.status,0);
+}
+static void avaliar_job(void* primary,void* source,int input_pitch,int input_format,
     int height,int width,void* destination,int output_pitch,int output_format,int tone,void* metadata) noexcept(false) {
     const std::int64_t pc_top=nrjob::qpc();nrpico::Fim pc_fim;
 #ifndef NRMP_CPU_TEST
     nrmpsessao::carimba();
 #endif
-    nrmptiming::Scope timing{width,height,input_pitch,output_pitch,input_format,output_format,tone,metadata};
-    auto* base=static_cast<char*>(primary)-0x93f48;
+    auto* base=static_cast<char*>(primary)-nrproxy::rva_contexto;
 
     struct MarcaAssincrono {explicit MarcaAssincrono(bool v) noexcept {job_assincrono=v;} ~MarcaAssincrono(){job_assincrono=false;}}
         marca_assincrono(nrtone::owner.load(std::memory_order_acquire)==base);
 #ifndef NRMP_CPU_TEST
 
-    const int job=nrtone::owner.load(std::memory_order_acquire)==base ? read<int>(base,0x949bc) : -1;
+    const int job=nrtone::owner.load(std::memory_order_acquire)==base ? read<int>(base,nrproxy::rva_worker_job) : -1;
     nrreusostate::quadro_cena=nrreusostate::quadro_do_job(job);
     nrhistmov::job_atual=job;
-    const auto publish=[job](int status) noexcept {
-        if(job<=0)return;
+    nrmpcontida::job_eval=job;
+    const auto publish=[job](int status) noexcept {publicar_job(job,status);};
 
-        nrjob::timeline().stamp(job,nrjob::Publicado,nrjob::qpc());
-        nrmode::async_completion_status.store(status,std::memory_order_relaxed);
-        nrmode::async_completed_job.store(job,std::memory_order_release);
-        nrjob::signal_completion();
-    };
+    if(nrgpu::perdida()){publish(-1);return;}
 
     const bool pico=job>0&&nrpico::ativo(base);const std::int64_t pc_e=pico?nrjob::qpc():0;
     pc_fim.on=pico;if(pico)nrpainel::sonda.store(true,std::memory_order_relaxed);
     if(job>0)nrpainel::no_eval(base);
-    const unsigned long long pc_painel=pico?read<unsigned long long>(base,0x94b90):0;const int pc_pjob=pico?read<int>(base,0x94b98):0;
+    const unsigned long long pc_painel=pico?read<unsigned long long>(base,nrproxy::rva_painel_ms):0;const int pc_pjob=pico?read<int>(base,nrproxy::rva_painel_job):0;
     const bool inicio_depois_da_trava=nrrj::sj_q()>0;
     if(job>0&&!inicio_depois_da_trava)nrjob::timeline().stamp(job,nrjob::EvalInicio,nrjob::qpc());
 
@@ -1304,11 +1453,9 @@ extern "C" __declspec(dllexport) void NRMultipassEval_v1(void* primary,void* sou
 
     if(job>0)nrexpofresca::no_eval(job,metadata);
 
-    nrhipprio::Scope priority_scope(nrhipprio::active());
-
-    std::unique_lock<std::recursive_mutex> trava_rj(nrregswin::rjsync::trava(),std::defer_lock);
+    nrregswin::rjsync::Dono trava_rj;
     const int pc_dentro=pico?nrregswin::rjsync::rosto_dentro.load(std::memory_order_relaxed):0;const std::int64_t pc_t0=pico?nrjob::qpc():0;
-    if(nrregswin::rjsync::ligado.load(std::memory_order_relaxed))trava_rj.lock();
+    if(nrregswin::rjsync::ligado.load(std::memory_order_relaxed))trava_rj.travar();
     const std::int64_t pc_t1=pico?nrjob::qpc():0;
     if(job>0&&inicio_depois_da_trava)nrjob::timeline().stamp(job,nrjob::EvalInicio,nrjob::qpc());
     try {
@@ -1317,7 +1464,7 @@ extern "C" __declspec(dllexport) void NRMultipassEval_v1(void* primary,void* sou
 #endif
         nrlento::inicio();
         run_multipass_eval(primary,source,input_pitch,input_format,height,width,destination,
-            output_pitch,output_format,tone,metadata,timing);
+            output_pitch,output_format,tone,metadata);
 #ifndef NRMP_CPU_TEST
         if(nrlento::multi){
 
@@ -1335,12 +1482,10 @@ extern "C" __declspec(dllexport) void NRMultipassEval_v1(void* primary,void* sou
             throw std::runtime_error("Neural replacement dispatch failed; result not published");
         if(job>0)nrjob::timeline().stamp(job,nrjob::EvalFim,nrjob::qpc());
         const std::int64_t pc_f=pico?nrjob::qpc():0;
-        if(job>0&&nrredecada::cam::par.load(std::memory_order_relaxed)>1)cadencia_camera();
 
         if(job>0)nrrj_runtime::antes_do_publish(base,primary,job,destination,width,height,output_pitch,output_format);
         const std::int64_t pc_a=pico?nrjob::qpc():0;
 #endif
-        if(timing.active){timing.sample.effective_config=read<unsigned>(base,0x71d094);timing.sample.effective_config_known=true;}
 #ifndef NRMP_CPU_TEST
         if(job>0){
 
@@ -1362,6 +1507,10 @@ extern "C" __declspec(dllexport) void NRMultipassEval_v1(void* primary,void* sou
                 nrpico::a_flush=0;if(nrpico::buf.size()>8192){nrpico::a_flush=1;nrpico::gravar(std::move(nrpico::buf));nrpico::buf=std::string{};}
                 nrpico::a_job=job;nrpico::a_top=pc_top;nrpico::a_d=pc_d;nrpico::a_cerca=nrjob::timeline().when(job,nrjob::CercaPronta);
                 nrpico::a_subm=nrjob::timeline().when(job,nrjob::Submetido);nrpico::a_capt=nrjob::timeline().when(job,nrjob::Capturado);}
+
+            nrmpsolta::passos_extras(hip,base);
+            nrmpsolta::rascunho_principal(hip,base,primary);
+            nrregswin::aposentados::soltar();
         }
     }catch(const HipFailure& failure){
         publish(failure.status ? failure.status : -1);

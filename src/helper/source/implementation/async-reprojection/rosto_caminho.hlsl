@@ -1,28 +1,6 @@
-cbuffer C : register(b0) {
-    uint w; uint h; int rx; int ry;
-    uint lado; uint n; uint offEnt; uint offTag;
-    uint jobEsperado; uint idade; uint fatia; uint mascara;
-    uint historico; int fx; int fy; uint fw;
-    uint fh; float expo; uint tonemap; float ganho;
-    float hx; float hy; float profRel; float profAbs;
-    float camada0; float camada1; uint offEnt2; uint offTag2;
-    uint job2; uint idade2; int rx2; int ry2;
-    uint lado2; uint n2; float hx2; float hy2;
-    float peso; float limiar; uint sozinho; uint pad3;
-    float aBaixa; float aAlta; float gama; uint acum;
-    uint quadro; uint geracao; uint bytesMeio; uint janela;
-    uint rapR; uint padR0; uint padR1; uint padR2;
-    float bxForca; float aLenta; float aRapida; float movPx;
-}
-Texture2D<float4> saidaFsr : register(t0);
-Texture2DArray<float2> movHist : register(t1);
-Texture2DArray<float> profHist : register(t2);
-RWByteAddressBuffer compartilhado : register(u0);
+#include "prof_comum.hlsli"
+#include "rosto_k.hlsli"
 SamplerState linearClamp : register(s0);
-
-float profEm(float2 uv, uint s, uint pw, uint ph) {
-    return profHist.Load(int4(min(uint2(saturate(uv) * float2(pw, ph)), uint2(pw - 1u, ph - 1u)), s, 0));
-}
 
 bool caminhar(float2 p, uint k, uint pw, uint ph, out float2 d) {
     d = float2(0, 0);
@@ -39,7 +17,7 @@ bool caminhar(float2 p, uint k, uint pw, uint ph, out float2 d) {
         if (((mascara >> anterior) & 1u) == 0u) return false;
         const float pa = profEm(uv, s, pw, ph), pb = profEm(chegada, anterior, pw, ph);
         if (!isfinite(pa) || !isfinite(pb)) return false;
-        const float tol = max(profAbs, profRel * max(abs(pa), abs(pb)));
+        const float tol = NR_TOL_PROF(profAbs, profRel, pa, pb);
         if (!(tol > 0.0) || abs(pa - pb) > tol) return false;
         uv = chegada; s = anterior;
     }

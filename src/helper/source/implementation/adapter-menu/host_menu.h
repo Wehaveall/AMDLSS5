@@ -25,7 +25,6 @@ struct NativeHost {
     unsigned* multipass_requested = nullptr;
     unsigned* multipass_effective = nullptr;
     nrtone::State* tone_state = nullptr;
-    bool present_mode = false;
     nrcompose::State* compose_controls = nullptr;
 
     nrreproject::Controls* reproject_controls = nullptr;

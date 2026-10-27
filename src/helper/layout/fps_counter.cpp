@@ -22,7 +22,7 @@ struct State {
     bool input_seeded{},display_seeded{},fg_seen{};
     double input_fps{},display_fps{};
     bool input_valid{},display_valid{};
-    Display text{"FPS: coletando...","FG: aguardando atividade"};
+    Display text{};
 };
 std::array<State,4> states{};
 std::mutex mutex;
@@ -38,7 +38,7 @@ bool plausible(UINT delta,double seconds) noexcept {
 Display observe(void* base,void* swapchain,unsigned width,unsigned height) noexcept {
     try {
         const auto hz=frequency();LARGE_INTEGER now{};
-        if(!base||!swapchain||!hz||!QueryPerformanceCounter(&now))return {"FPS: indisponível","FG: leitura indisponível"};
+        if(!base||!swapchain||!hz||!QueryPerformanceCounter(&now))return {};
         std::lock_guard<std::mutex> guard(mutex);
         State* selected{};
         for(auto& s:states)if(s.base==base&&s.chain==swapchain){selected=&s;break;}
@@ -92,19 +92,10 @@ Display observe(void* base,void* swapchain,unsigned width,unsigned height) noexc
 
             if(now.QuadPart-stats.SyncQPCTime.QuadPart>2*hz){s.display_valid=false;s.display_seeded=false;}
         }
-        char input[32]="--";
-        if(s.input_valid)std::snprintf(input,sizeof(input),"%.1f",s.input_fps);
-        if(s.display_valid)std::snprintf(s.text.fps,sizeof(s.text.fps),
-            "FPS tela: %.1f | Entrada: %s",s.display_fps,input);
-        else std::snprintf(s.text.fps,sizeof(s.text.fps),
-            "FPS entrada: %s | Tela: indisponível",input);
         const bool active=s.last_fg&&now.QuadPart-s.last_fg<=2*hz;
         s.text.display_fps=s.display_fps;s.text.input_fps=s.input_fps;s.text.display_valid=s.display_valid;
         s.text.input_valid=s.input_valid;s.text.read_ok=true;s.text.fg=active?2:s.fg_seen?1:0;
-        std::snprintf(s.text.generation,sizeof(s.text.generation),"%s",
-            active?"FG: atividade FSR detectada":
-            s.fg_seen?"FG: sem atividade FSR recente":"FG: não detectado (driver não verificado)");
         return s.text;
-    }catch(...){return {"FPS: leitura indisponível","FG: leitura indisponível"};}
+    }catch(...){return {};}
 }
 }

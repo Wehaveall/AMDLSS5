@@ -10,7 +10,6 @@ constexpr unsigned cnpc_ent=8,cnpc_bytes=cnpc_ent*128u;
 bool Backend::Impl::alocar_cena_npc(const D3D12_UNORDERED_ACCESS_VIEW_DESC& flags_view){
  auto& g=cnpc;
  if(!width||!height||!warped||!history[2]||!flags_buffer)return false;
- if(q_post_ganho!=1.f||q_chave(L"NeuralQPostCR")){nrlogfila::linha(L"nr_reproject.log","pid=%lu CENA_NPC recusada: so com o ComposePost de sempre (sem NeuralQGanho/NeuralQPostCR)\n",GetCurrentProcessId());return false;}
  D3D12_DESCRIPTOR_RANGE ranges[2]{};ranges[0]={D3D12_DESCRIPTOR_RANGE_TYPE_SRV,3,0,0,0};ranges[1]={D3D12_DESCRIPTOR_RANGE_TYPE_UAV,3,0,0,0};
  D3D12_ROOT_PARAMETER rp[4]{};rp[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;rp[0].Constants={0,0,12};
  rp[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;rp[1].Constants={1,0,48};
@@ -23,14 +22,15 @@ bool Backend::Impl::alocar_cena_npc(const D3D12_UNORDERED_ACCESS_VIEW_DESC& flag
  D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
  D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=cnpc_bytes;bd.Height=1;bd.DepthOrArraySize=1;bd.MipLevels=1;bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;bd.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,write_state,nullptr,IID_PPV_ARGS(&g.estado))))return false;
+ nrd3d::nomear(g.estado.Get(),L"nr_npc_estado");
  nrorc_vram::registrar(nrorc::Api::Recurso,cnpc_bytes,"cena_npc");
 
  {D3D12_HEAP_PROPERTIES uh{};uh.Type=D3D12_HEAP_TYPE_UPLOAD;D3D12_RESOURCE_DESC zd=bd;zd.Flags=D3D12_RESOURCE_FLAG_NONE;void* m=nullptr;const D3D12_RANGE nada{0,0};
   if(FAILED(device->CreateCommittedResource(&uh,D3D12_HEAP_FLAG_NONE,&zd,D3D12_RESOURCE_STATE_GENERIC_READ,nullptr,IID_PPV_ARGS(&g.zeros)))||FAILED(g.zeros->Map(0,&nada,&m))||!m)return false;
+  nrd3d::nomear(g.zeros.Get(),L"nr_npc_zeros");
   std::memset(m,0,cnpc_bytes);g.zeros->Unmap(0,nullptr);nrorc_vram::registrar(nrorc::Api::Recurso,0,"cena_npc_zeros");}
  g.zerado=false;
- D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,6,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
- if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&g.heap))))return false;
+ if(!criar_heap(6,g.heap))return false;
  nrorc_vram::registrar(nrorc::Api::Heap,0,"cena_npc");
  srv(g.heap.Get(),0,warped.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);srv(g.heap.Get(),1,warped.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
  srv(g.heap.Get(),2,history[2].Get(),DXGI_FORMAT_R32_FLOAT,true);
@@ -88,7 +88,7 @@ bool Backend::Impl::cena_npc(ID3D12GraphicsCommandList* c,ID3D12Resource* dst,DX
  ID3D12DescriptorHeap* heaps[]{g.heap.Get()};c->SetDescriptorHeaps(1,heaps);c->SetComputeRootSignature(g.root.Get());
  c->SetComputeRoot32BitConstants(0,12,k,0);c->SetComputeRoot32BitConstants(1,48,&cn,0);
  c->SetComputeRootDescriptorTable(2,gpu(g.heap.Get(),0));c->SetComputeRootDescriptorTable(3,gpu(g.heap.Get(),3));
- c->SetPipelineState(g.mede.Get());c->Dispatch(cnpc_ent,1,1);
+ nrd3d::marcador(c,L"nr_npc_mede");c->SetPipelineState(g.mede.Get());c->Dispatch(cnpc_ent,1,1);
  order_uav(c,g.estado.Get());order_uav(c,dst);
  c->SetPipelineState(g.compor.Get());
  ++g.usados;

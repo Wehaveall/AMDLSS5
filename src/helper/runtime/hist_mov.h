@@ -7,8 +7,17 @@
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include "rede_cada.h"
 namespace nrhistmov {
 inline int modo=0;inline float teto=8.f;inline bool log_on=false;
+inline constexpr float teto_max=16.f;
+inline bool teto_auto=false;
+inline float teto_efetivo() noexcept {
+ if(!teto_auto)return teto;
+ const unsigned n=nrredecada::cadencia_efetiva();
+ return std::clamp(float(n),1.f,teto_max);
+}
+inline float teto_logado=-1.f;
 inline std::uint64_t ultimo=0;
 inline unsigned long long n=0,fora_cena=0,escalados=0,sem_quadro=0;inline unsigned long long hist_p[10]{};
 inline thread_local int job_atual=0;
@@ -32,8 +41,14 @@ inline Salvo antes(void* params,bool cena,std::uint64_t quadro,int job,float med
  ++hist_p[P<9u?P:9u];
  float sx{},sy{};std::memcpy(&sx,p+0x58,4);std::memcpy(&sy,p+0x5c,4);
  float k=1.f;
+ const float t=teto_efetivo();
+ if(teto_auto&&t!=teto_logado&&logf&&(modo||log_on)){
+  teto_logado=t;char l[160]{};
+  NRLOGF(l,sizeof l,"HISTMOV teto=%.0f (NeuralHistMovMax ausente: a cadencia efetiva %u, pedido %u, presa em %.0f)",double(t),nrredecada::cadencia_efetiva(),nrredecada::pedido.load(std::memory_order_relaxed),double(teto_max));
+  logf(l);
+ }
  if(modo==1&&P>1u&&std::isfinite(sx)&&std::isfinite(sy)){
-  k=std::min(float(P),teto);
+  k=std::min(float(P),t);
   s.p=params;s.sx=sx;s.sy=sy;s.ok=true;
   const float nx=sx*k,ny=sy*k;std::memcpy(p+0x58,&nx,4);std::memcpy(p+0x5c,&ny,4);++escalados;
  }

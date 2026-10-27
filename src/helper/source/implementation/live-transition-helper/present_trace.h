@@ -5,11 +5,15 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
+#include <string>
+#include "../../../runtime/log_fila.h"
+#include "../../../runtime/pasta_helper.h"
 namespace nrpresenttrace {
 struct State {
     std::mutex mutex;
@@ -17,25 +21,17 @@ struct State {
     std::uint64_t types_seen[16]{};
     unsigned lines{};
     std::atomic<std::uint64_t> presents{0},queues{0},overlays{0};
+
+    std::atomic<std::uint64_t> fsr{0},aninhados{0};
+    std::uint64_t fsr_ult{},h_fsr[4]{},h_dxgi[3]{},dxgi_falhou{};unsigned dxgi_ult{};bool dxgi_tem{};
+    char padrao[129]{};unsigned padrao_n{};bool padrao_logado{};
 };
 inline State& state(){static auto* s=new State;return *s;}
 template<class... A> inline void line(const char*,A&&...) noexcept {}
 
-inline bool first(void* (&seen)[32],void* p) noexcept {
-    auto& s=state();std::lock_guard<std::mutex> lock(s.mutex);
-    for(auto*& slot:seen){if(slot==p)return false;if(!slot){slot=p;return true;}}
-    return false;
-}
-inline void pulse(std::uint64_t n,void* swapchain) noexcept {
-    if(n%3000)return;
-    auto& s=state();
-    line("pulse presents=%llu queues=%llu overlays=%llu swapchain=%p",static_cast<unsigned long long>(n),
-         static_cast<unsigned long long>(s.queues.load()),static_cast<unsigned long long>(s.overlays.load()),swapchain);
-}
-inline void ffx_type(std::uint64_t type) noexcept {
-    auto& s=state();
-    {std::lock_guard<std::mutex> lock(s.mutex);
-     for(auto& slot:s.types_seen){if(slot==type)return;if(!slot){slot=type;break;}}}
-    line("ffx_dispatch_first type=0x%llx",static_cast<unsigned long long>(type));
-}
+inline bool first(void* (&)[32],void*) noexcept {return false;}
+inline void pulse(std::uint64_t,void*) noexcept {}
+inline void ffx_type(std::uint64_t) noexcept {}
+inline void nota_fsr() noexcept {}
+inline void depois_present(std::uint64_t,bool,unsigned) noexcept {}
 }

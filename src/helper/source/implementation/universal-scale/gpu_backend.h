@@ -18,7 +18,9 @@ public:
   virtual GpuStatus reconstruct(void* command,std::uint32_t stage) noexcept=0;
 };
 
-struct AdaptedInputs {void* color{};std::uint32_t color_state{};void* motion{};std::uint32_t motion_state{};void* depth{};std::uint32_t depth_state{};};
+struct AdaptedInputs {void* color{};std::uint32_t color_state{};void* motion{};std::uint32_t motion_state{};void* depth{};std::uint32_t depth_state{};
+  void* output{};std::uint32_t output_state{};
+  void* exposure{};std::uint32_t exposure_state{};};
 class InputAdapter {
 public:
   virtual ~InputAdapter()=default;

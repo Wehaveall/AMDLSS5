@@ -7,6 +7,9 @@ enum class Origem : unsigned { Binding=0, Descritor, Admissao, Captura, Composic
 
 void report(const char* id,const char* detalhe) noexcept;
 
+void tolerado(const char* id,const char* detalhe) noexcept;
+unsigned tolerados() noexcept;
+
 void block(Origem origem,const char* id,const char* detalhe,const char* campo=nullptr) noexcept;
 
 void unblock(Origem origem) noexcept;
@@ -25,6 +28,9 @@ void region_of(const void* address,char* out,std::size_t n) noexcept;
 class Limiter {
 public:
     static constexpr unsigned per_id=4,total=64;
+
+    static unsigned por_id_efetivo() noexcept;
+    static unsigned total_efetivo() noexcept;
     bool admit(const char* id) noexcept;
     unsigned lines() const noexcept { return lines_; }
 private:

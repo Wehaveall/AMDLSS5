@@ -2,11 +2,12 @@
 // backup e desinstalacao que restaura o backup byte a byte. Sem interface: a janela (Janela.cs) e
 // o modo silencioso (Programa.cs) chamam estas classes e recebem o andamento por IRelato.
 //
-// Regras (mesmas do mod/Install-Game.ps1):
+// Regras (as do mod/Install-Game.ps1 de setembro, que este motor substituiu; o script saiu em 22/10, review M-12):
 //  - nada fora da pasta do jogo e escrito (o download do REFramework vai para %TEMP%\AMDLSS5-Instalador);
 //  - todo arquivo do jogo que seria sobrescrito vai antes para <pasta do exe>\AMDLSS5_backup\<data>\;
 //  - acoes.json e regravado a cada passo (antes da escrita arriscada): uma falha no meio desfaz sozinha;
-//  - o INI nunca e sobrescrito: se ja existe, so recebe as chaves que faltam (latin1, byte a byte);
+//  - INI do jogador (ja existia antes do mod) nunca e sobrescrito: so recebe as chaves que faltam, na secao e na
+//    codificacao dele; INI que o mod criou numa versao anterior vira o do pacote com as chaves do jogador (Ini.ChaveDoUsuario);
 //  - dinput8.dll alheio (REFramework do usuario ou outro mod) nunca e trocado;
 //  - desinstalar aplica as sessoes de backup da mais nova para a mais velha e so apaga um arquivo
 //    acrescentado se ele ainda e exatamente o que o instalador pos (senao e do usuario: fica).
@@ -130,6 +131,88 @@ namespace Amdlss5.Instalador
         }
 
         public static Encoding Latin1 { get { return Encoding.GetEncoding(28591); } }
+
+        // Troca atomica: tmp vira fin (File.Replace quando fin existe). Antes apagava fin e depois movia: uma falha no meio
+        // deixava a sessao sem acoes.json (o "livro de desfazer").
+        public static void TrocarArquivo(string tmp, string fin)
+        {
+            if (File.Exists(fin)) File.Replace(tmp, fin, null, true);
+            else File.Move(tmp, fin);
+        }
+
+        // rev-dup (review P2-8): o livro de desfazer de uma sessao (acoes.json) e sempre gravado assim: tmp + troca atomica.
+        // Antes repetido na Sessao.Gravar e no Consolidar.
+        public static void GravarAcoes(string pastaSessao, object acoes)
+        {
+            string tmp = Path.Combine(pastaSessao, "acoes.json.tmp");
+            File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(acoes), new UTF8Encoding(false));
+            TrocarArquivo(tmp, Path.Combine(pastaSessao, "acoes.json"));
+        }
+
+        // Tira o livro de desfazer (acoes.json e o .tmp de uma troca interrompida): sem ele a sessao nunca mais e aplicada.
+        // Antes repetido no Consolidar e no Desinstalar.
+        public static void ApagarAcoes(string pastaSessao)
+        {
+            foreach (string j in new[] { Path.Combine(pastaSessao, "acoes.json"), Path.Combine(pastaSessao, "acoes.json.tmp") })
+                if (File.Exists(j)) File.Delete(j);
+        }
+
+        // Copia (sem sobrescrever) e confere o SHA-256 da copia; diferente = IOException com a mensagem de erro dada.
+        public static void CopiarConferindo(string origem, string destino, string sha, string erro)
+        {
+            File.Copy(origem, destino);
+            TirarSomenteLeitura(destino);   // review P2 (26/10): o File.Copy leva o somente leitura do pacote para o jogo
+            if (Sha256(destino) != sha) throw new IOException(erro);
+        }
+
+        // Copia de backup sem o atributo somente leitura (copiado do original pelo File.Copy): senao a pasta de backup nao
+        // sai ao desinstalar/consolidar e toda desinstalacao termina "parcial".
+        public static void TirarSomenteLeitura(string arquivo)
+        {
+            FileAttributes at = File.GetAttributes(arquivo);
+            if ((at & FileAttributes.ReadOnly) != 0) File.SetAttributes(arquivo, at & ~FileAttributes.ReadOnly);
+        }
+
+        // Apaga uma pasta (de backup) mesmo com arquivos somente leitura dentro. Nunca entra em junction/link: o link sai,
+        // o destino fica.
+        public static void ApagarPasta(string pasta)
+        {
+            if (!Directory.Exists(pasta)) return;
+            if ((File.GetAttributes(pasta) & FileAttributes.ReparsePoint) == 0)
+            {
+                foreach (string f in Directory.GetFiles(pasta)) TirarSomenteLeitura(f);
+                foreach (string d in Directory.GetDirectories(pasta)) ApagarPasta(d);
+            }
+            Directory.Delete(pasta, (File.GetAttributes(pasta) & FileAttributes.ReparsePoint) == 0);
+        }
+
+        // Caminho de um backup citado no acoes.json: so um nome de arquivo dentro da pasta da sessao (null = recusado).
+        public static string CaminhoBackup(string pastaSessao, object nome)
+        {
+            string n = Convert.ToString(nome);
+            if (string.IsNullOrEmpty(n) || n.IndexOfAny(new char[] { '\\', '/', ':' }) >= 0 || n.Contains("..") || n.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return null;
+            string c = Path.GetFullPath(Path.Combine(pastaSessao, n));
+            return Dentro(c, pastaSessao) ? c : null;
+        }
+
+        // Argumento de linha de comando com aspas (regras do CommandLineToArgvW): barras antes de uma aspa, inclusive a
+        // final de "E:\", sao dobradas; senao "E:\" vira E:" e engole o argumento seguinte.
+        public static string Argumento(string valor)
+        {
+            if (valor == null) valor = "";
+            StringBuilder sb = new StringBuilder("\"");
+            int barras = 0;
+            foreach (char c in valor)
+            {
+                if (c == '\\') { barras++; continue; }
+                if (c == '"') { sb.Append('\\', barras * 2 + 1); sb.Append('"'); barras = 0; continue; }
+                sb.Append('\\', barras); barras = 0;
+                sb.Append(c);
+            }
+            sb.Append('\\', barras * 2);
+            sb.Append('"');
+            return sb.ToString();
+        }
     }
 
     // ------------------------------------------------------------------------------------------
@@ -146,6 +229,23 @@ namespace Amdlss5.Instalador
         public string Produto = "AMDLSS5";
         public readonly Dictionary<string, string> Arquivos = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public string RefArquivo, RefSha, RefRevisao;
+        // "porjogo" do pacote.json: exe sem extensao (minusculo) -> { caminho relativo com '/' -> SHA-256 }; arquivos em payload\porjogo\<exe>\<relativo>
+        public readonly Dictionary<string, Dictionary<string, string>> PorJogo = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string> Inis;   // "inis" do pacote.json (nome em payload\ini -> SHA-256); null = pacote sem a lista
+        // payload\testados.json ("testados" do pacote.json = SHA-256): jogos testados, {loja, id, exe}; vazio = pacote sem a lista
+        public readonly List<string[]> Testados = new List<string[]>();
+
+        // Casa por (loja, id) quando a entrada tem id; sem id, pelo nome do exe.
+        public bool EhTestado(string loja, string id, string exe)
+        {
+            string nomeExe = string.IsNullOrEmpty(exe) ? "" : Path.GetFileName(exe);
+            foreach (string[] t in Testados)
+            {
+                if (t[1].Length > 0) { if (string.Equals(t[0], loja, StringComparison.OrdinalIgnoreCase) && string.Equals(t[1], id, StringComparison.OrdinalIgnoreCase)) return true; }
+                else if (t[2].Length > 0 && string.Equals(t[2], nomeExe, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
 
         public static string PastaPadrao()
         {
@@ -175,6 +275,57 @@ namespace Amdlss5.Instalador
             // 1.1.0: o pacote nao leva INI (o helper publico cria o INI da proxy no primeiro jogo); pacotes antigos com INI continuam aceitos.
             if (!p.Arquivos.ContainsKey(Util.NomeProxy) || !p.Arquivos.ContainsKey(Util.NomeHelper))
                 throw new ErroInstalador(CodigoErro.Geral, T.F("erro_payload_json", json, Util.NomeProxy + "/" + Util.NomeHelper));
+            // INIs por jogo (payload\ini\<Exe>.ini) com hash: pacotes antigos nao tem "inis" (sem conferencia).
+            if (doc.TryGetValue("inis", out v) && v is Dictionary<string, object>)
+            {
+                p.Inis = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (KeyValuePair<string, object> kv in (Dictionary<string, object>)v)
+                {
+                    if (kv.Key.IndexOfAny(new char[] { '\\', '/', ':' }) >= 0 || kv.Key.Contains(".."))
+                        throw new ErroInstalador(CodigoErro.Geral, T.F("erro_payload_json", json, kv.Key));
+                    p.Inis[kv.Key] = Convert.ToString(kv.Value).ToUpperInvariant();
+                }
+            }
+            // extras por jogo: mesma validacao de nome dos "arquivos"; no relativo o '/' e permitido so como separador
+            if (doc.TryGetValue("porjogo", out v) && v is Dictionary<string, object>)
+            {
+                foreach (KeyValuePair<string, object> jogo in (Dictionary<string, object>)v)
+                {
+                    if (jogo.Key.Length == 0 || jogo.Key.IndexOfAny(new char[] { '\\', '/', ':' }) >= 0 || jogo.Key.Contains("..") || !(jogo.Value is Dictionary<string, object>))
+                        throw new ErroInstalador(CodigoErro.Geral, T.F("erro_payload_json", json, "porjogo/" + jogo.Key));
+                    Dictionary<string, string> lista = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (KeyValuePair<string, object> kv in (Dictionary<string, object>)jogo.Value)
+                    {
+                        if (!RelativoValido(kv.Key))
+                            throw new ErroInstalador(CodigoErro.Geral, T.F("erro_payload_json", json, "porjogo/" + jogo.Key + "/" + kv.Key));
+                        lista[kv.Key] = Convert.ToString(kv.Value).ToUpperInvariant();
+                    }
+                    p.PorJogo[jogo.Key.ToLowerInvariant()] = lista;
+                }
+            }
+            // lista de jogos testados: arquivo conferido pelo hash; pacote sem a chave = lista vazia
+            if (doc.TryGetValue("testados", out v) && v != null)
+            {
+                string arqT = Path.Combine(p.Pasta, "testados.json");
+                if (!File.Exists(arqT) || Util.Sha256(arqT) != Convert.ToString(v).ToUpperInvariant())
+                    throw new ErroInstalador(CodigoErro.Geral, T.F("erro_payload_json", json, "testados"));
+                try
+                {
+                    Dictionary<string, object> dt = (Dictionary<string, object>)new JavaScriptSerializer().DeserializeObject(File.ReadAllText(arqT, Encoding.UTF8));
+                    object lista;
+                    if (dt.TryGetValue("jogos", out lista) && lista is System.Collections.IEnumerable)
+                        foreach (object o in (System.Collections.IEnumerable)lista)
+                        {
+                            Dictionary<string, object> e = o as Dictionary<string, object>;
+                            if (e == null) continue;
+                            object x;
+                            string[] t = new string[3];
+                            for (int k = 0; k < 3; k++) t[k] = e.TryGetValue(new[] { "loja", "id", "exe" }[k], out x) && x != null ? Convert.ToString(x).Trim() : "";
+                            if (t[1].Length > 0 || t[2].Length > 0) p.Testados.Add(t);
+                        }
+                }
+                catch (Exception) { throw new ErroInstalador(CodigoErro.Geral, T.F("erro_payload_json", arqT, "jogos")); }
+            }
             if (doc.TryGetValue("reframework", out v) && v is Dictionary<string, object>)
             {
                 Dictionary<string, object> rf = (Dictionary<string, object>)v;
@@ -184,6 +335,32 @@ namespace Amdlss5.Instalador
                 if (rf.TryGetValue("revisao", out a) && a != null) p.RefRevisao = a.ToString();
             }
             return p;
+        }
+
+        static bool RelativoValido(string rel)
+        {
+            if (string.IsNullOrEmpty(rel) || rel.IndexOfAny(new char[] { '\\', ':' }) >= 0 || rel.Contains("..")) return false;
+            foreach (string seg in rel.Split('/')) if (seg.Length == 0 || seg.Trim() != seg) return false;
+            return true;
+        }
+
+        // Extras do exe (nome com ou sem .exe): caminho relativo (com '/') -> caminho absoluto em payload\porjogo\<exe>\. Vazio se nada.
+        public Dictionary<string, string> ExtrasPara(string exe)
+        {
+            Dictionary<string, string> r = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, string> lista;
+            if (string.IsNullOrEmpty(exe)) return r;
+            string chave = Path.GetFileNameWithoutExtension(exe).ToLowerInvariant();
+            if (!PorJogo.TryGetValue(chave, out lista)) return r;
+            string baseJogo = Path.Combine(Pasta, "porjogo", chave);
+            foreach (KeyValuePair<string, string> kv in lista)
+            {
+                // pacote-160 (27/10): extra repetido entre jogos fica uma vez so em payload\porjogo\_comum\<SHA>\<nome> (o hash e conferido igual)
+                string proprio = Path.GetFullPath(Path.Combine(baseJogo, kv.Key.Replace('/', '\\')));
+                string comum = Path.GetFullPath(Path.Combine(Pasta, "porjogo", "_comum", kv.Value, Path.GetFileName(kv.Key.Replace('/', '\\'))));
+                r[kv.Key] = !File.Exists(proprio) && File.Exists(comum) ? comum : proprio;
+            }
+            return r;
         }
 
         public string CaminhoMod(string nome) { return Path.Combine(Pasta, "mod", nome); }
@@ -240,6 +417,7 @@ namespace Amdlss5.Instalador
         public string ReMotivo;
         public bool TemStorage;
         public int SessoesBackup;
+        public string VersaoInstalada;   // null = mod nao instalado por nos; "?" = instalado por versao antiga, sem versao.txt
         public bool ProxyNossoSemBackup;
         public bool VersionDllAlheio;
         public string Dinput8Sha;
@@ -322,6 +500,17 @@ namespace Amdlss5.Instalador
                     if (n.Contains("fidelityfx") || n.StartsWith("ffx_fsr") || n.StartsWith("fsr")) { j.FfxTipo = "outro"; j.FfxArquivo = f; break; }
                 }
             }
+            // pacote-160 (26/10): jogo sem FSR na pasta cujo pacote traz o FSR nos extras dele (payload\porjogo\<exe>: Shadow of the Tomb
+            // Raider, onde a nossa libxess troca o XeSS pelo FSR) conta como FSR dividido; as DLLs entram na instalacao com os extras.
+            // rdr2 (26/10): o mesmo vale para o jogo com FSR 2 na pasta ("outro": Red Dead Redemption 2, ffx_fsr2_api_x64.dll) cujo
+            // pacote traz o loader/upscaler da FidelityFX API: o helper (NeuralFsr2ParaFfx=1 no INI do jogo) leva o FSR 2 a eles.
+            if ((j.FfxTipo == "nenhum" || j.FfxTipo == "outro") && payload != null)
+            {
+                Dictionary<string, string> extras = payload.ExtrasPara(j.Exe);
+                string upPacote;
+                if (extras.TryGetValue("amd_fidelityfx_upscaler_dx12.dll", out upPacote) && extras.ContainsKey("amd_fidelityfx_loader_dx12.dll"))
+                { j.FfxTipo = "split"; j.FfxArquivo = upPacote; }
+            }
             if (j.FfxArquivo != null)
             {
                 try
@@ -345,7 +534,15 @@ namespace Amdlss5.Instalador
             j.TemStorage = Directory.Exists(Path.Combine(j.PastaMod, "_storage_"));
 
             string bk = Path.Combine(j.PastaMod, Util.PastaBackup);
-            if (Directory.Exists(bk)) j.SessoesBackup = Directory.GetDirectories(bk).Length;
+            j.SessoesBackup = Sessoes.Validas(bk, false).Count;   // pasta sem acoes.json nao desfaz nada: nao conta
+            if (j.SessoesBackup > 0)
+            {
+                List<string> sessoesOk = Sessoes.Validas(bk, false);
+                string arqVersao = Path.Combine(sessoesOk[sessoesOk.Count - 1], "versao.txt");
+                j.VersaoInstalada = "?";
+                try { if (File.Exists(arqVersao)) { string v = File.ReadAllText(arqVersao, Encoding.UTF8).Trim(); if (v.Length > 0) j.VersaoInstalada = v; } }
+                catch (Exception) { }
+            }
             string ver = Path.Combine(j.PastaMod, Util.NomeProxy);
             if (File.Exists(ver) && payload != null)
             {
@@ -403,6 +600,23 @@ namespace Amdlss5.Instalador
                 if (pontos > melhorPontos) { melhorPontos = pontos; melhor = kv.Key; }
             }
             return melhor;
+        }
+
+        // Primeiro exe de jogo de 32 bits (nao ignorado) na pasta, ou null: a pasta tem jogo, mas o mod nao serve para ele.
+        public static string Exe32Bits(string pasta)
+        {
+            List<KeyValuePair<string, int>> exes = new List<KeyValuePair<string, int>>();
+            Coletar(pasta, 0, exes);
+            foreach (KeyValuePair<string, int> kv in exes)
+            {
+                string nome = Path.GetFileName(kv.Key).ToLowerInvariant();
+                bool ignorar = false;
+                foreach (string s in ExesIgnorados) if (nome.Contains(s)) { ignorar = true; break; }
+                if (ignorar) continue;
+                InfoPe pe = Pe.Ler(kv.Key);
+                if (pe != null && !pe.X64 && !pe.EhDll) return kv.Key;
+            }
+            return null;
         }
 
         static void Coletar(string dir, int prof, List<KeyValuePair<string, int>> saida)
@@ -560,13 +774,68 @@ namespace Amdlss5.Instalador
             Gravar();
         }
 
-        public void Gravar()
+        public void Gravar() { Util.GravarAcoes(Pasta, Acoes); }
+    }
+
+    // Pastas de sessao em AMDLSS5_backup. Valida = tem acoes.json (ou so o acoes.json.tmp de uma troca interrompida, que e
+    // recuperado). Pasta sem nenhum dos dois nao desfaz nada (sobra de uma limpeza que falhou): fica fora da lista e,
+    // com limpar, e apagada (se nao der, fica para a proxima vez; nunca trava a consolidacao nem a desinstalacao).
+    static class Sessoes
+    {
+        public static List<string> Validas(string bkRaiz, bool limpar)
         {
-            string tmp = Path.Combine(Pasta, "acoes.json.tmp");
-            File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(Acoes), new UTF8Encoding(false));
-            string fin = Path.Combine(Pasta, "acoes.json");
-            if (File.Exists(fin)) File.Delete(fin);
-            File.Move(tmp, fin);
+            List<string> validas = new List<string>();
+            if (!Directory.Exists(bkRaiz)) return validas;
+            List<string> todas = new List<string>(Directory.GetDirectories(bkRaiz));
+            todas.Sort(StringComparer.Ordinal);
+            foreach (string d in todas)
+            {
+                string json = Path.Combine(d, "acoes.json"), tmp = json + ".tmp";
+                if (!File.Exists(json) && File.Exists(tmp))
+                {
+                    try { File.Move(tmp, json); } catch (Exception) { }
+                }
+                if (File.Exists(json) || File.Exists(tmp)) { validas.Add(d); continue; }
+                if (limpar) { try { Util.ApagarPasta(d); } catch (Exception) { } }
+            }
+            return validas;
+        }
+
+        public static string Json(string sessao)
+        {
+            string json = Path.Combine(sessao, "acoes.json");
+            return File.Exists(json) ? json : json + ".tmp";
+        }
+
+        public static List<Dictionary<string, object>> Ler(string sessao)
+        {
+            List<Dictionary<string, object>> acoes = new List<Dictionary<string, object>>();
+            object[] lista = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(Json(sessao), Encoding.UTF8)) as object[];
+            if (lista != null) foreach (object o in lista) { Dictionary<string, object> a = o as Dictionary<string, object>; if (a != null && a.ContainsKey("acao") && a.ContainsKey("caminho")) acoes.Add(a); }
+            return acoes;
+        }
+
+        // Ha algo a desfazer nesta pasta do jogo (uma sessao valida)?
+        public static bool Resta(string pastaMod)
+        {
+            return pastaMod != null && Validas(Path.Combine(pastaMod, Util.PastaBackup), false).Count > 0;
+        }
+
+        // Primeira acao (a da sessao mais velha) de cada caminho: diz se o arquivo existia antes do mod.
+        public static Dictionary<string, string> PrimeiraAcao(string bkRaiz)
+        {
+            Dictionary<string, string> r = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                foreach (string d in Validas(bkRaiz, false))
+                    foreach (Dictionary<string, object> a in Ler(d))
+                    {
+                        string rel = Convert.ToString(a["caminho"]);
+                        if (!r.ContainsKey(rel)) r[rel] = Convert.ToString(a["acao"]);
+                    }
+            }
+            catch (Exception) { }
+            return r;
         }
     }
 
@@ -597,10 +866,37 @@ namespace Amdlss5.Instalador
             // INI so em pacote antigo (com dlssnr_on_amd.ini no manifesto); o 1.1.0 nao leva INI.
             string iniOrigem = p.Arquivos.ContainsKey(Util.NomeIni) ? p.IniPara(j.Exe) : null;
             if (iniOrigem != null && !File.Exists(iniOrigem)) throw new ErroInstalador(CodigoErro.Faltando, T.F("erro_payload_falta", Util.NomeIni));
+            if (iniOrigem != null)
+            {
+                // o INI do pacote tambem e conferido: o padrao pelo "arquivos", o de um jogo (payload\ini) pelo "inis"
+                string esperadoIni = null;
+                if (Util.Dentro(iniOrigem, Path.Combine(p.Pasta, "ini")))
+                {
+                    if (p.Inis != null && !p.Inis.TryGetValue(Path.GetFileName(iniOrigem), out esperadoIni))
+                        throw new ErroInstalador(CodigoErro.Geral, T.F("erro_hash", "ini/" + Path.GetFileName(iniOrigem)));
+                }
+                else esperadoIni = p.Arquivos[Util.NomeIni];
+                if (esperadoIni != null && Util.Sha256(iniOrigem) != esperadoIni)
+                    throw new ErroInstalador(CodigoErro.Geral, T.F("erro_hash", Util.Dentro(iniOrigem, Path.Combine(p.Pasta, "ini")) ? "ini/" + Path.GetFileName(iniOrigem) : Util.NomeIni));
+            }
+
+            // extras do jogo (payload\porjogo\<exe>): so entram na pasta do exe; o hash e conferido antes de tocar no jogo
+            string chaveExe = Path.GetFileNameWithoutExtension(j.Exe).ToLowerInvariant();
+            Dictionary<string, string> extras = p.ExtrasPara(j.Exe);
+            Dictionary<string, string> extrasSha = null;
+            if (extras.Count > 0) extrasSha = p.PorJogo[chaveExe];
+            string pastaExtras = Path.Combine(p.Pasta, "porjogo");
+            foreach (KeyValuePair<string, string> kv in extras)
+            {
+                string nomeExtra = "porjogo/" + chaveExe + "/" + kv.Key;
+                if (!Util.Dentro(kv.Value, pastaExtras) || !File.Exists(kv.Value)) throw new ErroInstalador(CodigoErro.Faltando, T.F("erro_payload_falta", nomeExtra));
+                if (Util.Sha256(kv.Value) != extrasSha[kv.Key]) throw new ErroInstalador(CodigoErro.Geral, T.F("erro_hash", nomeExtra));
+            }
 
             // espaco
             long bytes = 0;
             foreach (string c in origem.Values) bytes += new FileInfo(c).Length;
+            foreach (string c in extras.Values) bytes += new FileInfo(c).Length;
             long livre = new DriveInfo(Path.GetPathRoot(j.PastaMod)).AvailableFreeSpace;
             long precisa = bytes * alvos.Count * 2 + (200L << 20);
             if (livre < precisa) throw new ErroInstalador(CodigoErro.Geral, T.F("erro_espaco", Util.Mb(livre), Util.Mb(precisa)));
@@ -637,10 +933,14 @@ namespace Amdlss5.Instalador
             }
 
             string bkRaiz = Path.Combine(j.PastaMod, Util.PastaBackup);
+            // INI que o mod criou numa instalacao anterior (1a acao = ini_novo/criado_pelo_mod): e trocado pelo do pacote
+            // (so as chaves do jogador ficam); INI que ja existia antes do mod continua so recebendo as chaves que faltam.
+            Dictionary<string, string> primeira = Sessoes.PrimeiraAcao(bkRaiz);
             string nomeSessao = DateTime.Now.ToString("yyyyMMdd-HHmmss");
             string pastaSessao = Path.Combine(bkRaiz, nomeSessao);
             for (int k = 2; Directory.Exists(pastaSessao); k++) pastaSessao = Path.Combine(bkRaiz, nomeSessao + "-" + k);
             Directory.CreateDirectory(pastaSessao);
+            GravarVersao(pastaSessao, p.Versao);
             Sessao s = new Sessao(j.PastaMod, pastaSessao, r, "instalacao.log");
             try
             {
@@ -655,10 +955,26 @@ namespace Amdlss5.Instalador
                         CopiarComBackup(s, kv.Value, Path.Combine(alvo, kv.Key), p.Arquivos[kv.Key]);
                         s.Progresso(30 + ++feito * 70 / total);
                     }
-                    if (iniOrigem != null) InstalarIni(s, iniOrigem, Path.Combine(alvo, Util.NomeIni), o.Idioma);
+                    if (iniOrigem != null)
+                    {
+                        string iniDestino = Path.Combine(alvo, Util.NomeIni), tipo1;
+                        bool doMod = primeira.TryGetValue(Rel(s, iniDestino), out tipo1) && (tipo1 == "ini_novo" || tipo1 == "criado_pelo_mod");
+                        InstalarIni(s, iniOrigem, iniDestino, o.Idioma, doMod);
+                    }
                     foreach (string n in Util.ArquivosDoMod)   // 1.3.0: com INI no pacote, os outros arquivos que o mod cria tambem
                         if (iniOrigem == null || !n.Equals(Util.NomeIni, StringComparison.OrdinalIgnoreCase)) GuardarArquivoDoMod(s, Path.Combine(alvo, n));
                     s.Progresso(30 + ++feito * 70 / total);
+                }
+                foreach (KeyValuePair<string, string> kv in extras)
+                {
+                    string destinoExtra = Path.GetFullPath(Path.Combine(j.PastaMod, kv.Key.Replace('/', '\\')));
+                    if (!Util.Dentro(destinoExtra, j.PastaMod)) throw new ErroInstalador(CodigoErro.Geral, T.F("erro_payload_json", "porjogo", kv.Key));
+                    CriarPastas(s, j.PastaMod, Path.GetDirectoryName(destinoExtra));
+                    // rdr2 (26/10): DLL da FidelityFX API (amd_fidelityfx_*.dll) que o jogador ja tem numa versao MAIS NOVA que a do
+                    // pacote fica como esta (nada registrado: a desinstalacao nao mexe nela); versao igual/mais velha/desconhecida = troca com backup
+                    string maisNova = ExtraFfxMaisNovo(destinoExtra, kv.Value);
+                    if (maisNova != null) { s.Linha(T.F("arq_ffx_mantido", Rel(s, destinoExtra), maisNova)); continue; }
+                    CopiarComBackup(s, kv.Value, destinoExtra, extrasSha[kv.Key]);
                 }
                 if (refDll != null) InstalarReframework(s, refDll, Path.Combine(j.PastaMod, "dinput8.dll"));
                 s.Progresso(100);
@@ -678,7 +994,7 @@ namespace Amdlss5.Instalador
                     {
                         // o log desta tentativa vai para %TEMP% antes de a sessao (vazia de efeito) sumir
                         File.Copy(Path.Combine(pastaSessao, "instalacao.log"), Path.Combine(Util.TempInstalador(), "instalacao-falhou-" + Path.GetFileName(pastaSessao) + ".log"), true);
-                        Directory.Delete(pastaSessao, true);
+                        Util.ApagarPasta(pastaSessao);
                         if (Directory.GetFileSystemEntries(bkRaiz).Length == 0) Directory.Delete(bkRaiz);
                     }
                     catch (Exception) { }
@@ -689,47 +1005,48 @@ namespace Amdlss5.Instalador
                 throw new ErroInstalador(CodigoErro.Geral, e.Message + Environment.NewLine + T.S(limpo ? "desfeito_ok" : "desfeito_parcial"));
             }
             finally { s.Fechar(); }
-            return Consolidar(bkRaiz, pastaSessao, r);
+            string final = Consolidar(bkRaiz, pastaSessao, r);
+            if (!string.Equals(final, pastaSessao, StringComparison.OrdinalIgnoreCase)) GravarVersao(final, p.Versao);   // a sessao mais velha sobrevive
+            return final;
+        }
+
+        // versao do pacote instalado, para a biblioteca mostrar "instalada vX / atualizar" (separado do acoes.json)
+        static void GravarVersao(string pastaSessao, string versao)
+        {
+            try { File.WriteAllText(Path.Combine(pastaSessao, "versao.txt"), versao ?? "?", new UTF8Encoding(false)); }
+            catch (Exception) { }
         }
 
         // 1.5.2: instalar por cima de uma versao anterior nao empilha backup. As sessoes de AMDLSS5_backup viram uma so, a
         // mais velha (a que guarda os arquivos originais do jogo): um arquivo que uma sessao anterior ja tinha posto so
         // atualiza o hash esperado, e o backup da versao velha do mod nao e guardado. Desinstalar continua devolvendo a
-        // pasta como era antes da 1a instalacao. Sessao sem acoes.json = nada muda (as sessoes ficam como estao).
+        // pasta como era antes da 1a instalacao. Pasta sem acoes.json (sobra de uma limpeza que falhou) nao desfaz nada:
+        // fica fora e e apagada se der; nunca desliga a consolidacao.
         static string Consolidar(string bkRaiz, string nova, IRelato r)
         {
             try
             {
-                List<string> sessoes = new List<string>(Directory.GetDirectories(bkRaiz));
-                sessoes.Sort(StringComparer.Ordinal);
+                List<string> sessoes = Sessoes.Validas(bkRaiz, true);
                 if (sessoes.Count < 2) return nova;
-                JavaScriptSerializer js = new JavaScriptSerializer();
                 List<List<Dictionary<string, object>>> listas = new List<List<Dictionary<string, object>>>();
-                foreach (string d in sessoes)
-                {
-                    string json = Path.Combine(d, "acoes.json");
-                    if (!File.Exists(json)) return nova;
-                    List<Dictionary<string, object>> acoes = new List<Dictionary<string, object>>();
-                    object[] lista = js.DeserializeObject(File.ReadAllText(json, Encoding.UTF8)) as object[];
-                    if (lista != null) foreach (object o in lista) acoes.Add((Dictionary<string, object>)o);
-                    listas.Add(acoes);
-                }
+                foreach (string d in sessoes) listas.Add(Sessoes.Ler(d));
                 string baseDir = sessoes[0];
                 for (int k = 1; k < sessoes.Count; k++)
                     foreach (Dictionary<string, object> a in listas[k]) Juntar(listas[0], a, sessoes[k], baseDir);
-                // a base primeiro (tmp + troca); depois tira o acoes.json das outras (sem ele uma sessao nunca e aplicada)
-                string tmp = Path.Combine(baseDir, "acoes.json.tmp"), fin = Path.Combine(baseDir, "acoes.json");
-                File.WriteAllText(tmp, js.Serialize(listas[0]), new UTF8Encoding(false));
-                File.Delete(fin);
-                File.Move(tmp, fin);
-                for (int k = 1; k < sessoes.Count; k++) File.Delete(Path.Combine(sessoes[k], "acoes.json"));
+                // a base primeiro (tmp + troca atomica); depois tira o acoes.json das outras (sem ele uma sessao nunca e aplicada)
+                Util.GravarAcoes(baseDir, listas[0]);
+                for (int k = 1; k < sessoes.Count; k++) Util.ApagarAcoes(sessoes[k]);
                 long liberado = 0;
                 for (int k = 1; k < sessoes.Count; k++)
                 {
-                    string log = Path.Combine(sessoes[k], "instalacao.log");
-                    if (File.Exists(log)) File.AppendAllText(Path.Combine(baseDir, "instalacao.log"), Environment.NewLine + File.ReadAllText(log, Encoding.UTF8), new UTF8Encoding(false));
-                    foreach (string f in Directory.GetFiles(sessoes[k], "*", SearchOption.AllDirectories)) liberado += new FileInfo(f).Length;
-                    Directory.Delete(sessoes[k], true);
+                    try
+                    {
+                        string log = Path.Combine(sessoes[k], "instalacao.log");
+                        if (File.Exists(log)) File.AppendAllText(Path.Combine(baseDir, "instalacao.log"), Environment.NewLine + File.ReadAllText(log, Encoding.UTF8), new UTF8Encoding(false));
+                        foreach (string f in Directory.GetFiles(sessoes[k], "*", SearchOption.AllDirectories)) liberado += new FileInfo(f).Length;
+                        Util.ApagarPasta(sessoes[k]);
+                    }
+                    catch (Exception) { }   // sem acoes.json ela ja nao conta; a proxima instalacao tenta apagar de novo
                 }
                 r.Linha(T.F("consolidado", sessoes.Count - 1, Util.Mb(liberado), baseDir));
                 return baseDir;
@@ -750,16 +1067,26 @@ namespace Amdlss5.Instalador
             for (int i = base_.Count - 1; i >= 0 && b == null; i--)
                 if (string.Equals(Convert.ToString(base_[i]["caminho"]), rel, StringComparison.OrdinalIgnoreCase)) b = base_[i];
             string tb = b == null ? null : Convert.ToString(b["acao"]);
-            bool doMod = tb == "ini_novo" || tb == "criado_pelo_mod" || tb == "ini_mesclado" || tb == "preservado";
+            bool doMod = tb == "ini_novo" || tb == "criado_pelo_mod" || tb == "ini_mesclado" || tb == "preservado" || tb == "ini_trocado";
             switch (tipo)
             {
                 case "igual":
                     if (b != null) return;
                     break;
+                case "pasta_criada":
+                    if (b != null) return;   // a base ja sabe apagar a pasta
+                    break;
                 case "trocado":
                 case "acrescentado":
-                    // o arquivo ja era do mod (posto por uma sessao anterior): o original continua no backup da base
-                    if (tb == "acrescentado" || tb == "trocado") { b["novo"] = a["novo"]; return; }
+                    // o arquivo ainda era o que a base pos (ou o jogador o apagou): o original continua no backup da base.
+                    // P0-4 (19/10): se ele foi trocado por OUTRO arquivo depois (version.dll de outro mod), o backup desse
+                    // arquivo nao pode sumir: a acao vai para o fim da base com a copia (desfeita antes; a base o mantem).
+                    if ((tb == "acrescentado" || tb == "trocado")
+                        && (tipo == "acrescentado" || string.Equals(Convert.ToString(a["anterior"]), b.ContainsKey("novo") ? Convert.ToString(b["novo"]) : null, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        b["novo"] = a["novo"];
+                        return;
+                    }
                     // a base o achou igual (original do jogo = o do mod antigo): o original e o "anterior" desta troca
                     if (tipo == "trocado" && tb == "igual")
                     {
@@ -768,6 +1095,7 @@ namespace Amdlss5.Instalador
                     }
                     break;
                 case "ini_mesclado":
+                case "ini_trocado":
                 case "preservado":
                 case "ini_novo":
                 case "criado_pelo_mod":
@@ -782,11 +1110,12 @@ namespace Amdlss5.Instalador
         static string CopiarBackup(Dictionary<string, object> a, string dirA, string baseDir)
         {
             string nome = Convert.ToString(a["backup"]);
-            string origem = Path.Combine(dirA, nome);
-            if (!File.Exists(origem)) throw new IOException(T.F("des_sem_backup", Convert.ToString(a["caminho"])));
+            string origem = Util.CaminhoBackup(dirA, nome);
+            if (origem == null || !File.Exists(origem)) throw new IOException(T.F("des_sem_backup", Convert.ToString(a["caminho"])));
             string destino = Path.Combine(baseDir, nome);
             if (File.Exists(destino)) { nome = "c" + Guid.NewGuid().ToString("N").Substring(0, 8) + "-" + nome; destino = Path.Combine(baseDir, nome); }
             File.Copy(origem, destino);
+            Util.TirarSomenteLeitura(destino);
             return nome;
         }
 
@@ -811,6 +1140,52 @@ namespace Amdlss5.Instalador
             return a;
         }
 
+        // rev-dup (review P2-8): copia o arquivo atual (SHA-256 'atual') para a pasta da sessao como <prefixo>-xxxxxxxx-<nome>,
+        // sem somente leitura, e confere a copia. Devolve o nome do backup. Antes repetido em 3 lugares (arquivo, mod, ini).
+        static string GuardarBackup(Sessao s, string destino, string prefixo, string rel, string atual)
+        {
+            string nomeBk = prefixo + "-" + Guid.NewGuid().ToString("N").Substring(0, 8) + "-" + Path.GetFileName(destino);
+            string bk = Path.Combine(s.Pasta, nomeBk);
+            File.Copy(destino, bk);
+            Util.TirarSomenteLeitura(bk);
+            if (Util.Sha256(bk) != atual) throw new IOException(T.F("erro_backup", rel));
+            return nomeBk;
+        }
+
+        // Cria as pastas que faltam entre a pasta do jogo e 'pasta'; cada uma e registrada (de fora para dentro) para a
+        // desinstalacao apagar, se ficarem vazias.
+        static void CriarPastas(Sessao s, string raiz, string pasta)
+        {
+            if (Directory.Exists(pasta)) return;
+            string pai = Path.GetDirectoryName(pasta.TrimEnd('\\'));
+            if (pai != null && Util.Dentro(pasta, raiz)) CriarPastas(s, raiz, pai);
+            s.Registrar(Acao("pasta_criada", Rel(s, pasta)));
+            Directory.CreateDirectory(pasta);
+        }
+
+        // rdr2 (26/10): versao do arquivo (FileVersion numerica) ou null se nao tem recurso de versao / nao le.
+        static Version VersaoArquivo(string caminho)
+        {
+            try
+            {
+                FileVersionInfo vi = FileVersionInfo.GetVersionInfo(caminho);
+                if (vi.FileMajorPart == 0 && vi.FileMinorPart == 0 && vi.FileBuildPart == 0 && vi.FilePrivatePart == 0) return null;
+                return new Version(vi.FileMajorPart, vi.FileMinorPart, vi.FileBuildPart, vi.FilePrivatePart);
+            }
+            catch (Exception) { return null; }
+        }
+
+        // Extra amd_fidelityfx_*.dll que ja existe no jogo com versao MAIOR que a do pacote: devolve a versao dele (texto) para manter;
+        // null = instalar (nao existe, nao e DLL da FidelityFX API, ou alguma das versoes e desconhecida, ou a do pacote e igual/maior).
+        internal static string ExtraFfxMaisNovo(string destino, string origem)
+        {
+            string nome = Path.GetFileName(destino).ToLowerInvariant();
+            if (!nome.StartsWith("amd_fidelityfx_") || !nome.EndsWith(".dll") || !File.Exists(destino)) return null;
+            Version noJogo = VersaoArquivo(destino), doPacote = VersaoArquivo(origem);
+            if (noJogo == null || doPacote == null || noJogo <= doPacote) return null;
+            return noJogo.ToString();
+        }
+
         static void CopiarComBackup(Sessao s, string origem, string destino, string shaNovo)
         {
             string rel = Rel(s, destino);
@@ -818,13 +1193,11 @@ namespace Amdlss5.Instalador
             {
                 string atual = Util.Sha256(destino);
                 if (atual == shaNovo) { s.Registrar(Acao("igual", rel)); s.Linha(T.F("arq_igual", rel)); return; }
-                string nomeBk = "arquivo-" + Guid.NewGuid().ToString("N").Substring(0, 8) + "-" + Path.GetFileName(destino);
-                string bk = Path.Combine(s.Pasta, nomeBk);
-                File.Copy(destino, bk);
-                if (Util.Sha256(bk) != atual) throw new IOException(T.F("erro_backup", rel));
+                string nomeBk = GuardarBackup(s, destino, "arquivo", rel, atual);
                 Dictionary<string, object> a = Acao("trocado", rel);
                 a["backup"] = nomeBk; a["anterior"] = atual; a["novo"] = shaNovo;
                 s.Registrar(a);
+                Util.TirarSomenteLeitura(destino);   // review P2 (26/10): arquivo do jogo somente leitura (o backup ja o guardou)
                 File.Copy(origem, destino, true);
                 s.Linha(T.F("arq_trocado", rel, Util.Curto(atual), Util.Curto(shaNovo)));
             }
@@ -836,6 +1209,9 @@ namespace Amdlss5.Instalador
                 File.Copy(origem, destino);
                 s.Linha(T.F("arq_novo", rel));
             }
+            // review P2 (26/10): o File.Copy leva o somente leitura do arquivo do pacote para o jogo; sem tirar, a desinstalacao
+            // (e a proxima atualizacao) tropecam nele
+            Util.TirarSomenteLeitura(destino);
             if (Util.Sha256(destino) != shaNovo) throw new IOException(T.F("erro_copia", rel));
         }
 
@@ -853,10 +1229,7 @@ namespace Amdlss5.Instalador
                 return;
             }
             string atual = Util.Sha256(destino);
-            string nomeBk = "mod-" + Guid.NewGuid().ToString("N").Substring(0, 8) + "-" + Path.GetFileName(destino);
-            string bk = Path.Combine(s.Pasta, nomeBk);
-            File.Copy(destino, bk);
-            if (Util.Sha256(bk) != atual) throw new IOException(T.F("erro_backup", rel));
+            string nomeBk = GuardarBackup(s, destino, "mod", rel, atual);
             Dictionary<string, object> a = Acao("preservado", rel);
             a["backup"] = nomeBk; a["anterior"] = atual;
             s.Registrar(a);
@@ -864,26 +1237,43 @@ namespace Amdlss5.Instalador
             s.Linha(T.F("mod_guardado", rel));
         }
 
-        static void InstalarIni(Sessao s, string iniOrigem, string destino, string idioma)
+        // INI do pacote. Tres casos:
+        //  - nao existe: copia (ini_novo) com o idioma do instalador;
+        //  - existe e foi o mod que o criou (doMod: 1a acao numa sessao anterior = ini_novo/criado_pelo_mod): P1-15 (19/10),
+        //    vira o do pacote (valores novos da versao chegam) e so as chaves do JOGADOR ficam (Ini.ChaveDoUsuario: idioma,
+        //    preferencias do menu, limite de FPS, filtros, F10); o antigo vai para o backup (ini_trocado);
+        //  - existe e e do jogador (ja estava antes do mod): so recebe as chaves que faltam (ini_mesclado).
+        static void InstalarIni(Sessao s, string iniOrigem, string destino, string idioma, bool doMod)
         {
             string rel = Rel(s, destino);
             if (File.Exists(destino))
             {
-                string nomeBk = "ini-" + Guid.NewGuid().ToString("N").Substring(0, 8) + "-" + Path.GetFileName(destino);
-                File.Copy(destino, Path.Combine(s.Pasta, nomeBk));
-                Dictionary<string, object> a = Acao("ini_mesclado", rel);
-                a["backup"] = nomeBk; a["anterior"] = Util.Sha256(destino);
+                string anterior = Util.Sha256(destino);
+                string nomeBk = GuardarBackup(s, destino, "ini", rel, anterior);
+                Dictionary<string, object> a = Acao(doMod ? "ini_trocado" : "ini_mesclado", rel);
+                a["backup"] = nomeBk; a["anterior"] = anterior;
                 s.Registrar(a);
-                List<string> novas = Ini.MesclarFaltantes(destino, iniOrigem);
-                a["chaves"] = novas.ToArray();
-                s.Gravar();
-                s.Linha(T.F("ini_mesclado", rel, novas.Count));
+                if (doMod)
+                {
+                    List<string> mantidas = Ini.TrocarMantendoUsuario(destino, iniOrigem, idioma);
+                    a["chaves"] = mantidas.ToArray();
+                    s.Gravar();
+                    s.Linha(T.F("ini_trocado", rel, mantidas.Count));
+                }
+                else
+                {
+                    List<string> novas = Ini.MesclarFaltantes(destino, iniOrigem);
+                    a["chaves"] = novas.ToArray();
+                    s.Gravar();
+                    s.Linha(T.F("ini_mesclado", rel, novas.Count));
+                }
             }
             else
             {
                 s.Registrar(Acao("ini_novo", rel));
                 File.Copy(iniOrigem, destino);
-                if (!string.IsNullOrEmpty(idioma)) Ini.Definir(destino, "MenuLanguage", idioma);
+                Util.TirarSomenteLeitura(destino);
+                if (!string.IsNullOrEmpty(idioma)) Ini.Definir(destino, Ini.Secao, "MenuLanguage", idioma);
                 s.Linha(T.F("ini_novo", rel));
             }
         }
@@ -902,74 +1292,99 @@ namespace Amdlss5.Instalador
             Dictionary<string, object> a = Acao("acrescentado", rel);
             a["novo"] = sha;
             s.Registrar(a);
-            File.Copy(origem, destino);
-            if (Util.Sha256(destino) != sha) throw new IOException(T.F("erro_copia", rel));
+            Util.CopiarConferindo(origem, destino, sha, T.F("erro_copia", rel));
             s.Linha(T.F("ref_instalado", rel));
         }
 
         // Desfaz uma lista de acoes (da ultima para a primeira). true = tudo voltou exatamente.
+        // review P2 (26/10): cada acao no seu try -- um arquivo travado/sem permissao nao derruba o resto desta sessao nem as
+        // sessoes mais velhas; a falha vai para o log (des_falhou) e o resultado fica "parcial" (o acoes.json fica: uma nova
+        // desinstalacao termina o que faltou; as acoes ja desfeitas se repetem sem efeito). O somente leitura do arquivo do
+        // jogo sai antes de apagar/sobrescrever.
         static bool Desfazer(List<Dictionary<string, object>> acoes, string pastaMod, string pastaSessao, IRelato r)
         {
             bool limpo = true;
             for (int k = acoes.Count - 1; k >= 0; k--)
             {
                 Dictionary<string, object> a = acoes[k];
-                string tipo = Convert.ToString(a["acao"]);
-                string caminho = Path.GetFullPath(Path.Combine(pastaMod, Convert.ToString(a["caminho"])));
-                if (!Util.Dentro(caminho, pastaMod)) { r.Linha(T.F("des_fora", caminho)); limpo = false; continue; }
                 string rel = Convert.ToString(a["caminho"]);
-                object o;
-                switch (tipo)
+                try
                 {
-                    case "trocado":
-                        {
-                            string bk = Path.Combine(pastaSessao, Convert.ToString(a["backup"]));
-                            string anterior = Convert.ToString(a["anterior"]);
-                            if (File.Exists(caminho) && Util.Sha256(caminho) == anterior) break;
-                            if (!File.Exists(bk)) { r.Linha(T.F("des_sem_backup", rel)); limpo = false; break; }
-                            if (File.Exists(caminho) && a.TryGetValue("novo", out o) && Util.Sha256(caminho) != Convert.ToString(o))
-                                r.Linha(T.F("des_mudou_restaura", rel));
-                            File.Copy(bk, caminho, true);
-                            if (Util.Sha256(caminho) != anterior) { r.Linha(T.F("des_divergiu", rel)); limpo = false; }
-                            else r.Linha(T.F("des_restaurado", rel));
+                    string tipo = Convert.ToString(a["acao"]);
+                    string caminho = Path.GetFullPath(Path.Combine(pastaMod, rel));
+                    if (!Util.Dentro(caminho, pastaMod)) { r.Linha(T.F("des_fora", caminho)); limpo = false; continue; }
+                    object o;
+                    switch (tipo)
+                    {
+                        case "trocado":
+                            if (!RestaurarConferindo(a, caminho, rel, pastaSessao, true, r)) limpo = false;
                             break;
-                        }
-                    case "acrescentado":
-                        {
-                            if (!File.Exists(caminho)) break;
-                            string novo = a.TryGetValue("novo", out o) ? Convert.ToString(o) : null;
-                            if (novo != null && Util.Sha256(caminho) != novo) { r.Linha(T.F("des_mantido_usuario", rel)); break; }
-                            File.Delete(caminho);
-                            r.Linha(T.F("des_removido", rel));
+                        case "acrescentado":
+                            {
+                                if (!File.Exists(caminho)) break;
+                                string novo = a.TryGetValue("novo", out o) ? Convert.ToString(o) : null;
+                                if (novo != null && Util.Sha256(caminho) != novo) { r.Linha(T.F("des_mantido_usuario", rel)); break; }
+                                Util.TirarSomenteLeitura(caminho);
+                                File.Delete(caminho);
+                                r.Linha(T.F("des_removido", rel));
+                                break;
+                            }
+                        case "ini_novo":
+                        case "criado_pelo_mod":
+                            if (File.Exists(caminho)) { Util.TirarSomenteLeitura(caminho); File.Delete(caminho); r.Linha(T.F("des_removido", rel)); }
                             break;
-                        }
-                    case "ini_novo":
-                    case "criado_pelo_mod":
-                        if (File.Exists(caminho)) { File.Delete(caminho); r.Linha(T.F("des_removido", rel)); }
-                        break;
-                    case "preservado":
-                        {
-                            string bk = Path.Combine(pastaSessao, Convert.ToString(a["backup"]));
-                            string anterior = Convert.ToString(a["anterior"]);
-                            if (File.Exists(caminho) && Util.Sha256(caminho) == anterior) break;
-                            if (!File.Exists(bk)) { r.Linha(T.F("des_sem_backup", rel)); limpo = false; break; }
-                            File.Copy(bk, caminho, true);
-                            if (Util.Sha256(caminho) != anterior) { r.Linha(T.F("des_divergiu", rel)); limpo = false; }
-                            else r.Linha(T.F("des_restaurado", rel));
+                        case "pasta_criada":   // so se ficou vazia: nunca apaga o que o jogador pos la
+                            if (Directory.Exists(caminho) && Directory.GetFileSystemEntries(caminho).Length == 0) { Directory.Delete(caminho); r.Linha(T.F("des_removido", rel)); }
                             break;
-                        }
-                    case "ini_mesclado":
-                        {
-                            string bk = Path.Combine(pastaSessao, Convert.ToString(a["backup"]));
-                            if (!File.Exists(bk)) { r.Linha(T.F("des_sem_backup", rel)); limpo = false; break; }
-                            File.Copy(bk, caminho, true);
-                            r.Linha(T.F("des_restaurado", rel));
+                        case "preservado":
+                            if (!RestaurarConferindo(a, caminho, rel, pastaSessao, false, r)) limpo = false;
                             break;
-                        }
-                    default: break;
+                        case "ini_mesclado":
+                        case "ini_trocado":
+                            {
+                                string bk = BackupDe(a, pastaSessao, r);
+                                if (bk == null) { limpo = false; break; }
+                                if (!File.Exists(bk)) { r.Linha(T.F("des_sem_backup", rel)); limpo = false; break; }
+                                if (File.Exists(caminho)) Util.TirarSomenteLeitura(caminho);
+                                File.Copy(bk, caminho, true);
+                                r.Linha(T.F("des_restaurado", rel));
+                                break;
+                            }
+                        default: break;
+                    }
                 }
+                catch (Exception e) { r.Linha(T.F("des_falhou", rel, e.Message)); limpo = false; }
             }
             return limpo;
+        }
+
+        // rev-dup (review P2-8): "trocado" e "preservado" desfazem igual (antes duas copias): o arquivo ja e o de antes = nada;
+        // senao o backup volta e e conferido pelo SHA-256 'anterior'. avisaMudou (so "trocado"): diz se o arquivo nao era mais
+        // o que o mod pos. false = nao voltou exatamente.
+        static bool RestaurarConferindo(Dictionary<string, object> a, string caminho, string rel, string pastaSessao, bool avisaMudou, IRelato r)
+        {
+            string bk = BackupDe(a, pastaSessao, r);
+            if (bk == null) return false;
+            string anterior = Convert.ToString(a["anterior"]);
+            if (File.Exists(caminho) && Util.Sha256(caminho) == anterior) return true;
+            if (!File.Exists(bk)) { r.Linha(T.F("des_sem_backup", rel)); return false; }
+            object o;
+            if (avisaMudou && File.Exists(caminho) && a.TryGetValue("novo", out o) && Util.Sha256(caminho) != Convert.ToString(o))
+                r.Linha(T.F("des_mudou_restaura", rel));
+            File.Copy(bk, caminho, true);
+            if (Util.Sha256(caminho) != anterior) { r.Linha(T.F("des_divergiu", rel)); return false; }
+            r.Linha(T.F("des_restaurado", rel));
+            return true;
+        }
+
+        // Backup citado numa acao, so dentro da pasta da sessao (um acoes.json adulterado nao copia arquivo de fora).
+        static string BackupDe(Dictionary<string, object> a, string pastaSessao, IRelato r)
+        {
+            object nome;
+            a.TryGetValue("backup", out nome);
+            string c = Util.CaminhoBackup(pastaSessao, nome);
+            if (c == null) r.Linha(T.F("des_fora", Convert.ToString(nome)));
+            return c;
         }
 
         // Desinstala tudo o que o instalador fez nesta pasta (todas as sessoes, da mais nova para a
@@ -978,7 +1393,7 @@ namespace Amdlss5.Instalador
         {
             if (j.PastaMod == null) throw new ErroInstalador(CodigoErro.Bloqueado, string.Join(Environment.NewLine, j.Bloqueios.ToArray()));
             string bkRaiz = Path.Combine(j.PastaMod, Util.PastaBackup);
-            if (!Directory.Exists(bkRaiz) || Directory.GetDirectories(bkRaiz).Length == 0)
+            if (!Sessoes.Resta(j.PastaMod))
                 throw new ErroInstalador(CodigoErro.Faltando, T.F("erro_sem_backup", j.PastaMod));
             GuardaJogoAberto(j);
             Util.TestarEscrita(j.PastaMod);
@@ -987,26 +1402,28 @@ namespace Amdlss5.Instalador
             Sessao log = new Sessao(j.PastaMod, pastaLog, fora, Path.GetFileName(arqLog));
             try
             {
-                List<string> sessoes = new List<string>(Directory.GetDirectories(bkRaiz));
-                sessoes.Sort(StringComparer.Ordinal);
+                // pastas sem acoes.json nao desfazem nada (sobras de uma limpeza que falhou): ficam fora e nao tornam a
+                // desinstalacao "parcial"
+                List<string> sessoes = Sessoes.Validas(bkRaiz, false);
                 sessoes.Reverse();
                 bool tudo = true;
                 int n = 0;
                 foreach (string sessao in sessoes)
                 {
-                    string json = Path.Combine(sessao, "acoes.json");
                     log.Linha(T.F("des_sessao", Path.GetFileName(sessao)));
-                    if (!File.Exists(json)) { log.Linha(T.F("des_sem_acoes", sessao)); tudo = false; continue; }
-                    List<Dictionary<string, object>> acoes = new List<Dictionary<string, object>>();
-                    object[] lista = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(json, Encoding.UTF8)) as object[];
-                    if (lista != null) foreach (object o in lista) acoes.Add((Dictionary<string, object>)o);
+                    List<Dictionary<string, object>> acoes;
+                    try { acoes = Sessoes.Ler(sessao); }
+                    catch (Exception e) { log.Linha(T.F("des_sem_acoes", sessao) + " (" + e.Message + ")"); tudo = false; continue; }
                     if (!Desfazer(acoes, j.PastaMod, sessao, log)) tudo = false;
                     fora.Progresso(++n * 100 / sessoes.Count);
                 }
                 if (tudo)
                 {
                     log.Fechar();
-                    Directory.Delete(bkRaiz, true);
+                    // primeiro os livros de desfazer (sem eles nada mais e aplicado de novo); depois a pasta toda
+                    foreach (string sessao in sessoes) Util.ApagarAcoes(sessao);
+                    try { Util.ApagarPasta(bkRaiz); }
+                    catch (Exception e) { fora.Linha(T.F("des_sobra", bkRaiz, e.Message)); }
                     fora.Linha(T.F("des_ok", arqLog));
                 }
                 else fora.Linha(T.F("des_parcial", bkRaiz, arqLog));
@@ -1016,46 +1433,191 @@ namespace Amdlss5.Instalador
         }
     }
 
-    // INI: edicao byte a byte em latin1 (o helper usa Get/WritePrivateProfileString).
+    // INI (o helper usa Get/WritePrivateProfileString). O arquivo e lido na codificacao em que esta (UTF-16 LE com BOM,
+    // UTF-8 com BOM ou ANSI = latin1 byte a byte) e gravado de volta nela (tmp + troca atomica). Chaves por SECAO: uma chave
+    // de [DlssNrOnAmd] nao conta como presente se so existir em outra secao, e a chave nova entra na sua secao (antes
+    // entrava no fim do arquivo, dentro da ultima secao, qualquer que fosse).
     public static class Ini
     {
+        public const string Secao = "DlssNrOnAmd";
         static readonly Regex Chave = new Regex(@"^\s*([A-Za-z0-9_]+)\s*=");
+        static readonly Regex Cabecalho = new Regex(@"^\s*\[([^\]\r\n]*)\]");
 
+        // P1-15 (19/10): chaves do JOGADOR, que uma atualizacao nunca troca pelo valor do pacote: idioma e preferencias do
+        // menu (ajuda, bloqueio de entrada, painel compacto de FPS/rede), limite de FPS, liga/desliga do F10 e os filtros de
+        // imagem (NeuralFiltro*). O resto e regulagem da versao e vem do pacote.
+        // 26/10 (usuario: "so instalacoes de updates vao manter os valores do usuario"): tambem as outras linhas visiveis do menu --
+        // estrutura da cena e da pele, intensidade do tom, estilo neural, passos neurais e Exposicao/Contraste/Saturacao da rede.
+        static readonly string[] ChavesDoUsuario = { "Enabled", "MenuLanguage", "MenuShowHelp", "MenuInputBlock", "NeuralMenuCompacto", "NeuralFrameCap",
+            "LocalStructure", "SkinStructure", "LocalTone", "NeuralStyle", "NeuralPassConfig", "NeuralPasses",
+            "NeuralGradeExposure", "NeuralGradeContrast", "NeuralGradeSaturation" };
+        static readonly string[] PrefixosDoUsuario = { "NeuralFiltro" };
+
+        public static bool ChaveDoUsuario(string chave)
+        {
+            foreach (string c in ChavesDoUsuario) if (string.Equals(c, chave, StringComparison.OrdinalIgnoreCase)) return true;
+            foreach (string p in PrefixosDoUsuario) if (chave.StartsWith(p, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        sealed class Arquivo
+        {
+            public Encoding Cod;
+            public byte[] Bom = new byte[0];
+            public string Texto;
+        }
+
+        static Arquivo Ler(string caminho)
+        {
+            byte[] b = File.ReadAllBytes(caminho);
+            Arquivo a = new Arquivo();
+            if (b.Length >= 2 && b[0] == 0xFF && b[1] == 0xFE) { a.Cod = new UnicodeEncoding(false, false); a.Bom = new byte[] { 0xFF, 0xFE }; }
+            else if (b.Length >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF) { a.Cod = new UTF8Encoding(false); a.Bom = new byte[] { 0xEF, 0xBB, 0xBF }; }
+            else a.Cod = Util.Latin1;
+            a.Texto = a.Cod.GetString(b, a.Bom.Length, b.Length - a.Bom.Length);
+            return a;
+        }
+
+        static void Gravar(string caminho, Arquivo a)
+        {
+            byte[] corpo = a.Cod.GetBytes(a.Texto);
+            byte[] tudo = new byte[a.Bom.Length + corpo.Length];
+            Buffer.BlockCopy(a.Bom, 0, tudo, 0, a.Bom.Length);
+            Buffer.BlockCopy(corpo, 0, tudo, a.Bom.Length, corpo.Length);
+            string tmp = caminho + ".amdlss5.tmp";
+            File.WriteAllBytes(tmp, tudo);
+            Util.TrocarArquivo(tmp, caminho);
+        }
+
+        // Uma linha do texto: [Inicio, FimConteudo) e o conteudo sem a quebra; FimLinha inclui a quebra.
+        sealed class Linha
+        {
+            public int Inicio, FimConteudo, FimLinha;
+            public string Secao, Chave, Valor;
+            public bool Cabecalho;
+        }
+
+        static List<Linha> Linhas(string texto)
+        {
+            List<Linha> r = new List<Linha>();
+            string secao = "";
+            int pos = 0;
+            while (pos < texto.Length)
+            {
+                int nl = texto.IndexOf('\n', pos);
+                int fimLinha = nl < 0 ? texto.Length : nl + 1;
+                int fim = nl < 0 ? texto.Length : nl;
+                if (fim > pos && texto[fim - 1] == '\r') fim--;
+                string conteudo = texto.Substring(pos, fim - pos);
+                Linha l = new Linha();
+                l.Inicio = pos; l.FimConteudo = fim; l.FimLinha = fimLinha;
+                Match m = Cabecalho.Match(conteudo);
+                if (m.Success) { secao = m.Groups[1].Value.Trim(); l.Cabecalho = true; }
+                else
+                {
+                    Match k = Chave.Match(conteudo);
+                    if (k.Success) { l.Chave = k.Groups[1].Value; l.Valor = conteudo.Substring(k.Length); }
+                }
+                l.Secao = secao;
+                r.Add(l);
+                pos = fimLinha;
+            }
+            return r;
+        }
+
+        static string Quebra(string texto) { return texto.Contains("\r\n") || !texto.Contains("\n") ? "\r\n" : "\n"; }
+
+        // Onde uma linha nova da secao entra: logo depois da ultima chave (ou do cabecalho) dela. -1 = a secao nao existe.
+        static int PontoDaSecao(List<Linha> linhas, string secao)
+        {
+            int p = -1;
+            foreach (Linha l in linhas)
+                if (string.Equals(l.Secao, secao, StringComparison.OrdinalIgnoreCase) && (l.Cabecalho || l.Chave != null)) p = l.FimLinha;
+            if (p < 0 && secao.Length == 0) p = 0;   // chaves antes de qualquer secao: comeco do arquivo
+            return p;
+        }
+
+        // Insere linhas (sem quebra) na secao; cria a secao no fim do arquivo se ela nao existir.
+        static string Inserir(string texto, string secao, List<string> novas)
+        {
+            if (novas.Count == 0) return texto;
+            string q = Quebra(texto);
+            int p = PontoDaSecao(Linhas(texto), secao);
+            if (p < 0)
+            {
+                string pre = texto.Length > 0 && !texto.EndsWith("\n") ? q : "";
+                return texto + pre + "[" + secao + "]" + q + string.Join(q, novas.ToArray()) + q;
+            }
+            string antes = p > 0 && texto[p - 1] != '\n' ? q : "";   // ultima linha do arquivo sem quebra
+            return texto.Substring(0, p) + antes + string.Join(q, novas.ToArray()) + q + texto.Substring(p);
+        }
+
+        static string DefinirTexto(string texto, string secao, string chave, string valor)
+        {
+            foreach (Linha l in Linhas(texto))
+                if (l.Chave != null && string.Equals(l.Secao, secao, StringComparison.OrdinalIgnoreCase) && string.Equals(l.Chave, chave, StringComparison.OrdinalIgnoreCase))
+                {
+                    int ini = l.FimConteudo - l.Valor.Length;
+                    return texto.Substring(0, ini) + valor + texto.Substring(l.FimConteudo);
+                }
+            return Inserir(texto, secao, new List<string> { chave + "=" + valor });
+        }
+
+        // Acrescenta ao alvo as chaves do recomendado que faltam NA MESMA SECAO (as linhas como estao no recomendado).
+        // Devolve os nomes acrescentados. Nada mais muda no alvo (codificacao, quebras, comentarios, valores).
         public static List<string> MesclarFaltantes(string alvo, string recomendado)
         {
-            Encoding l1 = Util.Latin1;
-            byte[] bytes = File.ReadAllBytes(alvo);
-            string texto = l1.GetString(bytes);
+            Arquivo a = Ler(alvo);
             HashSet<string> existentes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (string linha in Regex.Split(texto, "\r\n|\n"))
+            foreach (Linha l in Linhas(a.Texto)) if (l.Chave != null) existentes.Add(l.Secao + "\n" + l.Chave);
+            Arquivo rec = Ler(recomendado);
+            List<string> ordemSecoes = new List<string>(), chaves = new List<string>();
+            Dictionary<string, List<string>> novas = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (Linha l in Linhas(rec.Texto))
             {
-                Match m = Chave.Match(linha);
-                if (m.Success) existentes.Add(m.Groups[1].Value);
+                if (l.Chave == null || !existentes.Add(l.Secao + "\n" + l.Chave)) continue;
+                List<string> lista;
+                if (!novas.TryGetValue(l.Secao, out lista)) { lista = new List<string>(); novas[l.Secao] = lista; ordemSecoes.Add(l.Secao); }
+                lista.Add(rec.Texto.Substring(l.Inicio, l.FimConteudo - l.Inicio));
+                chaves.Add(l.Chave);
             }
-            List<string> novas = new List<string>(), chaves = new List<string>();
-            foreach (string linha in Regex.Split(l1.GetString(File.ReadAllBytes(recomendado)), "\r\n|\n"))
-            {
-                Match m = Chave.Match(linha);
-                if (m.Success && existentes.Add(m.Groups[1].Value)) { novas.Add(linha.TrimEnd('\r')); chaves.Add(m.Groups[1].Value); }
-            }
-            if (novas.Count == 0) return chaves;
-            string sufixo = (texto.Length > 0 && !texto.EndsWith("\n") ? "\r\n" : "") + string.Join("\r\n", novas.ToArray()) + "\r\n";
-            using (FileStream fs = new FileStream(alvo, FileMode.Append, FileAccess.Write))
-            {
-                byte[] b = l1.GetBytes(sufixo);
-                fs.Write(b, 0, b.Length);
-            }
+            if (chaves.Count == 0) return chaves;
+            string texto = a.Texto;
+            foreach (string sec in ordemSecoes) texto = Inserir(texto, sec, novas[sec]);
+            a.Texto = texto;
+            Gravar(alvo, a);
             return chaves;
         }
 
-        public static void Definir(string arquivo, string chave, string valor)
+        // P1-15: o alvo (INI criado pelo mod numa versao anterior) vira o do pacote; as chaves do jogador (ChaveDoUsuario)
+        // voltam com o valor que tinham, na mesma secao. Sem MenuLanguage antigo, vale o idioma do instalador (se houver).
+        // Devolve as chaves mantidas.
+        public static List<string> TrocarMantendoUsuario(string alvo, string pacote, string idioma)
         {
-            Encoding l1 = Util.Latin1;
-            string texto = l1.GetString(File.ReadAllBytes(arquivo));
-            Regex re = new Regex(@"(?m)^(\s*" + Regex.Escape(chave) + @"\s*=)[^\r\n]*");
-            if (re.IsMatch(texto)) texto = re.Replace(texto, "${1}" + valor, 1);
-            else texto += (texto.Length > 0 && !texto.EndsWith("\n") ? "\r\n" : "") + chave + "=" + valor + "\r\n";
-            File.WriteAllBytes(arquivo, l1.GetBytes(texto));
+            Arquivo velho = Ler(alvo);
+            Arquivo novo = Ler(pacote);
+            List<string> mantidas = new List<string>();
+            HashSet<string> vistas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string texto = novo.Texto;
+            bool temIdioma = false;
+            foreach (Linha l in Linhas(velho.Texto))
+            {
+                if (l.Chave == null || !ChaveDoUsuario(l.Chave) || !vistas.Add(l.Secao + "\n" + l.Chave)) continue;   // a 1a ocorrencia vale (como no Windows)
+                texto = DefinirTexto(texto, l.Secao, l.Chave, l.Valor);
+                mantidas.Add(l.Chave);
+                if (string.Equals(l.Chave, "MenuLanguage", StringComparison.OrdinalIgnoreCase) && string.Equals(l.Secao, Secao, StringComparison.OrdinalIgnoreCase)) temIdioma = true;
+            }
+            if (!temIdioma && !string.IsNullOrEmpty(idioma)) texto = DefinirTexto(texto, Secao, "MenuLanguage", idioma);
+            novo.Texto = texto;
+            Gravar(alvo, novo);
+            return mantidas;
+        }
+
+        public static void Definir(string arquivo, string secao, string chave, string valor)
+        {
+            Arquivo a = Ler(arquivo);
+            a.Texto = DefinirTexto(a.Texto, secao, chave, valor);
+            Gravar(arquivo, a);
         }
     }
 }

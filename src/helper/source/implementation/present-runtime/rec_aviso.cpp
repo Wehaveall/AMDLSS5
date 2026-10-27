@@ -6,6 +6,7 @@
 #include "../async-reprojection/reproject_controls.h"
 #include "../../../runtime/overlay_amd.h"
 #include <d3d12.h>
+#include "../../../runtime/log_fila.h"
 #include <dxgi1_4.h>
 #include <wrl/client.h>
 #include <algorithm>

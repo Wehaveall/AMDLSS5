@@ -29,7 +29,7 @@ InputBlock input_block() noexcept;
 void set_input_block(InputBlock value) noexcept;
 
 enum class Group : unsigned { General, Neural, Composition, Performance, Color, Motion, Flicker, Halo, Diagnostics,
-                              Reprojection, Restart, Count };
+                              Reprojection, Restart, Filters, Count };
 struct CatalogEntry { const char* label; Group group; bool shown; bool native; };
 const CatalogEntry* catalog_begin() noexcept;
 const CatalogEntry* catalog_end() noexcept;
@@ -44,7 +44,7 @@ std::string help(const char* label_source,const char* help_source,Language value
 std::string value(const char* label_source,const std::string& source,Language value,bool* complete=nullptr);
 std::string status(const std::string& source,Language value);
 enum class Ui : unsigned { Hints, Input, FgActive, FgIdle, FgNone, FpsCollecting, DisplayUnavailable, Empty,
-                           FallbackStatus, PendingLegend, NetworkOff, NetworkWord, Count };
+                           FallbackStatus, PendingLegend, NetworkOff, NetworkWord, DynamicResolution, Count };
 const char* ui(Ui key,Language value) noexcept;
 
 struct CompatReason { const char* id; bool prefix; const char* text[language_count]; };
@@ -55,4 +55,8 @@ std::string network_off(const char* id,const char* field,Language value);
 
 bool label_known(const char* source) noexcept;
 bool help_known(const char* label_source,const char* help_source) noexcept;
+
+struct TextEntry { const char* key; const char* en; const char* es; bool helper; };
+std::size_t text_entry_count() noexcept;
+TextEntry text_entry(std::size_t index) noexcept;
 }

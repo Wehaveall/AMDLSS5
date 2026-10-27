@@ -6,6 +6,8 @@
 #include <mutex>
 
 namespace nrscale {
+
+inline std::atomic<unsigned long long> despachos_vistos{0};
 enum class PrepareStatus {Ready,Pending,Failed};
 class NeuralPipeline {
 public:
@@ -30,6 +32,8 @@ private:
   std::atomic<const char*> adapter_reason_{""};std::uint64_t adapter_reported_{};
 
   unsigned adapter_sticky_{};std::uint64_t adapter_generation_{};std::uint64_t adapter_geometry_{};
+  bool intermitente_{};
+  unsigned adapter_estavel_{};bool subrect_avisado_{},srgb_avisado_{},mv_tela_avisado_{};
   void report_adapter(const AdapterPlan&,const nrffx::RawDescriptor&,const NrResourceDesc& input,const NrResourceDesc& motion) noexcept;
 
   int adapted_dispatch(NrFfxDispatch original,void* context,void* descriptor,std::int32_t nesting,

@@ -47,6 +47,23 @@ inline bool ler_float_em(const wchar_t* ini,const wchar_t* chave,float& v,unsign
     return numero_f(texto,v);
 }
 
+inline float passo_extra_cam_px(const wchar_t* ini) noexcept {
+    double v{};if(!ler_double_em(ini,L"NeuralPassoExtraCamPx",v,32)||!(v>0.))return 0.f;
+    return v>64.?64.f:float(v);
+}
+
+inline bool ler_wcstod_em(const wchar_t* ini,const wchar_t* chave,double& v,unsigned n=32) noexcept {
+    wchar_t texto[256]{};if(!ini||n<2||n>256)return false;
+    if(!NRCFG_STR(L"DlssNrOnAmd",chave,L"",texto,n,ini))return false;
+    v=std::wcstod(texto,nullptr);return true;
+}
+
+inline float ler_real_limitado_em(const wchar_t* ini,const wchar_t* chave,float padrao,float lo,float hi,unsigned n=32) noexcept {
+    double d{};if(!ler_wcstod_em(ini,chave,d,n))return padrao;
+    const float v=float(d);if(!std::isfinite(v))return padrao;
+    return v<lo?lo:(hi<v?hi:v);
+}
+
 namespace detalhe {
 struct Carimbo {
     std::wstring completo;bool existe{};unsigned long long tamanho{},escrita{};

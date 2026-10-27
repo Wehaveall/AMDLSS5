@@ -1,4 +1,5 @@
 #include "host_menu.h"
+#include "../../../runtime/proxy_rva.h"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -100,12 +101,12 @@ bool resolve_host(void* base, NativeHost& host) noexcept {
             !accessible(bytes+0x214A0,16,Access::Read) ||
             !admitted(0x923D0,sizeof(NativeVector),IMAGE_SCN_MEM_READ|IMAGE_SCN_MEM_WRITE,Access::Write) ||
             !admitted(0x94C20,1,IMAGE_SCN_MEM_READ|IMAGE_SCN_MEM_WRITE,Access::Read) ||
-            !admitted(0x94AC0,32,IMAGE_SCN_MEM_READ|IMAGE_SCN_MEM_WRITE,Access::Read)) return false;
+            !admitted(nrproxy::rva_caminho_ini,32,IMAGE_SCN_MEM_READ|IMAGE_SCN_MEM_WRITE,Access::Read)) return false;
         const unsigned char prologue[]={0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x55,0x53,0x48,0x83,0xec,0x28};
         if (std::memcmp(bytes+0x214A0,prologue,sizeof(prologue))!=0) return false;
         auto rows=reinterpret_cast<NativeVector*>(bytes+0x923D0);
         std::size_t count=0; if (!valid_vector(rows,count)) return false;
-        nrmenu::NativeString name{}; std::memcpy(&name,bytes+0x94AC0,sizeof(name));
+        nrmenu::NativeString name{}; std::memcpy(&name,bytes+nrproxy::rva_caminho_ini,sizeof(name));
         if (name.size==0 || name.size>32767 || name.size>name.capacity || name.capacity>32767) return false;
         const char* text=name.text;
         if (name.capacity>=16) std::memcpy(&text,name.text,sizeof(text));
@@ -119,9 +120,9 @@ bool resolve_host(void* base, NativeHost& host) noexcept {
         std::filesystem::path selected(wide); if (!valid_path(selected)) return false;
         if (bytes[0x94C20]!=std::byte{0} && bytes[0x94C20]!=std::byte{1}) return false;
         NativeHost candidate{base,rows,bytes[0x94C20]!=std::byte{0},std::move(selected),reinterpret_cast<Grow>(bytes+0x214A0)};
-        if (admitted(0x94AB0,sizeof(unsigned),IMAGE_SCN_MEM_READ|IMAGE_SCN_MEM_WRITE,Access::Write) &&
-            accessible(bytes+0x94AB0,sizeof(unsigned),Access::Read))
-            candidate.auto_mask=reinterpret_cast<unsigned*>(bytes+0x94AB0);
+        if (admitted(nrproxy::rva_mascara_auto,sizeof(unsigned),IMAGE_SCN_MEM_READ|IMAGE_SCN_MEM_WRITE,Access::Write) &&
+            accessible(bytes+nrproxy::rva_mascara_auto,sizeof(unsigned),Access::Read))
+            candidate.auto_mask=reinterpret_cast<unsigned*>(bytes+nrproxy::rva_mascara_auto);
         if(admitted(0x71D080,16,IMAGE_SCN_MEM_READ|IMAGE_SCN_MEM_WRITE,Access::Write) && accessible(bytes+0x71D080,16,Access::Read)) {
             unsigned magic=0;std::memcpy(&magic,bytes+0x71D08C,sizeof(magic));
             if(magic==0x53545931u) {
@@ -142,9 +143,6 @@ bool resolve_host(void* base, NativeHost& host) noexcept {
 #endif
             }
         }
-#ifdef NR_PRESENT_RUNTIME
-        candidate.present_mode=true;
-#endif
         host=std::move(candidate); return true;
     } catch (...) { return false; }
 }

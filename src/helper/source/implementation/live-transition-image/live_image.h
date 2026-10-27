@@ -4,9 +4,9 @@
 
 namespace nrliveimage {
 inline constexpr std::size_t image_size = 0x73d000;
-inline constexpr std::size_t file_size = 7417856;
+inline constexpr std::size_t file_size = 7419392;
 inline constexpr std::uint32_t callback_rva = 0x72CFF0;
-inline constexpr char file_sha256[] = "187078f636f3c38c78ff89b22e0a4f8e44f9bb8990373f1515bfce1e2d44a014";
+inline constexpr char file_sha256[] = "fc5004298a735e207cfa80a8c66ad4a9bd8b5d469ec149a2633ca73d45a3ccce";
 enum class VerificationStage : std::uint32_t {
     Verified, InvalidInput, HeaderProtection, ModuleIdentity, ModulePath,
     DiskOpen, DiskSize, DiskRead, DiskDigest, SpanProtection, SpanRead,
@@ -31,6 +31,8 @@ bool inspect_mapped_snapshot(const void* data, std::size_t size, VerificationDia
 
 bool inspect_mapped_snapshot(const void* data, std::size_t size, VerificationDiagnostic* diagnostic, std::uint64_t validated_load_base) noexcept;
 bool inspect_disk_snapshot(const void* data, std::size_t size) noexcept;
+
+bool disk_file_admitted(const wchar_t* path) noexcept;
 
 bool verify_live_image(void* base) noexcept;
 bool verify_live_image(void* base, VerificationDiagnostic* diagnostic) noexcept;

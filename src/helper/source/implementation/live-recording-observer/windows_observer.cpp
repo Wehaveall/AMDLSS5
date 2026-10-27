@@ -84,7 +84,8 @@ public:
         ComPtr<ID3D12GraphicsCommandList> list;
         if(FAILED(static_cast<IUnknown*>(command)->QueryInterface(IID_PPV_ARGS(&list))))return refuse("prepare_qi_graphics_list_failed");
         if(list.Get()!=command)return refuse("prepare_qi_graphics_list_other_pointer");
-        if(list->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT)return refuse("prepare_type_not_direct");
+
+        if(list->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT&&list->GetType()!=D3D12_COMMAND_LIST_TYPE_COMPUTE)return refuse("prepare_type_not_direct");
         ComPtr<ID3D12Device> actual;ComPtr<IUnknown> a,b;
         if(FAILED(list->GetDevice(IID_PPV_ARGS(&actual))))return refuse("prepare_get_device_failed");
         if(FAILED(actual.As(&a)))return refuse("prepare_list_device_unknown_failed");
@@ -158,11 +159,14 @@ public:
         const bool protection=detail::table_protection_matches(protection_,info.Protect,checked_write_restore);
         const bool slots_read=same_table&&read(table+9,slots,sizeof(slots));
         const bool close_match=slots_read&&slots[0]==close,reset_match=slots_read&&slots[1]==reset;
+        const bool ok=object&&same_table&&vptr&&page&&allocation&&protection&&close_match&&reset_match;
+
+        if(ok)return true;
         std::snprintf(diagnostic_,sizeof(diagnostic_),
             "win_intact_object_%u_table_%u_vptrread_%u_vptr_%u_range_%u_allocation_%u_initialprotect_%08lX_actualprotect_%08lX_protectmatch_%u_slotsread_%u_close_%u_reset_%u_checked_cow_%u",
             object?1u:0u,same_table?1u:0u,object_read?1u:0u,vptr?1u:0u,page?1u:0u,allocation?1u:0u,
             protection_,info.Protect,protection?1u:0u,slots_read?1u:0u,close_match?1u:0u,reset_match?1u:0u,checked_write_restore?1u:0u);
-        return object&&same_table&&vptr&&page&&allocation&&protection&&close_match&&reset_match;
+        return false;
     }
 };
 }

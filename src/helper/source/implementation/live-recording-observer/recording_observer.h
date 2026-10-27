@@ -21,6 +21,8 @@ public:
     virtual bool can_retire(std::uint64_t generation) noexcept=0;
 
     virtual bool retirable_if_abandoned(std::uint64_t generation) noexcept{return can_retire(generation);}
+
+    virtual std::uint64_t uso_reset() noexcept{return 0;}
 };
 
 enum class Method { Reset, Close };
@@ -35,6 +37,8 @@ public:
     bool begin(Method method,std::uint32_t thread) noexcept;
     void end(Method method,std::uint32_t thread,std::int32_t result) noexcept;
     void fail(const char* diagnostic) noexcept;
+
+    void pronta_no_reset() noexcept;
 private:
     std::mutex mutex_;
     Snapshot state_{};
@@ -52,4 +56,12 @@ const char* last_refusal() noexcept;
 bool forget(void* command) noexcept;
 
 std::size_t endpoints() noexcept;
+
+std::uint64_t avancar_uso() noexcept;
+std::uint64_t relogio_uso() noexcept;
+
+std::size_t indice_falhas() noexcept;
+
+using GanchoResetNaoRastreada=void(*)(void* command) noexcept;
+void set_reset_nao_rastreada(GanchoResetNaoRastreada gancho) noexcept;
 }

@@ -103,42 +103,6 @@ inline bool rede_na_saida(unsigned w,unsigned h,std::uint64_t v){
  return q.saida_w!=q.render_w||q.saida_h!=q.render_h||q.post_pedido;
 }
 
-struct ModoPost { unsigned chave,linhas;bool no_ciclo; };
-inline constexpr ModoPost modos[]{{0,0,true},{33,360,true},{50,540,true},{67,720,true},{75,810,true},{85,920,true},{95,1024,true},
-                                  {100,1080,true},{107,1152,false},{111,1200,true},{133,1440,true},{200,2160,true}};
-inline constexpr unsigned modo_total=unsigned(sizeof modos/sizeof modos[0]);
-inline constexpr unsigned modo_chave(unsigned i){return modos[i%modo_total].chave;}
-
-inline constexpr unsigned modo_linhas_de(unsigned i){return modos[i%modo_total].linhas;}
-inline unsigned modo_indice(bool pre,unsigned chave){if(pre)return 0;for(unsigned i=1;i<modo_total;++i)if(modos[i].chave==chave)return i;return 0;}
-inline unsigned modo_proximo(unsigned indice,int delta){
- unsigned i=indice%modo_total;
- for(unsigned n=0;n<modo_total;++n){i=(i+(delta<0?modo_total-1u:1u))%modo_total;if(modos[i].no_ciclo)return i;}
- return i;
-}
-
-inline constexpr unsigned modo_pre_linhas[4]{360,540,720,1080};
-inline constexpr unsigned modo_pre_total=unsigned(sizeof modo_pre_linhas/sizeof modo_pre_linhas[0]);
-inline constexpr unsigned modo2_total=modo_pre_total+modo_total-1u;
-inline unsigned modo2_indice(bool pre,std::uint64_t alvo,unsigned chave){
- if(pre){
-  if(!alvo)return modo_pre_total-1u;
-  const double linhas=std::sqrt(double(alvo)*9./16.);unsigned melhor=0;double d=1e30;
-  for(unsigned i=0;i<modo_pre_total;++i){const double e=std::fabs(linhas-double(modo_pre_linhas[i]));if(e<d){d=e;melhor=i;}}
-  return melhor;
- }
- const unsigned j=modo_indice(false,chave);
- return modo_pre_total-1u+(j?j:modo_indice(false,100));
-}
-inline bool modo2_pre(unsigned indice){return indice%modo2_total<modo_pre_total;}
-inline bool modo2_no_ciclo(unsigned indice){const unsigned i=indice%modo2_total;return i<modo_pre_total||modos[i-(modo_pre_total-1u)].no_ciclo;}
-inline unsigned modo2_proximo(unsigned indice,int delta){
- unsigned i=indice%modo2_total;
- for(unsigned n=0;n<modo2_total;++n){i=(i+(delta<0?modo2_total-1u:1u))%modo2_total;if(modo2_no_ciclo(i))return i;}
- return i;
-}
-inline unsigned modo2_linhas(unsigned indice){const unsigned i=indice%modo2_total;return i<modo_pre_total?modo_pre_linhas[i]:modos[i-(modo_pre_total-1u)].linhas;}
-inline unsigned modo2_chave(unsigned indice){const unsigned i=indice%modo2_total;return i<modo_pre_total?0u:modos[i-(modo_pre_total-1u)].chave;}
 inline double pedido_percent(bool post,unsigned chave,double percent_ini,std::uint64_t alvo,int largura,int altura){
  if(post)return post_saida_percent(chave,post_teto(),altura);
  return alvo?accepted_percent(auto_percent(largura,altura,alvo)):percent_ini;

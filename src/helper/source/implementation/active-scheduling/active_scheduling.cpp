@@ -345,7 +345,7 @@ extern "C" std::int32_t NR_ACTIVE_CALL nr_active_schedule_dispatch_v1(
     } catch (...) {
 
       poison(*s, r, "captura_excecao");
-      throw;
+      return;
     }
     NrActiveEnvironmentV1 after{};
     if (!read_env(*i, after) || !environment_ok_ignoring_master(after) ||

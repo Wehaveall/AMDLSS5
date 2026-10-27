@@ -111,47 +111,7 @@ void replace_mode_control(NativeRow& row, MenuCallbacks callbacks) noexcept {
     if(row.action){auto* object=static_cast<ActionObject*>(row.action);object->vtable->destroy(row.action,row.action!=row.action_storage);}
     initialise_row(row,callbacks,12,"Mode","O mod roda sempre no modo assíncrono: o realce da rede chega alguns quadros depois e é reprojetado para o quadro atual.");
 }
-const char* localized_label(const char* label) noexcept {
-    if (!label) return "";
-    static constexpr const char* names[][2] = {
-        {"Enabled", "Ativar NR"}, {"Mode", "Modo"},
-        {"Structure intensity", "Intensidade da estrutura"},
-        {"Skin structure", "Estrutura da pele"},
-        {"Tone intensity", "Intensidade do tom"},
-        {"Dump next frame", "Capturar próximo quadro"}
-    };
-    for (const auto& name : names) if (std::strcmp(label, name[0]) == 0) return name[1];
-    return label;
-}
-const char* localized_value(const char* value) noexcept {
-    if (!value) return "";
-    static constexpr const char* names[][2] = {
-        {"On", "Ligado"}, {"Off", "Desligado"}, {"ON", "Ligado"}, {"OFF", "Desligado"},
-        {"Auto", "Automático"}, {"Automatic", "Automático"},
-        {"Default", "Padrão"}, {"Cinematic", "Cinemático"},
-        {"Async", "Assíncrono"},
-        {"async", "Assíncrono"}, {"auto", "Automático"},
-        {"on", "Ligado"}, {"off", "Desligado"},
-        {"Before", "Antes"}, {"After", "Depois"}, {"Pending", "Pendente"},
-        {"Yes", "Sim"}, {"No", "Não"}, {"None", "Nenhum"}
-        ,{"yes", "Sim"}, {"no", "Não"}, {"ready", "Pronto"}, {"Ready", "Pronto"}
-    };
-    for (const auto& name : names) if (std::strcmp(value, name[0]) == 0) return name[1];
-    return value;
-}
-const char* localized_help(const char* label, const char* original_help) noexcept {
-    if (label) {
-        static constexpr const char* names[][2] = {
-            {"Enabled", "Liga ou desliga o processamento neural. F10 alterna sem abrir o menu."},
-            {"Structure intensity", "Detalhes adicionados pela rede: oclusão ambiente, sombras de contato, reflexos e dispersão sob a superfície. Padrão 1."},
-            {"Skin structure", "Estrutura pela máscara semântica de personagens. Automático segue a intensidade da estrutura; 0 desativa o canal da pele."},
-            {"Tone intensity", "Resposta geral de luz e cor. Esta versão limita esses canais; aumentar tende a escurecer o quadro."},
-            {"Dump next frame", "Salva dlssnr_in/mv/depth/out<job>.raw junto à DLL para análise offline."}
-        };
-        for (const auto& name : names) if (std::strcmp(label, name[0]) == 0) return name[1];
-    }
-    return original_help ? original_help : "";
-}
+
 void move_row(NativeRow& destination, NativeRow& source) noexcept {
     if (&destination == &source) return;
     destination.label = source.label;

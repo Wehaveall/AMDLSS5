@@ -22,6 +22,8 @@ inline constexpr std::uint64_t bytes_grades(unsigned n) noexcept {const std::uin
 inline constexpr std::uint64_t bytes_lin(unsigned n) noexcept {return std::uint64_t(n)*n*4u;}
 inline constexpr std::uint64_t bytes_passo2(unsigned n) noexcept {return 2u*std::uint64_t(n)*n*8u;}
 
+inline constexpr std::uint64_t bytes_ruido(unsigned n) noexcept {return std::uint64_t(n)*n*4u+32u;}
+
 struct Contexto {std::uint64_t fixo{},por_px8{};};
 inline constexpr std::uint64_t bytes_contexto(const Contexto& c,unsigned n) noexcept {return c.fixo+(c.por_px8*std::uint64_t(n)*n+7u)/8u;}
 
@@ -35,24 +37,34 @@ inline constexpr Contexto contexto_medido{ctx_fixo_bytes,ctx_por_px8};
 
 struct Config {
  unsigned teto_grace{1024};
+
+ bool grace_fixa{};
+ std::uint64_t npc_reserva{};
  unsigned janela_grace{janela_grace_padrao},janela_npc{janela_npc_padrao};
  bool npc{};int npc_max{0};unsigned teto_npc{1024};
  bool acumula{},npc_acumula{true},frescor{};unsigned passos{1};
+ bool ruido_grace{},ruido_npc{};
  bool ctx_unico{true};
  int perto{0};unsigned jan_peq{0};
  bool todos{};unsigned todos_rede{768},todos_jan{768};int todos_max{2};
  bool leve{};unsigned leve_rede{512};
  Contexto ctx{};
  std::uint64_t fixo{};
+
+ std::uint64_t camada{},detector{},copia{};
 };
+inline constexpr std::uint64_t bytes_camada(unsigned w,unsigned h) noexcept {return std::uint64_t(w)*h*16u;}
+inline constexpr std::uint64_t bytes_detector(std::uint64_t cheia,std::uint64_t grade,unsigned conjuntos) noexcept {return std::uint64_t(conjuntos)*(cheia*4u+grade*12u);}
+inline constexpr std::uint64_t bytes_copia(unsigned janela,unsigned bpp) noexcept {return std::uint64_t(janela)*janela*bpp;}
 struct Medida {
  std::uint64_t budget{},uso{},uso_nl{};
  std::uint64_t outros_ini{};
  std::uint64_t outros_pico{};
  std::uint64_t folga{256*MB};
  unsigned fracao_outros_pct{92};
+ std::uint64_t budget_pior{};
 };
-enum Motivo:unsigned{Cabe=0,GraceMenor=1u,NpcMenor=2u,MenosNpc=4u,SemNpc=8u,Insuficiente=16u,SemMedida=32u};
+enum Motivo:unsigned{Cabe=0,GraceMenor=1u,NpcMenor=2u,MenosNpc=4u,SemNpc=8u,Insuficiente=16u,SemMedida=32u,GraceFixaAperto=64u};
 enum class FonteOutros:unsigned{Ini=0,Arquivo=1,Uso=2,Fracao=3};
 struct Decisao {
  unsigned cap_grace{},cap_npc{};int k_npc{};unsigned motivo{};FonteOutros fonte{FonteOutros::Fracao};
@@ -61,8 +73,8 @@ struct Decisao {
 };
 inline std::uint64_t custo_grace(const Config& c,unsigned g) noexcept {
  return bytes_compartilhado(g)+(c.acumula?bytes_hist(c.janela_grace):0u)+bytes_grades(g)+(c.acumula&&c.frescor?bytes_lin(g):0u)
-       +(c.passos>=2?bytes_passo2(g):0u)+bytes_contexto(c.ctx,g)+c.fixo;}
-inline std::uint64_t custo_npc(const Config& c,unsigned r) noexcept {return bytes_compartilhado(r)+(c.acumula&&c.npc_acumula?bytes_hist(c.janela_npc):0u);}
+       +(c.passos>=2?bytes_passo2(g):0u)+bytes_contexto(c.ctx,g)+c.fixo+c.camada+c.detector+c.copia+(c.ruido_grace?bytes_ruido(g):0u);}
+inline std::uint64_t custo_npc(const Config& c,unsigned r) noexcept {return bytes_compartilhado(r)+(c.acumula&&c.npc_acumula?bytes_hist(c.janela_npc):0u)+(c.ruido_npc?bytes_ruido(r):0u);}
 inline std::uint64_t custo_npc_comum(const Config& c,unsigned r) noexcept {return c.ctx_unico?0u:bytes_contexto(c.ctx,r);}
 inline std::uint64_t custo_total(const Config& c,unsigned g,unsigned r,int k) noexcept {
  return custo_grace(c,g)+(k>0?custo_npc_comum(c,r)+std::uint64_t(k)*custo_npc(c,r):0u);}
@@ -81,14 +93,21 @@ inline Decisao decidir(const Config& c,const Medida& m) noexcept {
  d.outros=outros(m,d.fonte);
  d.livre=m.budget>d.outros+m.folga?m.budget-d.outros-m.folga:0u;
 
+ if(c.grace_fixa){d.cap_grace=c.teto_grace;if(custo_grace(c,d.cap_grace)>d.livre)d.motivo|=GraceFixaAperto;}
+ else{
  const unsigned gs[3]={c.teto_grace,1536u,1024u};
  for(unsigned g:gs)if(g<=c.teto_grace&&custo_grace(c,g)<=d.livre){d.cap_grace=g;break;}
  if(!d.cap_grace){d.cap_grace=piso;d.motivo|=Insuficiente;}
  else if(d.cap_grace<c.teto_grace)d.motivo|=GraceMenor;
+ }
  d.grace=custo_grace(c,d.cap_grace);
 
+ std::uint64_t livre_n=d.livre;
+ if(c.grace_fixa&&m.budget_pior&&m.budget_pior<m.budget)livre_n=(std::min)(livre_n,m.budget_pior>d.outros+m.folga?m.budget_pior-d.outros-m.folga:std::uint64_t{0});
+
  if(quer_npc&&!(d.motivo&Insuficiente)){
-  const std::uint64_t sobra=d.livre-d.grace;const int alvo=c.leve?c.npc_max:(std::min)(c.npc_max,npc_k_alvo);
+
+  const std::uint64_t sobra=(c.grace_fixa&&c.npc_reserva)?c.npc_reserva:(livre_n>d.grace?livre_n-d.grace:0u);const int alvo=c.leve?c.npc_max:(std::min)(c.npc_max,npc_k_alvo);
   const unsigned lr=c.leve_rede>=384u?c.leve_rede:512u;
   const unsigned rs[3]={c.leve?(std::min)(c.teto_npc,lr):c.teto_npc,c.leve?384u:768u,c.leve?384u:512u};int bk=0;unsigned br=0;
   for(unsigned r:rs){
@@ -110,18 +129,18 @@ inline Decisao decidir(const Config& c,const Medida& m) noexcept {
   const int ok[4]={2,2,1,1};const unsigned orr[4]={1024u,768u,1024u,768u};
   for(int i=0;i<4;++i){if(ok[i]>c.perto||ok[i]>d.k_npc||orr[i]>d.cap_grace||orr[i]<=d.cap_npc)continue;
    const std::uint64_t t=base+std::uint64_t(ok[i])*cp(orr[i],c.janela_npc)+std::uint64_t(d.k_npc-ok[i])*peq;
-   if(t<=d.livre){d.k_perto=ok[i];d.cap_perto=orr[i];d.jan_peq=jp;d.npc_perto=cp(orr[i],c.janela_npc);d.npc_cada=peq;d.total=t;break;}}}
+   if(t<=livre_n){d.k_perto=ok[i];d.cap_perto=orr[i];d.jan_peq=jp;d.npc_perto=cp(orr[i],c.janela_npc);d.npc_cada=peq;d.total=t;break;}}}
 
  if(c.todos&&d.k_npc>0&&c.todos_rede>d.cap_npc&&c.todos_rede<=d.cap_grace){
   auto cp=[&](unsigned r,unsigned j){return bytes_compartilhado(r)+(c.acumula&&c.npc_acumula?bytes_hist(j):0u);};
   const std::uint64_t base=d.grace+d.npc_comum,peq=cp(d.cap_npc,c.janela_npc),gr=cp(c.todos_rede,c.todos_jan);
   for(int k=(std::min)(c.todos_max,d.k_npc);k>=1;--k){const std::uint64_t t=base+std::uint64_t(k)*gr+std::uint64_t(d.k_npc-k)*peq;
-   if(t<=d.livre){d.k_perto=k;d.cap_perto=c.todos_rede;d.jan_perto=c.todos_jan;d.jan_peq=c.janela_npc;d.npc_perto=gr;d.npc_cada=peq;d.total=t;break;}}}
+   if(t<=livre_n){d.k_perto=k;d.cap_perto=c.todos_rede;d.jan_perto=c.todos_jan;d.jan_peq=c.janela_npc;d.npc_perto=gr;d.npc_cada=peq;d.total=t;break;}}}
  return d;}
 inline void motivo_texto(unsigned m,char* b,std::size_t n) noexcept {
- static const char* const nomes[]{"grace_menor","npc_menor","menos_npc","sem_npc","insuficiente","sem_medida"};
+ static const char* const nomes[]{"grace_menor","npc_menor","menos_npc","sem_npc","insuficiente","sem_medida","grace_fixa_aperto"};
  std::size_t k=0;if(!n)return;b[0]=0;
- for(unsigned i=0;i<6;++i)if(m&(1u<<i)){const int r=std::snprintf(b+k,n-k,"%s%s",k?"+":"",nomes[i]);if(r<0||std::size_t(r)>=n-k)break;k+=std::size_t(r);}
+ for(unsigned i=0;i<7;++i)if(m&(1u<<i)){const int r=std::snprintf(b+k,n-k,"%s%s",k?"+":"",nomes[i]);if(r<0||std::size_t(r)>=n-k)break;k+=std::size_t(r);}
  if(!k)std::snprintf(b,n,"cabe");}
 
 struct Pool {
@@ -223,6 +242,8 @@ struct Estado {
  std::atomic<std::uint64_t> hip_livre{0},hip_total{0},nl_inicio{0},pico_arquivo{0};
  Config cfg{};Medida med{};Decisao dec{};
  Calib calib{};
+
+ std::atomic<std::uint64_t> calib_pausa_ate{0};
 };
 inline Estado& estado() noexcept {static Estado* e=new Estado;return *e;}
 inline int modo() noexcept {return estado().guarda.modo.load(std::memory_order_relaxed);}

@@ -9,6 +9,7 @@ namespace nrffx {
 namespace {
 constexpr std::uint64_t upscale_type=0x10001;
 std::atomic<bool> use_game_exposure{true};
+std::atomic<FonteTamanhoSaida> fonte_tamanho_saida{nullptr};
 template<class T>T load(const void* base,std::size_t offset) noexcept{
   T value{};std::memcpy(&value,static_cast<const std::byte*>(base)+offset,sizeof(value));return value;
 }
@@ -31,6 +32,7 @@ bool host_reset(const void* head) noexcept{
   const auto* p=find_upscale(head);return p&&load<std::uint8_t>(p,0x198)!=0;
 }
 void set_use_game_exposure(bool enabled) noexcept{use_game_exposure.store(enabled,std::memory_order_relaxed);}
+void set_fonte_tamanho_saida(FonteTamanhoSaida fonte) noexcept{fonte_tamanho_saida.store(fonte,std::memory_order_release);}
 
 static void fields(const void* p,Descriptor& d) noexcept{
   d.command=load<void*>(p,0x10);d.input=load<void*>(p,0x18);d.input_state=load<std::uint32_t>(p,0x40);
@@ -43,7 +45,10 @@ static void fields(const void* p,Descriptor& d) noexcept{
   d.jitter_x=load<float>(p,0x168);d.jitter_y=load<float>(p,0x16C);
   d.render_w=load<std::uint32_t>(p,0x178);d.render_h=load<std::uint32_t>(p,0x17C);
   d.output_w=load<std::uint32_t>(p,0x180);d.output_h=load<std::uint32_t>(p,0x184);
+  if(!d.output_w&&!d.output_h&&d.output)if(auto f=fonte_tamanho_saida.load(std::memory_order_acquire)){
+    std::uint32_t w{},h{};if(f(d.output,w,h)){d.output_w=w;d.output_h=h;}}
   d.camera_near=load<float>(p,0x19C);d.camera_far=load<float>(p,0x1A0);d.camera_fov=load<float>(p,0x1A4);
+  d.ffx_flags=load<std::uint32_t>(p,0x1AC);
 }
 
 static const char* check(const void* head,Descriptor& d) noexcept{
@@ -97,6 +102,8 @@ bool encode_adapted_copy(const void* source,std::size_t source_size,const Adapte
   if(f.input){store(destination,0x18,f.input);store(destination,0x40,f.input_state);}
   if(f.motion){store(destination,0x78,f.motion);store(destination,0xA0,f.motion_state);}
   if(f.depth){store(destination,0x48,f.depth);store(destination,0x70,f.depth_state);}
+  if(f.output){store(destination,0x138,f.output);store(destination,0x160,f.output_state);}
+  if(f.exposure){store(destination,0xA8,f.exposure);store(destination,0xD0,f.exposure_state);}
   store(destination,0x170,static_cast<float>(original.render_w));store(destination,0x174,static_cast<float>(original.render_h));
   store(destination,0x194,1.0f);
   Descriptor strict{};return decode(destination,strict);

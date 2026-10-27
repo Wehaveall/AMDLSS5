@@ -8,6 +8,13 @@ enum class Result { Composed, Skipped, Failed, Unsupported };
 
 inline std::atomic<bool> cadeia_direta{true};
 
+inline std::atomic<bool> fill_direto{true};
+
+inline std::atomic<unsigned> teste_falhar_alocacao{0};
+
+struct CachePsoInfo{std::uint64_t criados{},reusados{};};
+CachePsoInfo cache_pso_info() noexcept;
+
 struct LateRequest {
     void* residual_prev{};int job_prev{};float exposure_prev{};long long capture_qpc_prev{};
     void* late_source{};int job_late{};float exposure_late{};long long capture_qpc_late{};
@@ -50,6 +57,14 @@ public:
         std::uint64_t post_composed{},post_refused{};
 
         std::uint64_t post_lost{};
+
+        std::uint64_t alocacoes_tentadas{},alocacoes_adiadas{};
+
+        bool est_alocado{};
+
+        std::uint64_t base_tom_quadros{};
+
+        unsigned impls_velhos{};
     };
     Counters counters() const noexcept;
 

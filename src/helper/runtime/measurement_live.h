@@ -1,4 +1,5 @@
 #pragma once
+#include "pasta_helper.h"
 #include "nr_publico.h"
 #include "../../nr-style-performance/measurement-ab/meter.h"
 #include <windows.h>
@@ -9,7 +10,11 @@
 #include <cstring>
 #include <filesystem>
 #include <numeric>
+#include <vector>
+#include "sha256.h"
 #include "reg_swin32.h"
+#include "hip_api.h"
+#include "modulos_pin.h"
 
 namespace nrmeasurelive {
 struct Dim {unsigned x,y,z;};
@@ -46,27 +51,30 @@ inline void message(const char* value) noexcept {
 }
 inline void flush() noexcept;
 inline void abort_measurement(const char* why) noexcept {done=true;if(state){state->active=false;if(state->saved)flush();}message(why);}
+
 inline void flush() noexcept {
- FILE* f=nullptr;if(_wfopen_s(&f,(folder/L"nr_measure_live.log").c_str(),L"a")!=0||!f){
-if(state)state->saved=0;
-}
- for(unsigned i=0;i<state->saved;++i){const auto& r=state->rows[i];std::fprintf(f,"pid=%lu block=%u arm=%s sample=%u counter=%u width=%d height=%d metadata=%d eval_cpu_ms=%.6f period_ms=%.6f gpu_ms=%.6f group_ms=%.6f ordinal=%u\n",GetCurrentProcessId(),r.block,names[r.block],r.sample,r.counter,r.width,r.height,r.metadata?1:0,r.cpu,r.period,r.gpu,r.group,r.target);}
- std::fclose(f);state->saved=0;
+ if(state)state->saved=0;
 }
 inline void stamp(unsigned slot,void* stream) noexcept {
  auto& s=*state;unsigned index=(s.row.block*400+s.row.sample)*4+slot;void* args[]={&s.clock_device,&index};
  if(marker_launch(s.clock_kernel,1,1,1,1,1,1,0,stream,args,nullptr))s.valid=false;
 }
+
+inline void sha256_hex(const std::vector<unsigned char>& b,char (&out)[65]) noexcept {nrsha::hex(b.data(),b.size(),out);}
 inline bool initialize_clock() noexcept {
- auto hip=GetModuleHandleW(L"amdhip64_7.dll");auto load=reinterpret_cast<int(*)(void**,const char*)>(GetProcAddress(hip,"hipModuleLoad"));
- auto function=reinterpret_cast<int(*)(void**,void*,const char*)>(GetProcAddress(hip,"hipModuleGetFunction"));
- auto host=reinterpret_cast<int(*)(void**,size_t,unsigned)>(GetProcAddress(hip,"hipHostMalloc"));
- auto mapped=reinterpret_cast<int(*)(void**,void*,unsigned)>(GetProcAddress(hip,"hipHostGetDevicePointer"));
- auto attribute=reinterpret_cast<int(*)(int*,int,int)>(GetProcAddress(hip,"hipDeviceGetAttribute"));
- marker_launch=reinterpret_cast<ModuleLaunch>(GetProcAddress(hip,"hipModuleLaunchKernel"));
+
+ auto load=nrhip::api().module_load_data;
+ auto function=nrhip::api().module_get_function;
+ auto host=reinterpret_cast<int(*)(void**,size_t,unsigned)>(nrhip::api().host_malloc);
+ auto mapped=reinterpret_cast<int(*)(void**,void*,unsigned)>(nrhip::api().host_get_device_pointer);
+ auto attribute=reinterpret_cast<int(*)(int*,int,int)>(nrhip::api().device_get_attribute);
+ marker_launch=nrhip::api().module_launch_kernel;
  if(!load||!function||!host||!mapped||!attribute||!marker_launch)return false;
- auto& s=*state;const auto file=(folder/L"nr_measure_stamp.hsaco").string();
- if(load(&s.clock_module,file.c_str())||function(&s.clock_kernel,s.clock_module,"nr_measure_stamp"))return false;
+ auto& s=*state;
+ static std::vector<unsigned char> imagem;
+ if(nrmodpin::ler(folder/L"nr_measure_stamp.hsaco",nullptr,nullptr,imagem)!=nrmodpin::Leitura::ok){message("CLOCK_BACKEND REJECTED nr_measure_stamp.hsaco ausente");return false;}
+ {char sha[65];sha256_hex(imagem,sha);char line[160];std::snprintf(line,sizeof line,"CLOCK_MODULE nr_measure_stamp.hsaco bytes=%zu sha256=%s (sem pin: nao vai em pacote)",imagem.size(),sha);message(line);}
+ if(load(&s.clock_module,imagem.data())||function(&s.clock_kernel,s.clock_module,"nr_measure_stamp"))return false;
  constexpr size_t bytes=4000*4*sizeof(unsigned long long);
 
  if(host(reinterpret_cast<void**>(&s.clock_host),bytes,0x40000002u)||mapped(&s.clock_device,s.clock_host,0))return false;

@@ -1,6 +1,5 @@
 #include "../../../runtime/nr_publico.h"
 #include "menu_i18n.h"
-#include "menu_bridge.h"
 #include "display_translation.h"
 #include <atomic>
 #include <cstring>
@@ -74,8 +73,7 @@ const Text value_texts[]{
  {"Padrão","Padrão","Default","Predeterminado"},{"Default","Padrão","Default","Predeterminado"},
  {"Natural","Natural","Natural","Natural"},{"Cinemático","Cinemático","Cinematic","Cinemático"},{"Cinematic","Cinemático","Cinematic","Cinemático"},
  {"Original","Original","Original","Original"},
- {"Personalizado","Personalizado","Custom","Personalizado"},{"Preset","Preset","Preset","Preset"},
- {"Preset A","Preset A","Preset A","Preset A"},{"Preset B","Preset B","Preset B","Preset B"},{"Preset C","Preset C","Preset C","Preset C"},
+ {"Personalizado","Personalizado","Custom","Personalizado"},
  {"Indisponível","Indisponível","Unavailable","No disponible"},
  {"Erro ao salvar","Erro ao salvar","Save error","Error al guardar"},
  {"Erro de leitura","Erro de leitura","Read error","Error de lectura"},
@@ -89,23 +87,25 @@ const Text value_texts[]{
  {"Aguardando...","Aguardando...","Waiting...","Esperando..."},{"Aguardando","Aguardando","Waiting","Esperando"},
  {"waiting...","Aguardando...","Waiting...","Esperando..."},
  {"Assíncrono","Assíncrono","Async","Asíncrono"},{"Async","Assíncrono","Async","Asíncrono"},{"async","Assíncrono","Async","Asíncrono"},
- {"Só PRE/POST","Só PRE/POST","PRE/POST only","Solo PRE/POST"},
- {"Liga ao reabrir","Liga ao reabrir","On after restart","Activa al reiniciar"},
- {"Desl. reabrir","Desl. reabrir","Off after restart","Desact. al reiniciar"},
- {"Sem suporte","Sem suporte","Unsupported","Sin soporte"},
- {"Usando Present","Usando Present","Using Present","Usando Present"},
  {"Gravando...","Gravando...","Recording...","Grabando..."},{"Gravados","Gravados","Saved","Guardados"},
  {"Salvando...","Salvando...","Saving...","Guardando..."},{"Salvo","Salvo","Saved","Guardado"},
- {"Profundidade","Profundidade","Depth","Profundidad"},{"Luminância","Luminância","Luminance","Luminancia"},
+ {"Restaurado","Restaurado","Restored","Restablecido"},
  {"Depois do FSR","Depois do FSR","After FSR","Después de FSR"},{"Antes do FSR","Antes do FSR","Before FSR","Antes de FSR"},
  {"Borda suave","Borda suave","Soft edge","Borde suave"},
+ {"Pequeno","Pequeno","Small","Pequeño"},{"Grande","Grande","Large","Grande"},
+ {"Muito grande","Muito grande","Very large","Muy grande"},{"Tudo","Tudo","All","Todo"},{"Sombras","Sombras","Shadows","Sombras"},
+ {"Pele","Pele","Skin","Piel"},{"Cabeça","Cabeça","Head","Cabeza"},
  {"Média","Média","Medium","Media"},{"Media","Média","Medium","Media"},{"Médio","Médio","Medium","Medio"},
  {"Fraca","Fraca","Weak","Débil"},{"Fraco","Fraco","Weak","Débil"},{"Forte","Forte","Strong","Fuerte"},
  {"Leve","Leve","Light","Leve"},{"Máximo","Máximo","Maximum","Máximo"},
  {"Sempre","Sempre","Always","Siempre"},{"Invertido","Invertido","Inverted","Invertido"},
- {"Sem limiar","Sem limiar","No threshold","Sin umbral"},
  {"Todo quadro","Todo quadro","Every frame","Cada cuadro"},{"quadros","quadros","frames","cuadros"},
  {"Sem limite","Sem limite","No limit","Sin límite"},
+ {"Todas","Todas","All","Todos"},{"Vermelhos","Vermelhos","Reds","Rojos"},{"Laranjas","Laranjas","Oranges","Naranjas"},{"Amarelos","Amarelos","Yellows","Amarillos"},{"Verdes","Verdes","Greens","Verdes"},{"Cianos","Cianos","Cyans","Cianes"},
+ {"Azuis","Azuis","Blues","Azules"},{"Roxos","Roxos","Purples","Púrpuras"},{"Magentas","Magentas","Magentas","Magentas"},{"Estreita","Estreita","Narrow","Estrecha"},{"Larga","Larga","Wide","Ancha"},
+ {"Baixa","Baixa","Low","Baja"},{"Alta","Alta","High","Alta"},{"Ultra","Ultra","Ultra","Ultra"},{"Automática","Automática","Automatic","Automática"},{"Inteira","Inteira","Full","Completa"},{"Metade","Metade","Half","Mitad"},{"Só AO","Só AO","AO only","Solo AO"},{"AO cru","AO cru","Raw AO","AO cruda"},{"Normais","Normais","Normals","Normales"},{"Profundidade","Profundidade","Depth","Profundidad"},{"Bordas","Bordas","Edges","Bordes"},{"Quadros","Quadros","Frames","Cuadros"},{"Máscaras","Máscaras","Masks","Máscaras"},
+ {"Rodízio 2","Rodízio 2","Rotation 2","Rotación 2"},{"Rodízio 4","Rodízio 4","Rotation 4","Rotación 4"},{"Só IL","Só IL","IL only","Solo IL"},{"IL crua","IL crua","Raw IL","IL cruda"},
+ {"Radiância","Radiância","Radiance","Radiancia"},{"Albedo","Albedo","Albedo","Albedo"},{"Céu","Céu","Sky","Cielo"},{"Normais emissor","Normais emissor","Emitter normals","Normales emisor"},{"Sutil","Sutil","Subtle","Sutil"},
  {"Automático","Automático","Automatic","Automático"},{"Automatic","Automático","Automatic","Automático"},
  {"Auto","Automático","Auto","Automático"},{"auto","Automático","Auto","Automático"},
  {"auto (follows Structure)","Automático","Auto","Automático"},
@@ -142,6 +142,7 @@ const char* const group_names[][language_count]{
  {"DIAGNOSTICS","DIAGNÓSTICO","DIAGNÓSTICO"},
  {"REPROJECTION (ADVANCED)","REPROJEÇÃO (AVANÇADO)","REPROYECCIÓN (AVANZADO)"},
  {"ON GAME RESTART","AO REABRIR O JOGO","AL REINICIAR EL JUEGO"},
+ {"IMAGE FILTERS","FILTROS DE IMAGEM","FILTROS DE IMAGEN"},
 };
 static_assert(sizeof(group_names)/sizeof(*group_names)==unsigned(Group::Count));
 const char* const ui_texts[][language_count]{
@@ -162,6 +163,8 @@ const char* const ui_texts[][language_count]{
  {"Network off: ","Rede desligada: ","Red desactivada: "},
 
  {"net","rede","red"},
+
+ {"Turn off the game's dynamic resolution","Desligue a resolução dinâmica do jogo","Desactive la resolución dinámica del juego"},
 };
 static_assert(sizeof(ui_texts)/sizeof(*ui_texts)==unsigned(Ui::Count));
 
@@ -220,6 +223,8 @@ const CompatReason compat_reasons[]{
  {"post_historico_reduzido",false,{"POST history reduced to fit the memory budget","histórico do POST reduzido para caber no orçamento de memória","historial del POST reducido para caber en el presupuesto de memoria"}},
 
  {"overlay_amd",false,{"AMD metrics overlay is on (Ctrl+Shift+O turns it off; F10 forces the network)","overlay de métricas da AMD ligado (Ctrl+Shift+O desliga; F10 força a rede)","overlay de métricas de AMD activo (Ctrl+Shift+O lo desactiva; F10 fuerza la red)"}},
+
+ {"fsr_intermitente",false,{"turn off the game's dynamic resolution (FSR runs only now and then)","desligue a resolução dinâmica do jogo (o FSR só roda de vez em quando)","desactive la resolución dinámica del juego (FSR solo se ejecuta de vez en cuando)"}},
  {"overlay_amd_recriacao",false,{"paused 2 s: the game recreated its render targets with AMD overlay/recording/camera on","pausa de 2 s: o jogo recriou a tela com overlay/gravação/câmera da AMD ligados","pausa de 2 s: el juego recreó la pantalla con overlay/grabación/cámara de AMD activos"}},
 };
 
@@ -231,18 +236,17 @@ const CatalogEntry catalog[]{
  {"Select nvngx_dlssnr.dll...",G::General,true,true},
  {language_label,G::General,true,false},
  {input_label,G::General,true,false},
+ {"Contador compacto (FPS e rede)",G::General,true,false},
  {"Tirar print",G::General,false,false},
  {"Mode",G::General,false,true},
 
- {"Preset",G::Neural,false,false},
  {"Structure intensity",G::Neural,true,true},
  {"Skin structure",G::Neural,true,true},
  {"Tone intensity",G::Neural,true,true},
  {"NR antes do FSR",G::Neural,false,false},
- {"Modo da rede",G::Neural,false,false},
  {"Resolução de trabalho",G::Neural,true,false},
  {"Máscara automática",G::Neural,false,false},
- {"Estilo neural",G::Neural,false,false},
+ {"Estilo neural",G::Neural,true,false},
 
  {"Exposição (EV)",G::Neural,true,false},
  {"Contraste",G::Neural,true,false},
@@ -256,9 +260,8 @@ const CatalogEntry catalog[]{
  {"Realce do detalhe",G::Neural,false,false},
  {"Rede v0.5 (tokens)",G::Neural,false,false},
  {"Rosto do personagem",G::Neural,false,false},
- {"Força dos passos extras",G::Neural,true,false},
+ {"Rede adaptativa do rosto",G::Neural,false,false},
  {"Tom local",G::Neural,false,false},
- {"Present (reiniciar)",G::Neural,false,false},
 
  {"Intensidade dos detalhes",G::Composition,false,false},
  {"Intensidade das cores",G::Composition,false,false},
@@ -266,10 +269,70 @@ const CatalogEntry catalog[]{
 
  {"Rede neural automática",G::Performance,false,false},
  {"Limite de FPS",G::Performance,true,false},
+ {"Geração de quadros",G::Performance,true,false},
  {"Kernel swin32",G::Performance,false,false},
  {"Rede neural % (reiniciar)",G::Performance,false,false},
 
- {"Transferência bilateral",G::Motion,false,false},
+ {"Nitidez CAS",G::Filters,true,false},
+ {"- Força do CAS",G::Filters,true,false},
+ {"Nitidez LumaSharpen",G::Filters,true,false},
+ {"- Força do LumaSharpen",G::Filters,true,false},
+ {"- Limite do LumaSharpen",G::Filters,true,false},
+ {"- Só contornos no rosto",G::Filters,true,false},
+ {"- Nitidez no céu",G::Filters,true,false},
+ {"Contraste local (Clarity)",G::Filters,true,false},
+ {"- Força do Clarity",G::Filters,true,false},
+ {"- Raio do Clarity",G::Filters,true,false},
+ {"- Meios-tons do Clarity",G::Filters,true,false},
+ {"- Zona do Clarity",G::Filters,true,false},
+ {"- Clarity fora do rosto",G::Filters,true,false},
+ {"Níveis (preto e branco)",G::Filters,true,false},
+ {"- Preto dos Níveis",G::Filters,true,false},
+ {"- Branco dos Níveis",G::Filters,true,false},
+ {"- Preto de saída dos Níveis",G::Filters,true,false},
+ {"- Branco de saída dos Níveis",G::Filters,true,false},
+ {"Tom e cor (Tonemap)",G::Filters,true,false},
+ {"- Gama do Tom",G::Filters,true,false},
+ {"- Exposição do Tom",G::Filters,true,false},
+ {"- Saturação do Tom",G::Filters,true,false},
+ {"- Bleach do Tom",G::Filters,true,false},
+ {"- Defog do Tom",G::Filters,true,false},
+ {"Temperatura (K)",G::Filters,true,false},
+ {"- Kelvin",G::Filters,true,false},
+ {"- Matiz (verde/magenta)",G::Filters,true,false},
+ {"Pele do rosto",G::Filters,true,false},
+ {"- Luz da pele",G::Filters,true,false},
+ {"- Saturação da pele",G::Filters,true,false},
+ {"- Matiz da pele",G::Filters,true,false},
+ {"- Temperatura da pele (K)",G::Filters,true,false},
+ {"Cor por faixa (HSL)",G::Filters,true,false},
+ {"- Faixa do HSL",G::Filters,true,false},
+ {"- Matiz do HSL",G::Filters,true,false},
+ {"- Saturação do HSL",G::Filters,true,false},
+ {"- Luminosidade do HSL",G::Filters,true,false},
+ {"- Suavidade do HSL",G::Filters,true,false},
+ {"- Proteger pele no HSL",G::Filters,true,false},
+ {"Oclusão ambiente (AO)",G::Filters,true,false},
+ {"- Qualidade da AO",G::Filters,true,false},
+ {"- Intensidade da AO",G::Filters,true,false},
+ {"- Raio da AO",G::Filters,true,false},
+ {"- Espessura da AO",G::Filters,true,false},
+ {"- Alcance da AO",G::Filters,true,false},
+ {"- Proteger pele na AO",G::Filters,true,false},
+ {"- Menos AO em áreas claras",G::Filters,true,false},
+ {"- Resolução da AO",G::Filters,true,false},
+ {"- Ver a AO (depuração)",G::Filters,true,false},
+ {"Iluminação indireta (IL)",G::Filters,true,false},
+ {"- Estilo da IL",G::Filters,true,false},
+ {"- Intensidade da IL",G::Filters,true,false},
+ {"- Saturação da IL",G::Filters,true,false},
+ {"- Brilho do rebatimento",G::Filters,true,false},
+ {"- Qualidade da IL",G::Filters,true,false},
+ {"- Atualização da IL",G::Filters,true,false},
+ {"- Proteger pele na IL",G::Filters,true,false},
+ {"- Ver a IL (depuração)",G::Filters,true,false},
+ {"Restaurar padrões",G::General,true,false},
+
  {"Divergência bruta",G::Motion,false,false},
  {"Rejeição por movimento",G::Motion,false,false},
  {"Força em movimento",G::Motion,false,false},
@@ -277,18 +340,12 @@ const CatalogEntry catalog[]{
  {"Compensar jitter",G::Motion,false,false},
  {"Compor o realce",G::Motion,false,false},
  {"Composição tardia",G::Motion,false,false},
- {"Realce pela profundidade",G::Motion,false,false},
- {"Borda acompanha o movimento",G::Motion,false,false},
- {"Reparar movimento",G::Motion,false,false},
  {"Preencher o buraco",G::Motion,false,false},
  {"Detalhe em movimento",G::Motion,false,false},
  {"Idade máxima",G::Motion,false,false},
- {"Borda em movimento",G::Motion,false,false},
 
  {"Estabilizar realce",G::Flicker,false,false},
  {"Estabilizar só parado",G::Flicker,false,false},
- {"Cancelar ruído",G::Flicker,false,false},
- {"Transferir por razão",G::Flicker,false,false},
  {"Limitar variação do ganho",G::Flicker,false,false},
  {"Proteção suave",G::Flicker,false,false},
  {"Suavizar iluminação",G::Flicker,false,false},
@@ -318,22 +375,8 @@ const CatalogEntry catalog[]{
  {"Limite de vizinhança",G::Reprojection,false,false},
  {"Tolerância de profundidade",G::Reprojection,false,false},
  {"Tolerância de cor",G::Reprojection,false,false},
- {"Suavizar rejeição",G::Reprojection,false,false},
  {"Escala do movimento",G::Reprojection,false,false},
- {"Tolerância a deformação",G::Reprojection,false,false},
- {"Teste de desoclusão",G::Reprojection,false,false},
- {"Transferência do realce",G::Reprojection,false,false},
- {"Tolerância do realce",G::Reprojection,false,false},
- {"Separação da grade",G::Reprojection,false,false},
- {"Retenção do modelo",G::Reprojection,false,false},
- {"Regularização",G::Reprojection,false,false},
  {"Movimento pontual",G::Reprojection,false,false},
- {"Movimento duplo",G::Reprojection,false,false},
- {"Limiar do mov. duplo",G::Reprojection,false,false},
- {"Piso do realce",G::Reprojection,false,false},
- {"Piso da confiança",G::Reprojection,false,false},
- {"Suavizar portão",G::Reprojection,false,false},
- {"Suavizar deformação",G::Reprojection,false,false},
  {"Referência de movimento",G::Reprojection,false,false},
  {"Tolerância absoluta",G::Reprojection,false,false},
 
@@ -404,7 +447,7 @@ std::string label(const char* source,Language value) {
     if(!source)return {};
     if(const auto* t=own(source))return pick(*t,value);
     if(const auto* t=helper(source))return value==Language::En?t->en:value==Language::Es?t->es:source;
-    return value==Language::Pt?localized_text(localized_label(source)):source;
+    return value==Language::Pt?localized_text(source):source;
 }
 std::string help(const char* label_source,const char* help_source,Language value) {
 
@@ -417,7 +460,7 @@ std::string help(const char* label_source,const char* help_source,Language value
         const std::string key=std::string("help/")+label_source;
         if(const auto* t=own(key.c_str()))return pick(*t,value);
     }
-    if(value==Language::Pt)return localized_text(localized_help(label_source,help_source));
+    if(value==Language::Pt)return localized_text(help_source?help_source:"");
     if(value==Language::Es)return localized_text(help_source?help_source:"",true);
     return help_source?help_source:"";
 }
@@ -466,7 +509,9 @@ std::string status(const std::string& source,Language value) {
     }
     if(value==Language::En)return source;
     if(value==Language::Es)return localized_text(source,true);
-    return localized_text(localized_value(source.c_str()));
+
+    for(const auto& t:value_texts)if(source==t.key)return localized_text(t.pt);
+    return localized_text(source);
 }
 const CompatReason* compat_reason_begin() noexcept { return compat_reasons; }
 const CompatReason* compat_reason_end() noexcept { return compat_reasons+sizeof(compat_reasons)/sizeof(*compat_reasons); }
@@ -483,6 +528,13 @@ std::string network_off(const char* id,const char* field,Language value) {
     out+=text?text:(id?id:"");
     if(field&&*field){out+=" (";out+=field;out+=")";}
     return out;
+}
+std::size_t text_entry_count() noexcept { return sizeof(own_texts)/sizeof(*own_texts)+sizeof(helper_texts)/sizeof(*helper_texts); }
+TextEntry text_entry(std::size_t index) noexcept {
+    constexpr std::size_t n_own=sizeof(own_texts)/sizeof(*own_texts),n_helper=sizeof(helper_texts)/sizeof(*helper_texts);
+    if(index<n_own){const auto& t=own_texts[index];return {t.key,t.en,t.es,false};}
+    if(index-n_own<n_helper){const auto& t=helper_texts[index-n_own];return {t.key,t.en,t.es,true};}
+    return {};
 }
 bool label_known(const char* source) noexcept { return own(source)||helper(source); }
 bool help_known(const char* label_source,const char* help_source) noexcept {

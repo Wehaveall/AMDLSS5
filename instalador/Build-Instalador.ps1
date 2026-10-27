@@ -48,7 +48,7 @@ try {
         "/win32manifest:$(Join-Path $PSScriptRoot 'src\app.manifest')",
         "/resource:$logo,Amdlss5.logo.png",
         '/reference:System.dll', '/reference:System.Core.dll', '/reference:System.Drawing.dll', '/reference:System.Windows.Forms.dll', '/reference:System.IO.Compression.dll', '/reference:System.IO.Compression.FileSystem.dll',
-        '/reference:System.IO.Compression.dll', '/reference:System.IO.Compression.FileSystem.dll', '/reference:System.Web.Extensions.dll'
+        '/reference:System.Web.Extensions.dll'
     ) + $fontes
     $saidaCsc = & $csc @argsCsc 2>&1
     if ($LASTEXITCODE -ne 0) { $saidaCsc | ForEach-Object { "$_" }; throw "csc falhou ($LASTEXITCODE)" }

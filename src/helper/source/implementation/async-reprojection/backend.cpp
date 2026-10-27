@@ -1,13 +1,19 @@
 #include "../../../runtime/nr_publico.h"
 #include "../../../runtime/custo_perfil.h"
+#include "../../../runtime/tempo_gpu.h"
 #include "backend.h"
 #include "../../../runtime/rosto_jogador_state.h"
 #include "policy.h"
 #include "late_compose.h"
 #include "formatos.h"
 #include "reproject_controls.h"
+#include "reproject_chaves.h"
+#include "estab_fontes.h"
+#include "../../../runtime/estencil_externo.h"
 #include "../compose-controls/realce.h"
 #include "../compat-diag/compat.h"
+#include "../../../runtime/estado_ffx.h"
+#include "../../../runtime/jogo_conhecido.h"
 #include "../../../runtime/pre_scale_state.h"
 #include "../../../runtime/ini_jogo.h"
 #include "../../../runtime/log_fila.h"
@@ -21,26 +27,21 @@
 #include "nr_reproject_compose.h"
 #include "nr_reproject_composepost.h"
 #include "nr_reproject_estabilizar.h"
-#include "nr_reproject_composepostcr.h"
-#include "nr_reproject_composepostg.h"
-#include "nr_reproject_composepostcrg.h"
 #include "nr_reproject_estabilizarcr.h"
 #include "nr_reproject_croma.h"
 #include "nr_reproject_cromalds.h"
 #include "nr_reproject_suave.h"
 #include "nr_reproject_luzgrossa.h"
+#include "nr_reproject_basetom.h"
+#include "nr_reproject_cromabase.h"
+#include "nr_reproject_cromaldsbase.h"
+#include "nr_reproject_luzgrossabase.h"
 #include "nr_reproject_tlmederef.h"
-#include "nr_reproject_tlmedesai.h"
-#include "nr_reproject_tlrazao.h"
-#include "nr_reproject_tlaplica.h"
 #include "../../../runtime/expo_trava.h"
+#include "../../../runtime/protege_realce.h"
 #include "suave_config.h"
 #include "nr_reproject_fill.h"
-#include "nr_reproject_bilaterallumafonte.h"
-#include "nr_reproject_bilaterallumaatual.h"
-#include "nr_reproject_bilateralprep.h"
-#include "nr_reproject_bilateralfit.h"
-#include "nr_reproject_bilateralapply.h"
+#include "nr_reproject_fillrapido.h"
 #include "nr_reproject_luzmomentos.h"
 #include "nr_reproject_luzcoeficientes.h"
 #include "nr_reproject_luztemporal.h"
@@ -51,6 +52,9 @@
 #include <dxgi1_4.h>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
+#include "../../../runtime/d3d12_comum.h"
+#include "../../../runtime/gpu_perdida.h"
+#include "../present-runtime/print_state.h"
 #include <array>
 #include <atomic>
 #include <thread>
@@ -64,82 +68,29 @@
 #include <limits>
 #include <vector>
 
-struct Thresholds { float depth_relative, depth_absolute, color, clamp_strength, motion_reference, confidence_rate, motion_divergence, motion_factor, deform_tolerance, gate_smooth, deform_blur, detail_motion, gate_coherent, occlusion_tolerance, residual_floor, confidence_floor, dual_motion, dual_threshold; };
+struct Thresholds { float depth_absolute, motion_reference; };
 const Thresholds& thresholds() {
     static const Thresholds value = []{
-
-        auto read=[](const wchar_t* key,float fallback,bool negativo_vale=false){
+        auto read=[](const wchar_t* key,float fallback){
             double parsed{};
-            if(!nrinijogo::ler_double(key,parsed)||(!negativo_vale&&parsed<0))return fallback;
+            if(!nrinijogo::ler_double(key,parsed)||parsed<0)return fallback;
             return float(parsed);
         };
-        return Thresholds{read(L"NeuralReprojectDepthRelative",.03f),
-                          read(L"NeuralReprojectDepthAbsolute",.0001f),
-                          read(L"NeuralReprojectColorThreshold",.15f),
+        return Thresholds{read(L"NeuralReprojectDepthAbsolute",.0001f),
 
-                          read(L"NeuralReprojectClampStrength",0.f),
-
-                          read(L"NeuralReprojectMotionReference",.01f),
-
-                          read(L"NeuralReprojectConfidenceRate",0.f),
-
-                          read(L"NeuralReprojectMotionDivergence",0.f),
-
-                          read(L"NeuralReprojectMotionFactor",1.f,true),
-
-                          read(L"NeuralReprojectDeformTolerance",0.f),
-
-                          read(L"NeuralReprojectGateSmooth",0.f),
-                          read(L"NeuralReprojectDeformBlur",0.f),
-                          read(L"NeuralReprojectDetailMotion",0.f),
-                          read(L"NeuralReprojectGateCoherent",0.f),
-
-                          read(L"NeuralReprojectOcclusionTolerance",0.f),
-
-                          read(L"NeuralReprojectResidualFloor",0.f),
-
-                          read(L"NeuralReprojectConfidenceFloor",0.f),
-
-                          read(L"NeuralReprojectDualMotion",0.f),
-
-                          read(L"NeuralReprojectDualMotionThreshold",0.f)};
+                          read(L"NeuralReprojectMotionReference",.01f)};
     }();
 
-    static const bool seeded=[&]{
-        auto ini=[](const wchar_t* key,float fallback){double v{};return nrinijogo::ler_double(key,v)?float(v):fallback;};
-        const float initial[nrreproject::ControlCount]={value.clamp_strength,value.motion_divergence,
-                                                        value.depth_relative,value.color,
-                                                        value.confidence_rate,value.motion_factor,
-                                                        value.deform_tolerance,value.detail_motion,
-                                                        value.occlusion_tolerance,
-                                                        ini(L"NeuralReprojectBilateral",0.f),ini(L"NeuralReprojectBilateralDetail",.01f),
-                                                        ini(L"NeuralReprojectBilateralGuide",0.f),ini(L"NeuralReprojectBilateralHold",0.f),
-                                                        ini(L"NeuralReprojectBilateralRidge",.001f),ini(L"NeuralReprojectPointMotion",0.f),
-                                                        value.dual_motion,value.dual_threshold,value.residual_floor,
-                                                        value.confidence_floor,value.gate_smooth,value.deform_blur,
-                                                        value.motion_reference,value.depth_absolute,
-                                                        ini(L"NeuralAsyncMaxAge",0.f),
-                                                        ini(L"NeuralReprojectComposeAfterUpscale",0.f),
-                                                        ini(L"NeuralReprojectFillMode",0.f),
-                                                        ini(L"NeuralReprojectDepthSnap",0.f),
-                                                        ini(L"NeuralReprojectMotionRepair",0.f),
-                                                        ini(L"NeuralReprojectRawDivergence",0.f),
-                                                        ini(L"NeuralReprojectStabilize",0.f),
-                                                        ini(L"NeuralGradeExposure",0.f),ini(L"NeuralGradeContrast",0.f),ini(L"NeuralGradeSaturation",0.f),
-                                                        ini(L"NeuralReprojectMotionStrength",.5f),ini(L"NeuralReprojectMotionStrengthRef",4.f),
-                                                        ini(L"NeuralReprojectJitterComp",0.f),ini(L"NeuralReprojectStabilizeStill",2.f),ini(L"NeuralReprojectNoiseCancel",0.f),ini(L"NeuralReprojectRatioTransfer",0.f),
-                                                        ini(L"NeuralGainLimit",0.f),ini(L"NeuralHighlightGuardSoft",0.f),
-                                                        [&]{const float v=ini(L"NeuralHighlightGuardLight",-1.f);return v<0.f?0.f:nrrealce::luz_legada(v)?nrreproject::guarda_sem_limite:v;}(),ini(L"NeuralHighlightGuardDetail",1.2f),ini(L"NeuralLightSmooth",0.f),
-                                                        ini(L"NeuralHaloReduce",0.f),ini(L"NeuralReprojectDepthAwareRead",0.f),ini(L"NeuralRatioFloor",1.f/512.f),
-                                                        ini(L"NeuralLateCompose",0.f),ini(L"NeuralHaloNetScale",0.f),ini(L"NeuralLightGuideDepth",0.f),
-                                                        ini(L"NeuralHaloExcess",0.f),ini(L"NeuralReprojectEdgeCarry",0.f),
-                                                        ini(L"NeuralHaloCutMoving",0.f)};
-        nrreproject::seed(nrreproject::controls,initial);return true;
+    static const bool seeded=[]{
+        unsigned indices[nrreproject::ControlCount]{};
+        for(unsigned i=0;i<nrreproject::ControlCount;++i){wchar_t t[32]{};nrinijogo::ler_texto(nrreproject::chaves[i],t,32);(void)nrreproject::indice_do_ini(i,t,indices[i]);}
+        return nrreproject::semear_indices(nrreproject::controls,indices);
     }();
     (void)seeded;
     return value;
 }
 
+namespace nrreproject {namespace {void rj_limpa_preparar(ID3D12GraphicsCommandList* c,ID3D12Resource* dst,unsigned estado,std::uint64_t quadro) noexcept;}}
 namespace nrreproject {
 namespace {
 using Microsoft::WRL::ComPtr;
@@ -181,16 +132,25 @@ constexpr unsigned compose_variante=12,compose_uavs=6;
 
 constexpr unsigned luz_variante=19,luz_uavs=10;
 
-D3D12_RESOURCE_STATES state(unsigned s){if((s&1u)&&s!=1u)s&=~1u;switch(s){
- case 1:return D3D12_RESOURCE_STATE_COMMON;case 2:return write_state;case 4:return read_state;
- case 8:return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;case 12:return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE|read_state;
- case 16:return D3D12_RESOURCE_STATE_COPY_SOURCE;case 32:return D3D12_RESOURCE_STATE_COPY_DEST;
- case 20:return D3D12_RESOURCE_STATE_COPY_SOURCE|read_state;default:return D3D12_RESOURCE_STATES(~0u);}}
-void transition(ID3D12GraphicsCommandList* c,ID3D12Resource* r,D3D12_RESOURCE_STATES a,D3D12_RESOURCE_STATES b){if(a==b)return;D3D12_RESOURCE_BARRIER v{};v.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;v.Transition={r,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,a,b};c->ResourceBarrier(1,&v);}
+static_assert(nrffx_estado::NON_PIXEL==D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE&&nrffx_estado::PIXEL==D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE&&
+              nrffx_estado::UAV==D3D12_RESOURCE_STATE_UNORDERED_ACCESS&&nrffx_estado::RT==D3D12_RESOURCE_STATE_RENDER_TARGET&&
+              nrffx_estado::DEPTH_WRITE==D3D12_RESOURCE_STATE_DEPTH_WRITE&&nrffx_estado::DEPTH_READ==D3D12_RESOURCE_STATE_DEPTH_READ&&
+              nrffx_estado::INDIRECT==D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT&&nrffx_estado::COPY_DEST==D3D12_RESOURCE_STATE_COPY_DEST&&
+              nrffx_estado::COPY_SOURCE==D3D12_RESOURCE_STATE_COPY_SOURCE&&nrffx_estado::COMMON==D3D12_RESOURCE_STATE_COMMON&&
+              nrffx_estado::leitura==unsigned(read_state)&&nrffx_estado::escrita==unsigned(write_state));
+std::atomic<std::uint64_t> estado_tolerado_visto[16]{};
+D3D12_RESOURCE_STATES state(unsigned s){
+ const auto t=nrffx_estado::traduzir(s);
+ if(t.tolerado&&s<1024u){const std::uint64_t bit=1ull<<(s&63u);
+  if(!(estado_tolerado_visto[s>>6].fetch_or(bit,std::memory_order_relaxed)&bit)){char d[96];
+   std::snprintf(d,sizeof d,"estado_ffx=0x%x -> d3d12=0x%x",s,unsigned(t.d3d12));nrcompat::tolerado("tolerado_estado_ffx",d);}}
+ return t.d3d12==nrffx_estado::recusa?D3D12_RESOURCE_STATES(~0u):D3D12_RESOURCE_STATES(t.d3d12);}
+void transition(ID3D12GraphicsCommandList* c,ID3D12Resource* r,D3D12_RESOURCE_STATES a,D3D12_RESOURCE_STATES b){nrd3d::transicao(c,r,a,b);}
 void order_uav(ID3D12GraphicsCommandList* c,ID3D12Resource* r){D3D12_RESOURCE_BARRIER v{};v.Type=D3D12_RESOURCE_BARRIER_TYPE_UAV;v.UAV.pResource=r;c->ResourceBarrier(1,&v);}
 bool device_matches(ID3D12Device* d,ID3D12DeviceChild* r){ComPtr<ID3D12Device> v;return r&&SUCCEEDED(r->GetDevice(IID_PPV_ARGS(&v)))&&v.Get()==d;}
 
 namespace expoanel {
+
 ComPtr<ID3D12Resource> leitura,envio;ID3D12Device* device_do_anel{};std::uint32_t* envio_mapa{};std::uint32_t contador{0};
 std::atomic<bool> falhou{false};
 bool ler(unsigned slot,float& e,std::uint32_t& etiqueta){
@@ -208,9 +168,9 @@ bool preparar(ID3D12Device* d){
  D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Height=1;bd.DepthOrArraySize=1;bd.MipLevels=1;bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
  bd.Width=UINT64(nrexpofresca::slots)*nrexpofresca::passo;
  ComPtr<ID3D12Resource> l,u;
- if(FAILED(d->CreateCommittedResource(&hl,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&l)))){falhou=true;return false;}
+ if(FAILED(d->CreateCommittedResource(&hl,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&l)))){falhou=true;return false;}nrd3d::nomear(l.Get(),L"nr_expo_leitura");
  bd.Width=UINT64(nrexpofresca::slots)*256u;
- if(FAILED(d->CreateCommittedResource(&he,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_GENERIC_READ,nullptr,IID_PPV_ARGS(&u)))){falhou=true;return false;}
+ if(FAILED(d->CreateCommittedResource(&he,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_GENERIC_READ,nullptr,IID_PPV_ARGS(&u)))){falhou=true;return false;}nrd3d::nomear(u.Get(),L"nr_expo_envio");
  void* m{};const D3D12_RANGE nada{0,0};if(FAILED(u->Map(0,&nada,&m))||!m){falhou=true;return false;}
  leitura=l;envio=u;envio_mapa=static_cast<std::uint32_t*>(m);device_do_anel=d;
  nrexpofresca::ler_slot.store(&ler,std::memory_order_release);
@@ -235,27 +195,45 @@ void gravar(ID3D12GraphicsCommandList* c,ID3D12Device* d,ID3D12Resource* exposic
  nrexpofresca::etiqueta_pendente.store(etiqueta,std::memory_order_release);
 }
 }
-bool texture(ID3D12Resource* r,DXGI_FORMAT f){if(!r)return false;auto d=r->GetDesc();return d.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D&&d.Format==f&&d.Width&&d.Height&&d.Width<=4096&&d.Height<=4096&&d.DepthOrArraySize==1&&d.MipLevels==1&&d.SampleDesc.Count==1;}
+
+bool texture(ID3D12Resource* r,DXGI_FORMAT f){if(!r)return false;auto d=r->GetDesc();return d.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D&&d.Format==f&&d.Width&&d.Height&&d.Width<=nrformato::lado_maximo&&d.Height<=nrformato::lado_maximo&&d.DepthOrArraySize==1&&d.MipLevels==1&&d.SampleDesc.Count==1;}
 
 using nrformato::vista_cor;using nrformato::bits_cor;using nrformato::vista_profundidade;using nrformato::vista_movimento;using nrformato::entrada;
 
 bool format_support(ID3D12Device* d,DXGI_FORMAT f,bool uav){
- struct Resposta{ID3D12Device* d;DXGI_FORMAT f;bool uav,ok;};static Resposta cache[8]{};static unsigned n{},proximo{};static std::mutex m;
- {std::lock_guard<std::mutex> l(m);for(unsigned i=0;i<n;++i)if(cache[i].d==d&&cache[i].f==f&&cache[i].uav==uav)return cache[i].ok;}
+ const LUID luid=d->GetAdapterLuid();
+ struct Resposta{LUID a;DXGI_FORMAT f;bool uav,ok;};static Resposta cache[8]{};static unsigned n{},proximo{};static std::mutex m;
+ {std::lock_guard<std::mutex> l(m);for(unsigned i=0;i<n;++i)if(cache[i].a.LowPart==luid.LowPart&&cache[i].a.HighPart==luid.HighPart&&cache[i].f==f&&cache[i].uav==uav)return cache[i].ok;}
  D3D12_FEATURE_DATA_FORMAT_SUPPORT q{f};if(FAILED(d->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT,&q,sizeof(q))))return false;
  const bool ok=(q.Support1&D3D12_FORMAT_SUPPORT1_SHADER_LOAD)&&(!uav||((q.Support2&D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD)&&(q.Support2&D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)));
- std::lock_guard<std::mutex> l(m);cache[proximo]={d,f,uav,ok};proximo=(proximo+1)%8u;if(n<8)++n;return ok;}
+ std::lock_guard<std::mutex> l(m);cache[proximo]={luid,f,uav,ok};proximo=(proximo+1)%8u;if(n<8)++n;return ok;}
+
+struct CachePso{
+ std::mutex m;ComPtr<ID3D12Device> dev;
+ struct Raiz{unsigned k,s,u;ComPtr<ID3D12RootSignature> r;};std::vector<Raiz> raizes;
+ struct Pso{ID3D12RootSignature* r;const void* b;ComPtr<ID3D12PipelineState> p;};std::vector<Pso> psos;
+ std::uint64_t criados{},reusados{};
+ void do_dispositivo(ID3D12Device* d){if(dev.Get()!=d){raizes.clear();psos.clear();dev=d;}}
+};
+CachePso& cache_pso(){static CachePso* c=new CachePso;return *c;}
 bool root(ID3D12Device* d,unsigned constants,unsigned srvs,unsigned uavs,ComPtr<ID3D12RootSignature>& result){
+ auto& cache=cache_pso();std::lock_guard<std::mutex> trava(cache.m);cache.do_dispositivo(d);
+ for(const auto& x:cache.raizes)if(x.k==constants&&x.s==srvs&&x.u==uavs){result=x.r;++cache.reusados;return true;}
  D3D12_DESCRIPTOR_RANGE ranges[2]{};ranges[0]={D3D12_DESCRIPTOR_RANGE_TYPE_SRV,srvs,0,0,0};ranges[1]={D3D12_DESCRIPTOR_RANGE_TYPE_UAV,uavs,0,0,0};
  D3D12_ROOT_PARAMETER p[3]{};p[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;p[0].Constants={0,0,constants};
  for(unsigned i=0;i<2;++i){p[i+1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;p[i+1].DescriptorTable={1,&ranges[i]};}
  D3D12_STATIC_SAMPLER_DESC s{};s.Filter=D3D12_FILTER_MIN_MAG_MIP_LINEAR;s.AddressU=s.AddressV=s.AddressW=D3D12_TEXTURE_ADDRESS_MODE_CLAMP;s.MaxLOD=D3D12_FLOAT32_MAX;s.ComparisonFunc=D3D12_COMPARISON_FUNC_ALWAYS;
  D3D12_ROOT_SIGNATURE_DESC rd{3,p,1,&s,D3D12_ROOT_SIGNATURE_FLAG_NONE};ComPtr<ID3DBlob>b,e;
  const bool ok=SUCCEEDED(D3D12SerializeRootSignature(&rd,D3D_ROOT_SIGNATURE_VERSION_1,&b,&e))&&SUCCEEDED(d->CreateRootSignature(0,b->GetBufferPointer(),b->GetBufferSize(),IID_PPV_ARGS(&result)));
- if(ok)nrorc_vram::registrar(nrorc::Api::Raiz,0,"raiz");
+ if(ok){nrorc_vram::registrar(nrorc::Api::Raiz,0,"raiz");cache.raizes.push_back({constants,srvs,uavs,result});++cache.criados;}
  return ok;
 }
-template<class T,std::size_t N>bool pipeline(ID3D12Device* d,ID3D12RootSignature* r,const T(&bytes)[N],ComPtr<ID3D12PipelineState>& p){D3D12_COMPUTE_PIPELINE_STATE_DESC q{};q.pRootSignature=r;q.CS={bytes,sizeof(bytes)};const bool ok=SUCCEEDED(d->CreateComputePipelineState(&q,IID_PPV_ARGS(&p)));if(ok)nrorc_vram::registrar(nrorc::Api::Pso,0,"pso");return ok;}
+template<class T,std::size_t N>bool pipeline(ID3D12Device* d,ID3D12RootSignature* r,const T(&bytes)[N],ComPtr<ID3D12PipelineState>& p){
+ auto& cache=cache_pso();std::lock_guard<std::mutex> trava(cache.m);cache.do_dispositivo(d);
+ for(const auto& x:cache.psos)if(x.r==r&&x.b==static_cast<const void*>(bytes)){p=x.p;++cache.reusados;return true;}
+ D3D12_COMPUTE_PIPELINE_STATE_DESC q{};q.pRootSignature=r;q.CS={bytes,sizeof(bytes)};const bool ok=SUCCEEDED(d->CreateComputePipelineState(&q,IID_PPV_ARGS(&p)));
+ if(ok){nrorc_vram::registrar(nrorc::Api::Pso,0,"pso");cache.psos.push_back({r,static_cast<const void*>(bytes),p});++cache.criados;}
+ return ok;}
 
 void registrar_realce(const char* modo,unsigned antes,unsigned depois,float luz,float detalhe){
 (void)modo;(void)antes;(void)depois;(void)luz;(void)detalhe;
@@ -268,9 +246,27 @@ unsigned teto_unico(unsigned tone){
 
 bool ler_ini(const wchar_t* chave,double& valor){return nrinijogo::ler_double(chave,valor);}
 
-bool q_chave(const wchar_t* k){double v=0.;return ler_ini(k,v)&&v>.5;}
+unsigned protege_realce_codigo(){
+ static const unsigned c=[]{const unsigned k=nrprotreal::codigo(nrprotreal::ler([](const wchar_t* n,double& v){return ler_ini(n,v);}));
+  nrlogfila::linha(L"nr_reproject.log","pid=%lu PROTEGE_REALCE %s ini=%.2f fim=%.2f\n",GetCurrentProcessId(),k?"ligada":"desligada",double(nrprotreal::ini_de(k)),double(nrprotreal::fim_de(k)));
+  return k;}();
+ return c;}
 
-float q_ganho(){double v=1.;if(!ler_ini(L"NeuralQGanho",v)||!(v>=.25&&v<=4.))v=1.;return float(v);}
+unsigned bits_cor_efetivo(DXGI_FORMAT vista){
+ const unsigned b=bits_cor(vista);if(b)return b;
+ const unsigned a=nrreproject::cor_bits_adaptada.load(std::memory_order_relaxed);if(a)return a;
+ return nrreproject::cor_ffx_srgb.load(std::memory_order_relaxed)?(1u<<14):0u;
+}
+bool prof_normal(){
+ static const int chave=[]{double v=-1.;if(!ler_ini(L"NeuralProfundidadeNormal",v))v=-1.;return v<-.5?-1:v>.5?1:0;}();
+ static const bool conhecido=[]{wchar_t exe[MAX_PATH]{};GetModuleFileNameW(nullptr,exe,MAX_PATH);return nrjogo::conhecido(exe);}();
+ const bool sim=chave==1||(chave<0&&!conhecido&&nrreproject::prof_invertida_jogo.load(std::memory_order_relaxed)==0);
+ static std::atomic<bool> avisado{false};
+ if(sim&&!avisado.exchange(true))nrcompat::tolerado("tolerado_profundidade_normal",chave==1?"NeuralProfundidadeNormal=1":"jogo declara Z normal ao FSR: captura usa 1-d");
+ return sim;
+}
+
+bool q_chave(const wchar_t* k){double v=0.;return ler_ini(k,v)&&v>.5;}
 
 constexpr unsigned despejo_maximo=120;
 unsigned despejos_reservados{};
@@ -304,21 +300,6 @@ unsigned halo_bits(unsigned nivel,const HaloAjuste& ini,double rede_pct=100.){
  const float f=ini.forca>=0.f?ini.forca:forca[nivel];const unsigned r=nrreproject::halo_raio_rede(ini.raio?ini.raio:raio[nivel],rede_pct);
  const unsigned fb=unsigned(std::lround(std::clamp(f,0.f,1.f)*255.f)),db=unsigned(std::lround(std::clamp(ini.degrau,.005f,.25f)*1000.f));
  return 4u|(fb<<8)|((r&15u)<<16)|((db&255u)<<20)|((r&16u)<<2);
-}
-
-struct Bilateral { float forca{},tau{.01f},ridge{1e-3f};unsigned celula{16},retencao{},guia{}; };
-Bilateral ler_bilateral(){
-    Bilateral b;double v{};
-    if(ler_ini(L"NeuralReprojectBilateral",v)&&v>0&&v<=1.)b.forca=float(v);
-    if(ler_ini(L"NeuralReprojectBilateralDetail",v)&&v>=0&&v<=1.)b.tau=float(v);
-    if(ler_ini(L"NeuralReprojectBilateralRidge",v)&&v>0&&v<=1.)b.ridge=float(v);
-
-    if(ler_ini(L"NeuralReprojectBilateralCell",v)&&v>=4&&v<=16)b.celula=unsigned(v);
-
-    if(ler_ini(L"NeuralReprojectBilateralHold",v)&&v>=0&&v<=240)b.retencao=unsigned(v);
-
-    if(ler_ini(L"NeuralReprojectBilateralGuide",v)&&(v==0||v==1))b.guia=unsigned(v);
-    return b;
 }
 
 unsigned modo_preenchimento(){return nrreproject::value(nrreproject::controls,nrreproject::FillMode)>1.f?2u:0u;}
@@ -365,7 +346,7 @@ struct Backend::Impl {
 
  ComPtr<ID3D12RootSignature> fill_root;ComPtr<ID3D12PipelineState> fill_pso;ComPtr<ID3D12DescriptorHeap> fill_heap;
 
- ComPtr<ID3D12Resource> fill_copia;
+ ComPtr<ID3D12Resource> fill_copia;ComPtr<ID3D12PipelineState> fill_rapido_pso;D3D12_RESOURCE_STATES fill_copia_estado{};
 
  ComPtr<ID3D12RootSignature> est_root;ComPtr<ID3D12PipelineState> est_pso;ComPtr<ID3D12DescriptorHeap> est_heap;
  ComPtr<ID3D12Resource> est[2];D3D12_RESOURCE_STATES est_estado[2]{};unsigned est_cur{};bool est_valido{};
@@ -378,10 +359,10 @@ struct Backend::Impl {
 
  ComPtr<ID3D12PipelineState> luz_prox_pso,luz_halo_pso;ComPtr<ID3D12Resource> luz_prox,luz_halo;
  unsigned halo_teto_raio{},halo_teto_quadros{};
- unsigned halo_exc_r100{ler_raio_ini(L"NeuralHaloExcessRadius",12u,4u,24u)},borda_r100{ler_raio_ini(L"NeuralReprojectEdgeCarryRadius",3u,2u,16u)};
- unsigned halo_exc_raio{},borda_raio{};std::uint64_t halo_exc_quadros{},borda_quadros{};
+ unsigned halo_exc_r100{ler_raio_ini(L"NeuralHaloExcessRadius",12u,4u,24u)};
+ unsigned halo_exc_raio{};std::uint64_t halo_exc_quadros{};
 
- unsigned corte_raio_warp{},corte_raio_comp{};std::uint64_t corte_quadros{};float idade_media{};
+ unsigned corte_raio_comp{};std::uint64_t corte_quadros{};float idade_media{};
  ComPtr<ID3D12Resource> luz_mom,luz_base,luz_ab,luz_coef,luz_hist[2];unsigned luz_cur{},luz_qw{},luz_qh{};bool luz_ok{},luz_valido{};
  std::uint64_t luz_quadro{},luz_quadros{},luz_filtrados{};
  float luz_eps{ler_luz_eps()},luz_delta{ler_luz_delta()};unsigned luz_raio{ler_luz_raio()};
@@ -396,13 +377,6 @@ struct Backend::Impl {
  bool portao_exposicao=[]{double v=1.;const bool desligado=ler_ini(L"NeuralReprojectExposureGate",v)&&v==0.;
   static std::atomic<bool> dito{false};if(desligado&&!dito.exchange(true)){{nrlogfila::linha(L"nr_reproject.log","pid=%lu EXPOSURE_GATE desligado (NeuralReprojectExposureGate=0): alfa da captura = 1\n",GetCurrentProcessId());}}
   return !desligado;}();
-
- Bilateral bilateral{ler_bilateral()};
- ComPtr<ID3D12RootSignature> bil_root;ComPtr<ID3D12PipelineState> bil_luma_fonte,bil_luma_atual,bil_prep,bil_fit,bil_apply;ComPtr<ID3D12DescriptorHeap> bil_heap;
- ComPtr<ID3D12Resource> bil_features,bil_luma;std::array<ComPtr<ID3D12Resource>,5> bil_coef;DXGI_FORMAT bil_coef_format{DXGI_FORMAT_R32G32B32A32_FLOAT};
-
- ComPtr<ID3D12DescriptorHeap> bil_heap_tardia;ID3D12DescriptorHeap* bil_heap_override{};int bil_duplo_prev{-1},bil_duplo_late{-1};std::uint64_t bil_duplo_quadro{};
- std::uint64_t retidos{},preservacoes{};bool bil_falhou{};int bil_preservado_job{-1};bool bil_preservado_read{};Microsoft::WRL::ComPtr<ID3D12Resource> bil_preservado,bil_preservado_prof;Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> bil_heap_preservado;unsigned bil_nx{},bil_ny{};int bil_job{-1};bool bil_features_read{},bil_luma_read{},bil_coef_read{};std::uint64_t bil_fits{};
  unsigned width{},height{},stride{};bool histories_read{},warped_read{},ready{},composed_frame{};void* captured_command{};
 
  unsigned comp_w{},comp_h{};bool reduzido{},res_reduzido_read{};ComPtr<ID3D12Resource> res_reduzido;ComPtr<ID3D12PipelineState> reduzir_pso;ComPtr<ID3D12DescriptorHeap> reduzir_heap;
@@ -436,19 +410,63 @@ struct Backend::Impl {
  ComPtr<ID3D12RootSignature> lg_root;ComPtr<ID3D12PipelineState> lg_pso;ComPtr<ID3D12DescriptorHeap> lg_heap;
  ComPtr<ID3D12Resource> lg[2],lg_out;D3D12_RESOURCE_STATES lg_estado[2]{},lg_out_estado{};unsigned lg_cur{};bool lg_valido{};std::uint64_t lg_quadro{},lg_quadros{};
 
- float tl_forca=[]{double v=0.;if(!ler_ini(L"NeuralTravaLuz",v)||!(v>0.&&v<=1.))v=0.;return float(v);}();
- float tl_cima=[]{double v=.03;if(!ler_ini(L"NeuralTravaLuzCima",v)||!(v>=0.&&v<=4.))v=.03;return float(v);}();
- float tl_baixo=[]{double v=.03;if(!ler_ini(L"NeuralTravaLuzBaixo",v)||!(v>=0.&&v<=4.))v=.03;return float(v);}();
+ bool base_tom_lig=[]{double v=0.;return ler_ini(L"NeuralCustoBaseTom",v)&&v>.5;}();
+ ComPtr<ID3D12RootSignature> base_tom_root;ComPtr<ID3D12PipelineState> base_tom_pso;ComPtr<ID3D12DescriptorHeap> base_tom_heap;ComPtr<ID3D12Resource> base_tom;
+ D3D12_RESOURCE_STATES base_tom_estado{};std::uint64_t base_tom_quadros{};
+
  unsigned tl_bloco=[]{double v=8.;if(!ler_ini(L"NeuralTravaLuzBloco",v)||!(v>=4.&&v<=32.))v=8.;return unsigned(v+.5);}();
- unsigned tl_raio=[]{double v=2.;if(!ler_ini(L"NeuralTravaLuzRaio",v)||!(v>=0.&&v<=8.))v=2.;return unsigned(v+.5);}();
- unsigned tl_cor=[]{double v=0.;if(!ler_ini(L"NeuralTravaLuzCor",v))v=0.;return v>.5?1u:0u;}();
- ComPtr<ID3D12RootSignature> tl_root;ComPtr<ID3D12PipelineState> tl_pso[4];ComPtr<ID3D12DescriptorHeap> tl_heap;ComPtr<ID3D12Resource> tl_tex[3];
- unsigned tl_w{},tl_h{},tl_cl{},tl_ch{};bool tl_falhou{},tl_medido{};ID3D12Resource* tl_dst{};std::uint64_t tl_quadros{};
+ ComPtr<ID3D12RootSignature> tl_root;ComPtr<ID3D12PipelineState> tl_pso[1];ComPtr<ID3D12DescriptorHeap> tl_heap;ComPtr<ID3D12Resource> tl_tex[1];
+ unsigned tl_w{},tl_h{},tl_cl{},tl_ch{};bool tl_falhou{};ID3D12Resource* tl_dst{};
 
- float tl_media=[]{double v=0.;if(!ler_ini(L"NeuralExposicaoMedia",v)||!(v>0.&&v<1.))v=0.;return float(v);}();
+ bool cfg_croma_lds=[]{double v=0.;return ler_ini(L"NeuralCustoCromaLds",v)&&v>.5;}();
 
- float tl_tela=[]{double v=0.;if(!ler_ini(L"NeuralExposicaoTela",v)||!(v>0.&&v<4.))v=0.;return float(v);}();
- float tl_media_fator=[]{double v=1.2;if(!ler_ini(L"NeuralExposicaoMediaFator",v)||!(v>.1&&v<10.))v=1.2;return float(v);}();
+ bool cfg_near_norm=[]{double v=0;return ler_ini(L"NeuralReprojectNearNorm",v)&&v==1.;}();
+ float cfg_halo_teto_forca=[]{double v=0;return ler_ini(L"NeuralHaloTeto",v)&&v>0.?float(std::min(v,1.)):0.f;}();
+ double cfg_halo_teto_raio=[]{double v=16;return ler_ini(L"NeuralHaloTetoRaio",v)&&v>=2.&&v<=30.?v:16.;}();
+ unsigned cfg_halo_teto_forca15=[]{double v=0;return ler_ini(L"NeuralHaloTeto",v)&&v>0.?unsigned(std::lround(std::min(v,1.)*15.)):0u;}();
+
+ float tl_media=[]{double v=0.;return ler_ini(L"NeuralExposicaoMedia",v)?nrexpotrava::faixa_media(v):0.f;}();
+
+ float tl_tela=[]{double v=0.;return ler_ini(L"NeuralExposicaoTela",v)?nrexpotrava::faixa_tela(v):0.f;}();
+ float tl_media_fator=[]{double v=1.2;const bool tem=ler_ini(L"NeuralExposicaoMediaFator",v);return nrexpotrava::faixa_media_fator(v,tem);}();
+
+ bool cfg_diag_f9=[]{
+  return false;
+ }();
+ ComPtr<ID3D12Resource> diag_warp,diag_cena,diag_rostos;ComPtr<ID3D12DescriptorHeap> diag_heap;bool diag_falhou{};
+ bool diag_gravando() const noexcept {return cfg_diag_f9&&!diag_falhou&&nrreproject::despejo_final.load(std::memory_order_relaxed)>0u;}
+ void diag_rodar_warp(ID3D12GraphicsCommandList* c,ID3D12Resource* res_warp,DXGI_FORMAT res_fmt){
+  if(!diag_gravando()||!res_warp||!warp_pso||!temporal_root||!warped)return;
+  if(!diag_warp){
+   D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;D3D12_RESOURCE_DESC td=warped->GetDesc();td.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+   if(!criar_heap(12,diag_heap)||FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,write_state,nullptr,IID_PPV_ARGS(&diag_warp)))){diag_falhou=true;diag_warp.Reset();
+    nrlogfila::linha(L"nr_reproject.log","pid=%lu DIAG_F9 falhou (heap/textura do Warp de diagnostico)\n",GetCurrentProcessId());return;}
+   nrd3d::nomear(diag_warp.Get(),L"nr_diag_warp");
+   const DXGI_FORMAT formats[]{DXGI_FORMAT_R16G16B16A16_FLOAT,DXGI_FORMAT_R16G16_FLOAT,DXGI_FORMAT_R32_FLOAT};
+   srv(diag_heap.Get(),0,nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT);srv(diag_heap.Get(),1,nullptr,DXGI_FORMAT_R16G16_FLOAT);srv(diag_heap.Get(),2,nullptr,DXGI_FORMAT_R32_FLOAT);
+   for(unsigned i=0;i<3;++i){srv(diag_heap.Get(),3+i,history[i].Get(),formats[i],true);uav(diag_heap.Get(),8+i,history[i].Get(),formats[i],true);}
+   srv(diag_heap.Get(),7,nullptr,DXGI_FORMAT_R32_FLOAT);uav(diag_heap.Get(),11,diag_warp.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
+   nrlogfila::linha(L"nr_reproject.log","pid=%lu DIAG_F9 ligado: lados warpdiag/realce/cena na F9 (rede %ux%u)\n",GetCurrentProcessId(),width,height);
+  }else transition(c,diag_warp.Get(),read_state,write_state);
+  srv(diag_heap.Get(),6,res_warp,res_fmt);
+  Constants k=constants;k.pad|=1u;
+  bind(c,diag_heap.Get(),temporal_root.Get(),warp_pso.Get(),32,&k,8);c->Dispatch((width+7)/8,(height+7)/8,1);
+  transition(c,diag_warp.Get(),write_state,read_state);
+  nrreproject::diag_warp_recurso.store(diag_warp.Get());
+ }
+
+ void diag_copiar(ID3D12GraphicsCommandList* c,ID3D12Resource* dst,ComPtr<ID3D12Resource>& alvo,std::atomic<void*>& destino,const wchar_t* nome){
+  if(!diag_gravando()||!dst)return;
+  const auto dd=dst->GetDesc();
+  if(alvo){const auto cd=alvo->GetDesc();if(cd.Width!=dd.Width||cd.Height!=dd.Height||cd.Format!=dd.Format)return;}
+  if(!alvo){D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;D3D12_RESOURCE_DESC td=dd;td.Flags=D3D12_RESOURCE_FLAG_NONE;td.Alignment=0;
+   if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,read_state,nullptr,IID_PPV_ARGS(&alvo)))){diag_falhou=true;return;}
+   nrd3d::nomear(alvo.Get(),nome);}
+  transition(c,dst,write_state,D3D12_RESOURCE_STATE_COPY_SOURCE);transition(c,alvo.Get(),read_state,D3D12_RESOURCE_STATE_COPY_DEST);
+  c->CopyResource(alvo.Get(),dst);
+  transition(c,alvo.Get(),D3D12_RESOURCE_STATE_COPY_DEST,read_state);transition(c,dst,D3D12_RESOURCE_STATE_COPY_SOURCE,write_state);
+  destino.store(alvo.Get());
+ }
  ComPtr<ID3D12Resource> tl_rb[4];std::uint64_t tl_rb_n{};unsigned tl_rb_pitch{};std::uint64_t tl_medidas{};
  static float tl_enc(float v){v=v/(1.f+v);return v<=.0031308f?v*12.92f:1.055f*std::pow(v,1.f/2.4f)-.055f;}
  void tl_ler_media(unsigned slot){
@@ -457,8 +475,12 @@ struct Backend::Impl {
   for(unsigned y=0;y<tl_ch;y+=2){const float* l=reinterpret_cast<const float*>(static_cast<const char*>(m)+SIZE_T(y)*tl_rb_pitch);
    for(unsigned x=0;x<tl_cl;x+=2){const float v=l[4*x+3];if(!(v>=0.f)||!std::isfinite(v))continue;const float l2=std::log2((std::max)(v,1e-8f));
     const int b=std::clamp(int((l2+24.f)*4.f),0,NB-1);++h[b];++n;}}
+  if(ta_ativo){float mx=0.f;double s=0.;unsigned k=0;
+   for(unsigned y=0;y<tl_ch;++y){const float* l=reinterpret_cast<const float*>(static_cast<const char*>(m)+SIZE_T(y)*tl_rb_pitch);
+    for(unsigned x=0;x<tl_cl;++x){const float v=l[4*x+3];if(!(v>=0.f)||!std::isfinite(v))continue;mx=(std::max)(mx,v);s+=v;++k;}}
+   if(k>=64)ta_passo(mx,float(s/k));}
   const D3D12_RANGE nada{0,0};tl_rb[slot]->Unmap(0,&nada);
-  if(n<64)return;
+  if(n<64||!(tl_media>0.f))return;
   auto media=[&](float e){double s=0;for(int b=0;b<NB;++b)if(h[b])s+=double(h[b])*tl_enc(std::exp2((float(b)+.5f)/4.f-24.f)*e);return s/n;};
   float alvo=tl_media,tm=0.f;
   if(tl_tela>0.f){tm=nrexpotrava::tela_media.load(std::memory_order_relaxed);const auto tms=nrexpotrava::tela_ms.load(std::memory_order_relaxed);
@@ -470,11 +492,11 @@ struct Backend::Impl {
  }
  void tl_copiar_media(ID3D12GraphicsCommandList* c){
   if(tl_tela>0.f&&tl_media>0.f)nrexpotrava::tela_ligada.store(1,std::memory_order_relaxed);
-  if(!(tl_media>0.f)||(tl_rb_n++&3u))return;
+  if(!(tl_media>0.f||ta_ativo)||(tl_rb_n++&3u))return;
   const std::uint64_t k=tl_rb_n>>2;const unsigned slot=unsigned(k&3u);
   if(!tl_rb[slot]){D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_READBACK;tl_rb_pitch=(tl_cl*16u+255u)&~255u;
    D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=UINT64(tl_rb_pitch)*tl_ch;bd.Height=1;bd.DepthOrArraySize=1;bd.MipLevels=1;bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-   if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&tl_rb[slot]))))return;}
+   if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&tl_rb[slot]))))return;nrd3d::nomear(tl_rb[slot].Get(),L"nr_expo_tela_leitura");}
   else if(k>=4)tl_ler_media(slot);
   transition(c,tl_tex[0].Get(),write_state,D3D12_RESOURCE_STATE_COPY_SOURCE);
   D3D12_TEXTURE_COPY_LOCATION de{};de.pResource=tl_rb[slot].Get();de.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
@@ -484,49 +506,69 @@ struct Backend::Impl {
   transition(c,tl_tex[0].Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,write_state);
  }
  struct TlK{unsigned largura,altura,cl,ch,bloco,raio,p0,p1;float cima,baixo,forca,eps;};
+
+ int ta_chave=[]{double v=-1.;if(!ler_ini(L"NeuralTomAuto",v))v=-1.;return v<-.5?-1:v>1.5?2:v>.5?1:0;}();
+ int ta_forca=[]{double v=-1.;return ler_ini(L"NeuralTomAutoForca",v)&&(v==0.||v==1.)?int(v):-1;}();
+ unsigned ta_validas{};float ta_max{};bool ta_voltou{},ta_ativo{};
+ bool ta_mede(){
+  if(ta_forca>=0)return false;
+  if(ta_chave==0||ta_voltou)return false;
+  static const bool conhecido=[]{wchar_t exe[MAX_PATH]{};GetModuleFileNameW(nullptr,exe,MAX_PATH);return nrjogo::conhecido(exe);}();
+  if(conhecido&&ta_chave<0)return false;
+  if(ta_chave<2&&nrreproject::tom_ini.load(std::memory_order_relaxed)!=-1)return false;
+  return nrreproject::tom_pedido.load(std::memory_order_relaxed)==0||nrreproject::tom_ef.load(std::memory_order_relaxed)==1;
+ }
+ void ta_passo(float maior,float media){
+  if(!(media>.01f))return;
+  const int p=nrreproject::tom_pedido.load(std::memory_order_relaxed);
+  if(p!=0){++ta_validas;ta_max=(std::max)(ta_max,maior);
+   if(ta_validas==1||ta_validas%64u==0)nrlogfila::linha(L"nr_reproject.log","pid=%lu TOM_AUTO medindo validas=%u maior=%.3f media=%.3f (desliga com 150 e maior <= 1)\n",GetCurrentProcessId(),ta_validas,double(ta_max),double(media));
+   if(ta_validas>=150&&ta_max<=1.f){nrreproject::tom_pedido.store(0,std::memory_order_relaxed);
+    char t[160];std::snprintf(t,sizeof t,"flag HDR com a cor de exibicao (maior bloco %.3f em %u medidas): tonemap da entrada da rede desligado (= Tonemap=0)",double(ta_max),ta_validas);
+    nrcompat::tolerado("tolerado_cor_exibicao_hdr",t);nrlogfila::linha(L"nr_reproject.log","pid=%lu TOM_AUTO %s\n",GetCurrentProcessId(),t);}}
+  else if(maior>1.5f){nrreproject::tom_pedido.store(1,std::memory_order_relaxed);ta_voltou=true;
+   char t[128];std::snprintf(t,sizeof t,"bloco %.3f > 1,5 depois de desligar: tonemap automatico de volta",double(maior));
+   nrcompat::tolerado("tolerado_cor_exibicao_hdr_volta",t);nrlogfila::linha(L"nr_reproject.log","pid=%lu TOM_AUTO %s\n",GetCurrentProcessId(),t);}
+ }
  bool tl_preparar(ID3D12Resource* dst,DXGI_FORMAT f,unsigned w,unsigned h){
-  if(!(tl_forca>0.f||tl_media>0.f)||tl_falhou||!dst)return false;
-  if(f!=DXGI_FORMAT_R16G16B16A16_FLOAT){tl_falhou=true;nrlogfila::linha(L"nr_reproject.log","pid=%lu TRAVA_LUZ desligada: formato da saida %d (so RGBA16F)\n",GetCurrentProcessId(),int(f));return false;}
+  ta_ativo=ta_mede();
+  if(!(tl_media>0.f||ta_ativo)||tl_falhou||!dst)return false;
+
+  if(f!=DXGI_FORMAT_R16G16B16A16_FLOAT&&f!=DXGI_FORMAT_R11G11B10_FLOAT){tl_falhou=true;nrlogfila::linha(L"nr_reproject.log","pid=%lu EXPO_MEDIDA desligada: formato da saida %d (so RGBA16F/R11G11B10)\n",GetCurrentProcessId(),int(f));return false;}
   if(!tl_root){
-   if(!root(device.Get(),sizeof(TlK)/4,1,4,tl_root)||!pipeline(device.Get(),tl_root.Get(),g_nr_reproject_tlmederef,tl_pso[0])||!pipeline(device.Get(),tl_root.Get(),g_nr_reproject_tlmedesai,tl_pso[1])||
-      !pipeline(device.Get(),tl_root.Get(),g_nr_reproject_tlrazao,tl_pso[2])||!pipeline(device.Get(),tl_root.Get(),g_nr_reproject_tlaplica,tl_pso[3])){
-    tl_falhou=true;nrlogfila::linha(L"nr_reproject.log","pid=%lu TRAVA_LUZ desligada: raiz/PSO recusados\n",GetCurrentProcessId());return false;}
-   D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,5,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
-   if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&tl_heap)))){tl_falhou=true;return false;}
+   if(!root(device.Get(),sizeof(TlK)/4,1,4,tl_root)||!pipeline(device.Get(),tl_root.Get(),g_nr_reproject_tlmederef,tl_pso[0])){
+    tl_falhou=true;nrlogfila::linha(L"nr_reproject.log","pid=%lu EXPO_MEDIDA desligada: raiz/PSO recusados\n",GetCurrentProcessId());return false;}
+   if(!criar_heap(5,tl_heap)){tl_falhou=true;return false;}
    D3D12_SHADER_RESOURCE_VIEW_DESC sv{};sv.Format=DXGI_FORMAT_R32_FLOAT;sv.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;sv.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;sv.Texture2D.MipLevels=1;
    device->CreateShaderResourceView(nullptr,&sv,cpu(tl_heap.Get(),0));}
   if(w!=tl_w||h!=tl_h){
    tl_cl=(w+tl_bloco-1)/tl_bloco;tl_ch=(h+tl_bloco-1)/tl_bloco;
    D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;D3D12_RESOURCE_DESC rd{};rd.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;rd.Width=tl_cl;rd.Height=tl_ch;
    rd.DepthOrArraySize=1;rd.MipLevels=1;rd.Format=DXGI_FORMAT_R32G32B32A32_FLOAT;rd.SampleDesc.Count=1;rd.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-   for(auto& x:tl_rb)x.Reset();tl_rb_n=0;
-   for(unsigned i=0;i<3;++i){tl_tex[i].Reset();
-    if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,write_state,nullptr,IID_PPV_ARGS(&tl_tex[i])))){tl_falhou=true;return false;}
-    D3D12_UNORDERED_ACCESS_VIEW_DESC v{};v.Format=DXGI_FORMAT_R32G32B32A32_FLOAT;v.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;device->CreateUnorderedAccessView(tl_tex[i].Get(),nullptr,&v,cpu(tl_heap.Get(),2+i));}
+
+   {Aposentadas lote;lote.vencimento=begins+3;auto drop=[&](ComPtr<ID3D12Resource>& r){if(r){lote.objetos.emplace_back(r.Get());r.Reset();}};
+    for(auto& x:tl_rb)drop(x);drop(tl_tex[0]);if(!lote.objetos.empty())retired.push_back(std::move(lote));}
+   tl_rb_n=0;
+   if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&rd,write_state,nullptr,IID_PPV_ARGS(&tl_tex[0])))){tl_falhou=true;return false;}nrd3d::nomear(tl_tex[0].Get(),L"nr_expo_tela");
+   D3D12_UNORDERED_ACCESS_VIEW_DESC v{};v.Format=DXGI_FORMAT_R32G32B32A32_FLOAT;v.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;device->CreateUnorderedAccessView(tl_tex[0].Get(),nullptr,&v,cpu(tl_heap.Get(),2));
+
+   device->CreateUnorderedAccessView(nullptr,nullptr,&v,cpu(tl_heap.Get(),3));device->CreateUnorderedAccessView(nullptr,nullptr,&v,cpu(tl_heap.Get(),4));
    tl_w=w;tl_h=h;tl_dst=nullptr;
-   nrlogfila::linha(L"nr_reproject.log","pid=%lu TRAVA_LUZ ligada forca=%.3f cima=%.3f baixo=%.3f bloco=%u raio=%u cor=%u %ux%u grade=%ux%u\n",GetCurrentProcessId(),
-    double(tl_forca),double(tl_cima),double(tl_baixo),tl_bloco,tl_raio,tl_cor,w,h,tl_cl,tl_ch);}
+   nrlogfila::linha(L"nr_reproject.log","pid=%lu EXPO_MEDIDA grade bloco=%u %ux%u grade=%ux%u\n",GetCurrentProcessId(),tl_bloco,w,h,tl_cl,tl_ch);}
   if(dst!=tl_dst){uav(tl_heap.Get(),1,dst,f);tl_dst=dst;}
   return true;
  }
  void tl_passo(ID3D12GraphicsCommandList* c,unsigned i,unsigned gx,unsigned gy){
-  const TlK k{tl_w,tl_h,tl_cl,tl_ch,tl_bloco,tl_raio,tl_cor,0u,tl_cima,tl_baixo,tl_forca,1e-5f};
+  const TlK k{tl_w,tl_h,tl_cl,tl_ch,tl_bloco,0u,0u,0u,0.f,0.f,0.f,1e-5f};
   ID3D12DescriptorHeap* hs[]{tl_heap.Get()};c->SetDescriptorHeaps(1,hs);c->SetComputeRootSignature(tl_root.Get());c->SetPipelineState(tl_pso[i].Get());
   c->SetComputeRoot32BitConstants(0,sizeof(TlK)/4,&k,0);c->SetComputeRootDescriptorTable(1,gpu(tl_heap.Get(),0));c->SetComputeRootDescriptorTable(2,gpu(tl_heap.Get(),1));
   c->Dispatch((gx+7)/8,(gy+7)/8,1);
  }
 
  void tl_medir_jogo(ID3D12GraphicsCommandList* c,ID3D12Resource* dst,DXGI_FORMAT f,unsigned w,unsigned h){
-  tl_medido=false;if(!tl_preparar(dst,f,w,h))return;
-  tl_passo(c,0,tl_cl,tl_ch);order_uav(c,dst);order_uav(c,tl_tex[0].Get());tl_medido=tl_forca>0.f;
+  if(!tl_preparar(dst,f,w,h))return;
+  tl_passo(c,0,tl_cl,tl_ch);order_uav(c,dst);order_uav(c,tl_tex[0].Get());
   tl_copiar_media(c);
- }
-
- void tl_aplicar(ID3D12GraphicsCommandList* c,ID3D12Resource* dst){
-  if(!tl_medido||dst!=tl_dst)return;tl_medido=false;
-  tl_passo(c,1,tl_cl,tl_ch);order_uav(c,tl_tex[1].Get());
-  tl_passo(c,2,tl_cl,tl_ch);order_uav(c,tl_tex[2].Get());
-  tl_passo(c,3,tl_w,tl_h);order_uav(c,dst);++tl_quadros;
  }
 
  unsigned segura_max=[]{double v=6.;if(!ler_ini(L"NeuralSeguraMax",v)||!(v>=1.&&v<=240.))v=6.;return unsigned(v+.5);}();
@@ -544,6 +586,7 @@ struct Backend::Impl {
 
  bool fg_troca_sempre=[]{double v=0.;return ler_ini(L"NeuralFgTrocaLuzSempre",v)&&v>.5;}();
  float est_luz_mov{};int est_ultimo_job{-1};int fg_log_estado{-1};
+ nrestab::Fonte est_fonte_base{nrestab::Nenhuma},est_fonte_mov{nrestab::Ini};unsigned est_fontes_log{~0u},est_fontes_trocas{};
  bool fg_cross=[]{double v=0.;return ler_ini(L"NeuralFgCrossfade",v)&&v>.5;}();
  bool fg_cross_sempre=[]{double v=0.;return ler_ini(L"NeuralFgCrossfadeSempre",v)&&v>.5;}();
  float est_cross{},cross_P{};int cross_job{-1};unsigned cross_j{};
@@ -551,6 +594,12 @@ struct Backend::Impl {
  bool post_estab_rosto=[]{double v=0.;return ler_ini(L"NeuralPostEstabRosto",v)&&v>.5;}();float est_rosto{};
 
  bool post_det_rampa=[]{double v=0.;return ler_ini(L"NeuralPostEstabDetalheRampa",v)&&v>.5;}();
+
+ bool post_estab_buraco=[]{double v=0.;return ler_ini(L"NeuralPostEstabBuraco",v)&&v>.5;}();
+
+ bool tempo_gpu=[]{double v=0.,n=600.;const bool on=ler_ini(L"NeuralTempoGpu",v)&&v>.5;if(!ler_ini(L"NeuralTempoGpuQuadros",n)||!(n>=30.&&n<=100000.))n=600.;
+  nrtgpu::configurar(on,unsigned(n));return on;}();
+ float post_delta_claro=[]{double v=0.;return ler_ini(L"NeuralPostDeltaClaroMax",v)&&v>0.&&v<=1.?float(v):0.f;}();
  float post_estab_luz=[]{double v=0.;if(!ler_ini(L"NeuralPostEstabLuz",v)||!(v>0.&&v<1.))v=0.;return float(v);}();
  float post_det_parado=[]{double v=.05;if(!ler_ini(L"NeuralPostEstabDetalheParado",v)||!(v>0.&&v<=4.))v=.05;return float(v);}();
  float post_alfa_mov=[]{double v=.5;if(!ler_ini(L"NeuralPostStabilizeMotion",v)||!(v>0.&&v<=1.))v=.5;return float(v);}();
@@ -561,41 +610,12 @@ struct Backend::Impl {
  ID3D12DescriptorHeap* reduzir_heap_override{};bool late_post=[]{double v=0.;return ler_ini(L"NeuralLateComposePost",v)&&v>.5;}();
 
  bool red_cache_lig=[]{double v=0.;return ler_ini(L"NeuralCustoReduzirCache",v)&&v>.5;}();
+
  bool red_cache_valido{};const void* red_cache_res{};const void* red_cache_dst{};int red_cache_job{-1};std::uint64_t red_cache_hits{},red_cache_misses{};
 
  ComPtr<ID3D12PipelineState> post_pso;ComPtr<ID3D12DescriptorHeap> post_heap;
-
- struct QMapaCfg{bool ligado{};unsigned bits{};float gHi{1},gHiNeg{1},gLo{1},gLoNeg{1},movA{0},movB{0},gradA{0},gradB{0},profR{0},profA{.05f},profB{.15f},confP{1},edgeA{.05f},edgeB{.25f},movR{0},stopsMax{0};};
- QMapaCfg q_mapa=[]{QMapaCfg m;m.ligado=q_chave(L"NeuralQMapa");if(!m.ligado)return m;
-  auto f=[](const wchar_t* k,float& x,double lo,double hi){double v=x;if(ler_ini(k,v)&&v>=lo&&v<=hi)x=float(v);};
-  float b=0;f(L"NeuralQMapaBits",b,0.,4095.);m.bits=unsigned(b+.5f);
-  {float fr=0;f(L"NeuralQMapaForaRosto",fr,0.,1.);if(fr>.5f)m.bits|=4096u;}
-
-  {f(L"NeuralQMapaMovViz",m.movR,0.,32.);if(m.movR>0.f)m.bits|=8192u;float ns=0;f(L"NeuralQMapaNegStops",ns,0.,1.);if(ns>.5f)m.bits|=16384u;f(L"NeuralQMapaNegStopsMax",m.stopsMax,0.,4.);}
-  f(L"NeuralQMapaHi",m.gHi,.25,4.);m.gHiNeg=m.gHi;f(L"NeuralQMapaHiNeg",m.gHiNeg,.0,4.);f(L"NeuralQMapaLo",m.gLo,.25,4.);m.gLoNeg=m.gLo;f(L"NeuralQMapaLoNeg",m.gLoNeg,.0,4.);
-  f(L"NeuralQMapaMovA",m.movA,0.,100.);f(L"NeuralQMapaMovB",m.movB,0.,100.);f(L"NeuralQMapaGradA",m.gradA,0.,100.);f(L"NeuralQMapaGradB",m.gradB,0.,100.);
-  f(L"NeuralQMapaProfR",m.profR,0.,32.);f(L"NeuralQMapaProfA",m.profA,0.,10.);f(L"NeuralQMapaProfB",m.profB,0.,10.);f(L"NeuralQMapaConfP",m.confP,0.,16.);f(L"NeuralQMapaBordaA",m.edgeA,0.,10.);f(L"NeuralQMapaBordaB",m.edgeB,0.,10.);if(!(m.edgeB>m.edgeA))m.edgeB=m.edgeA+1e-3f;
-  if(!(m.movB>m.movA))m.movB=m.movA+1e-3f;if(!(m.gradB>m.gradA))m.gradB=m.gradA+1e-3f;if(!(m.profB>m.profA))m.profB=m.profA+1e-3f;
-  return m;}();
- float q_post_ganho=q_mapa.ligado?1.f:q_ganho();
- struct QPost{ComPtr<ID3D12RootSignature> root;ComPtr<ID3D12PipelineState> pso;ComPtr<ID3D12DescriptorHeap> heap,post_heap;ComPtr<ID3D12Resource> saida;
-  std::uint64_t quadros{},pulados_passos{};bool logado{},fora_passos{};void soltar(){root.Reset();pso.Reset();heap.Reset();post_heap.Reset();saida.Reset();}} qpost;
- bool alocar_q_post(const D3D12_UNORDERED_ACCESS_VIEW_DESC& flags_view);
- bool q_post(ID3D12GraphicsCommandList* c,float exposure,unsigned tone);
-
- float q_rosto_ganho=[]{double v=1.;if(!ler_ini(L"NeuralQGanhoRosto",v)||!(v>=.25&&v<=4.))v=1.;return float(v);}();
  struct Pendente{bool ativo{};void* command{};int job{};float exposure{1};unsigned tone{};} post;
  bool post_recusado{},post_formato_logado{};std::uint64_t post_composed{},post_refused{},post_lost{};
-
- struct HaloPost{ComPtr<ID3D12RootSignature> root;ComPtr<ID3D12PipelineState> mom_pso,momp_pso,ref_pso,apl_pso;ComPtr<ID3D12DescriptorHeap> heap,post_heap;
-  ComPtr<ID3D12Resource> mom,ref,saida;unsigned qw{},qh{};std::uint64_t quadros{};bool logado{};
-  void soltar(){root.Reset();mom_pso.Reset();momp_pso.Reset();ref_pso.Reset();apl_pso.Reset();heap.Reset();post_heap.Reset();mom.Reset();ref.Reset();saida.Reset();qw=qh=0;}} hpost;
- float halo_post_forca=[]{double v=0;return ler_ini(L"NeuralHaloTetoPost",v)&&v>0.?float(std::min(v,1.)):0.f;}();
- double halo_post_raio=[]{double v=16;return ler_ini(L"NeuralHaloTetoPostRaio",v)&&v>=2.&&v<=30.?v:16.;}();
-
- float halo_post_salto=[]{double v=0;return ler_ini(L"NeuralHaloTetoPostSalto",v)&&v>0.&&v<=.5?float(v):0.f;}();
- bool alocar_halo_post(const D3D12_UNORDERED_ACCESS_VIEW_DESC& flags_view);
- bool halo_post(ID3D12GraphicsCommandList* c,float exposure,unsigned tone);
 
  struct CenaNpcCfg{unsigned modo{},inicio{6},zonas{1},ref_n{10};float fixo{1.f},fmin{.4f},fmax{1.3f},alfa_f{.25f},alfa_ref{0.f},prof_a{1.5f},prof_b{3.f};bool viz{};};
  CenaNpcCfg cnpc_cfg=[]{CenaNpcCfg c{};double v=0.;
@@ -619,6 +639,32 @@ struct Backend::Impl {
  bool alocar_cena_npc(const D3D12_UNORDERED_ACCESS_VIEW_DESC& flags_view);
  bool cena_npc(ID3D12GraphicsCommandList* c,ID3D12Resource* dst,DXGI_FORMAT fmt,const void* k);
 
+ unsigned masc_bits=[]{double a=0.,b=0.;const bool ta=ler_ini(L"NeuralMascaraPersonagem",a),tb=ler_ini(L"NeuralFiltroMascara",b);const char* av=nullptr;
+  const unsigned m=nrestext::bits_mascara(ta,a,tb,b,&av);
+  if(av)nrlogfila::linha(L"nr_reproject.log","pid=%lu MASCARA_CHAVE %s: NeuralMascaraPersonagem=%s NeuralFiltroMascara=%.0f -> bits=0x%02X (a chave e NeuralMascaraPersonagem; NeuralFiltroMascara e sinonimo)\n",
+   GetCurrentProcessId(),av,ta?"presente":"ausente",b,m);
+  return m;}();
+ float masc_raio=[]{double v=112.;if(!ler_ini(L"NeuralMascaraRaio",v)||!(v>=16.&&v<=256.))v=112.;return float(v);}();
+
+ float masc_prof=[]{double v=0.;return ler_ini(L"NeuralMascaraProfundidade",v)&&v>1.&&v<=16.?float(v):0.f;}();
+
+ bool masc_suave=[]{double v=0.;return ler_ini(L"NeuralMascaraSuave",v)&&v>=1.;}();
+
+ struct Mascara:nrestext::Leitor{ComPtr<ID3D12RootSignature> root,post_root;ComPtr<ID3D12PipelineState> celulas,distancia,preenche,aplica,post;ComPtr<ID3D12DescriptorHeap> heap,post_heap;
+  ComPtr<ID3D12Resource> cel,aux,dist,fill;unsigned cw{},ch{};
+  ComPtr<ID3D12PipelineState> distz_pso,curva_pso,curvafim_pso,limita_pso;ComPtr<ID3D12Resource> distz,parcial,curva;std::uint64_t parcial_bytes{};
+  ComPtr<ID3D12PipelineState> curvasoma_pso,bordas_pso;ComPtr<ID3D12Resource> bordas;
+  ComPtr<ID3D12Resource> buf_velho;
+  std::uint64_t quadros{},sem{},falhas{};const char* motivo_ult{};bool logado{};
+  void soltar(){root.Reset();post_root.Reset();celulas.Reset();distancia.Reset();preenche.Reset();aplica.Reset();post.Reset();heap.Reset();post_heap.Reset();
+   cel.Reset();aux.Reset();dist.Reset();fill.Reset();cw=ch=0;distz_pso.Reset();curva_pso.Reset();curvafim_pso.Reset();limita_pso.Reset();distz.Reset();parcial.Reset();curva.Reset();curvasoma_pso.Reset();bordas_pso.Reset();if(nrestext::bordas_quadro.tabela==bordas.Get())nrestext::bordas_quadro={};bordas.Reset();}} masc;
+ bool alocar_mascara(const D3D12_UNORDERED_ACCESS_VIEW_DESC& flags_view);
+ bool mascara_pronta();
+ void mascara_halo(ID3D12GraphicsCommandList* c,bool personagem=true);
+ bool mascara_post(ID3D12GraphicsCommandList* c,ID3D12Resource* dst,DXGI_FORMAT fmt,const void* k);
+ void masc_srv_bruto(ID3D12DescriptorHeap* h,unsigned i,ID3D12Resource* r,std::uint64_t bytes);
+ void masc_uav_bruto(ID3D12DescriptorHeap* h,unsigned i,ID3D12Resource* r,std::uint64_t bytes);
+
  unsigned trace_restantes=[]{double v=0;return ler_ini(L"NeuralCenaTrace",v)&&v>=1.&&v<=200000.?unsigned(v):0u;}();
  float trace_expo{};long long trace_qpc{};
  void trace(int job,int age,const char* reason){
@@ -627,10 +673,32 @@ struct Backend::Impl {
 
  void perder_post(const char* motivo){if(!post.ativo)return;post.ativo=false;++post_lost;if(post_lost<=3||(post_lost&255)==0)log_post(post.job,motivo,nullptr);}
  bool modo_post()const{return !reduzido&&!post_recusado&&post_pso&&post_heap&&nrreproject::value(nrreproject::controls,nrreproject::ComposeAfter)>.5f;}
- D3D12_CPU_DESCRIPTOR_HANDLE cpu(ID3D12DescriptorHeap* h,unsigned i){auto v=h->GetCPUDescriptorHandleForHeapStart();v.ptr+=SIZE_T(i)*stride;return v;}
- D3D12_GPU_DESCRIPTOR_HANDLE gpu(ID3D12DescriptorHeap* h,unsigned i){auto v=h->GetGPUDescriptorHandleForHeapStart();v.ptr+=UINT64(i)*stride;return v;}
- void srv(ID3D12DescriptorHeap* h,unsigned i,ID3D12Resource* r,DXGI_FORMAT f,bool array=false){D3D12_SHADER_RESOURCE_VIEW_DESC v{};v.Format=f;v.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;if(array){v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY;v.Texture2DArray.MipLevels=1;v.Texture2DArray.ArraySize=Policy::history_count;}else{v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;v.Texture2D.MipLevels=1;}device->CreateShaderResourceView(r,&v,cpu(h,i));}
- void uav(ID3D12DescriptorHeap* h,unsigned i,ID3D12Resource* r,DXGI_FORMAT f,bool array=false){D3D12_UNORDERED_ACCESS_VIEW_DESC v{};v.Format=f;if(array){v.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2DARRAY;v.Texture2DArray.ArraySize=Policy::history_count;}else v.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;device->CreateUnorderedAccessView(r,nullptr,&v,cpu(h,i));}
+
+ static constexpr unsigned anel_k=3;
+ static constexpr GUID guid_sombra{0x6e7a1b52,0x9c31,0x4d0e,{0x8b,0x55,0x2a,0x41,0x7f,0x10,0xd3,0x22}};
+ bool criar_heap(unsigned n,ComPtr<ID3D12DescriptorHeap>& h){
+  h.Reset();if(!device||!n)return false;
+  D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,n*anel_k,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};ComPtr<ID3D12DescriptorHeap> s;
+  if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&h))))return false;
+  hd.NumDescriptors=n;hd.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+  if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&s)))||FAILED(h->SetPrivateDataInterface(guid_sombra,s.Get()))){h.Reset();return false;}
+  nrd3d::nomear(h.Get(),L"nr_cena_heap");nrd3d::nomear(s.Get(),L"nr_cena_heap_sombra");return true;}
+
+ static ID3D12DescriptorHeap* sombra(ID3D12DescriptorHeap* h) noexcept {
+  if(!h)return nullptr;IUnknown* u{};UINT tam=sizeof(u);if(FAILED(h->GetPrivateData(guid_sombra,&tam,&u))||!u)return nullptr;
+  ID3D12DescriptorHeap* s{};const bool ok=SUCCEEDED(u->QueryInterface(IID_PPV_ARGS(&s)));u->Release();if(!ok)return nullptr;s->Release();return s;}
+ unsigned copia_anel()const{return unsigned(begins%anel_k);}
+ D3D12_CPU_DESCRIPTOR_HANDLE cpu(ID3D12DescriptorHeap* h,unsigned i){if(auto* s=sombra(h))h=s;auto v=h->GetCPUDescriptorHandleForHeapStart();v.ptr+=SIZE_T(i)*stride;return v;}
+
+ void publicar(ID3D12DescriptorHeap* h,unsigned i){auto* s=sombra(h);if(!s)return;const unsigned n=s->GetDesc().NumDescriptors;
+  auto d=h->GetCPUDescriptorHandleForHeapStart();d.ptr+=SIZE_T(copia_anel()*n+i)*stride;auto o=s->GetCPUDescriptorHandleForHeapStart();o.ptr+=SIZE_T(i)*stride;
+  device->CopyDescriptorsSimple(1,d,o,D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);}
+ D3D12_GPU_DESCRIPTOR_HANDLE gpu(ID3D12DescriptorHeap* h,unsigned i){unsigned base=0;
+  if(auto* s=sombra(h)){const unsigned n=s->GetDesc().NumDescriptors;base=copia_anel()*n;auto d=h->GetCPUDescriptorHandleForHeapStart();d.ptr+=SIZE_T(base)*stride;
+   device->CopyDescriptorsSimple(n,d,s->GetCPUDescriptorHandleForHeapStart(),D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);}
+  auto v=h->GetGPUDescriptorHandleForHeapStart();v.ptr+=UINT64(base+i)*stride;return v;}
+ void srv(ID3D12DescriptorHeap* h,unsigned i,ID3D12Resource* r,DXGI_FORMAT f,bool array=false){D3D12_SHADER_RESOURCE_VIEW_DESC v{};v.Format=f;v.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;if(array){v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY;v.Texture2DArray.MipLevels=1;v.Texture2DArray.ArraySize=Policy::history_count;}else{v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;v.Texture2D.MipLevels=1;}device->CreateShaderResourceView(r,&v,cpu(h,i));publicar(h,i);}
+ void uav(ID3D12DescriptorHeap* h,unsigned i,ID3D12Resource* r,DXGI_FORMAT f,bool array=false){D3D12_UNORDERED_ACCESS_VIEW_DESC v{};v.Format=f;if(array){v.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2DARRAY;v.Texture2DArray.ArraySize=Policy::history_count;}else v.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;device->CreateUnorderedAccessView(r,nullptr,&v,cpu(h,i));publicar(h,i);}
 
  struct Aposentadas { std::vector<ComPtr<IUnknown>> objetos;unsigned long long vencimento{}; };
  std::vector<Aposentadas> retired;unsigned long long begins{};
@@ -649,33 +717,33 @@ struct Backend::Impl {
 
  std::array<float,Policy::history_count*2> jitter_fatia{};std::array<bool,Policy::history_count> jitter_ok{};
 
- void retire(unsigned to_w,unsigned to_h){
+ void retire(unsigned to_w,unsigned to_h,bool contar=true){
   policy.invalidate();
-  log_realocacao(to_w,to_h);
+  if(contar)log_realocacao(to_w,to_h);
 
   Aposentadas lote;lote.vencimento=begins+3;
   auto drop=[&](auto& com){if(com){lote.objetos.emplace_back(com.Get());com.Reset();}};
   for(auto& h:history)drop(h);drop(warped);drop(flags_buffer);
+  drop(diag_warp);drop(diag_cena);drop(diag_rostos);drop(diag_heap);diag_falhou=false;
+  nrreproject::diag_warp_recurso.store(nullptr);nrreproject::diag_cena_recurso.store(nullptr);nrreproject::diag_realce_recurso.store(nullptr);nrreproject::diag_rostos_recurso.store(nullptr);
   drop(temporal_heap);drop(compose_heap);drop(temporal_root);drop(compose_root);drop(post_root);
   drop(ganho[0]);drop(ganho[1]);ganho_ok=ganho_valido=false;ganho_cur=0;
   drop(luz_root);drop(luz_mom_pso);drop(luz_coef_pso);drop(luz_temp_pso);drop(luz_heap);
   drop(luz_mom);drop(luz_base);drop(luz_ab);drop(luz_coef);drop(luz_hist[0]);drop(luz_hist[1]);luz_ok=luz_valido=false;luz_cur=0;
   drop(luz_prox_pso);drop(luz_halo_pso);drop(luz_prox);drop(luz_halo);
   drop(capture_pso);drop(warp_pso);drop(compose_pso);drop(post_pso);drop(post_heap);perder_post("post_lost_realocacao");
-  drop(hpost.root);drop(hpost.mom_pso);drop(hpost.momp_pso);drop(hpost.ref_pso);drop(hpost.apl_pso);drop(hpost.heap);drop(hpost.post_heap);drop(hpost.mom);drop(hpost.ref);drop(hpost.saida);hpost.qw=hpost.qh=0;
-  drop(qpost.root);drop(qpost.pso);drop(qpost.heap);drop(qpost.post_heap);drop(qpost.saida);
   drop(cnpc.root);drop(cnpc.mede);drop(cnpc.compor);drop(cnpc.heap);drop(cnpc.estado);drop(cnpc.leitura);drop(cnpc.zeros);cnpc.zerado=false;
-  drop(fill_heap);drop(fill_root);drop(fill_pso);drop(fill_copia);
+  drop(masc.root);drop(masc.post_root);drop(masc.celulas);drop(masc.distancia);drop(masc.preenche);drop(masc.aplica);drop(masc.post);drop(masc.heap);drop(masc.post_heap);
+  drop(masc.cel);drop(masc.aux);drop(masc.dist);drop(masc.fill);masc.cw=masc.ch=0;
+  drop(masc.distz_pso);drop(masc.curva_pso);drop(masc.curvafim_pso);drop(masc.limita_pso);drop(masc.distz);drop(masc.parcial);drop(masc.curva);drop(masc.curvasoma_pso);drop(masc.bordas_pso);drop(masc.bordas);
+  drop(fill_heap);drop(fill_root);drop(fill_pso);drop(fill_copia);drop(fill_rapido_pso);
   drop(res_reduzido);drop(reduzir_pso);drop(reduzir_heap);res_reduzido_read=false;reduzido=false;comp_w=comp_h=0;
-  drop(est_heap);drop(est_root);drop(est_pso);drop(est[0]);drop(est[1]);est_valido=false;
+  drop(est_heap);drop(est_root);drop(est_pso);drop(est[0]);drop(est[1]);est_valido=false;est_falhou=false;
   drop(cro_heap);drop(cro_root);drop(cro_pso);drop(cro[0]);drop(cro[1]);drop(cro_out);cro_valido=false;
   drop(lg_heap);drop(lg_root);drop(lg_pso);drop(lg[0]);drop(lg[1]);drop(lg_out);lg_valido=false;
-  drop(tl_heap);drop(tl_root);for(auto& x:tl_pso)drop(x);for(auto& x:tl_tex)drop(x);for(auto& x:tl_rb)drop(x);tl_rb_n=0;tl_w=tl_h=0;tl_dst=nullptr;tl_medido=false;
+  drop(base_tom_root);drop(base_tom_pso);drop(base_tom_heap);drop(base_tom);
+  drop(tl_heap);drop(tl_root);for(auto& x:tl_pso)drop(x);for(auto& x:tl_tex)drop(x);for(auto& x:tl_rb)drop(x);tl_rb_n=0;tl_w=tl_h=0;tl_dst=nullptr;
   drop(su_heap);drop(su_root);drop(su_pso);drop(su[0]);drop(su[1]);drop(su_out);su_valido=false;
-  drop(bil_heap);drop(bil_root);drop(bil_luma_fonte);drop(bil_luma_atual);drop(bil_prep);drop(bil_fit);drop(bil_apply);drop(bil_features);drop(bil_luma);
-  for(auto& t:bil_coef)drop(t);
-  drop(bil_preservado);drop(bil_preservado_prof);drop(bil_heap_preservado);drop(bil_heap_tardia);bil_duplo_late=-1;
-  bil_job=-1;bil_features_read=bil_luma_read=bil_coef_read=false;bil_preservado_job=-1;bil_preservado_read=false;
 
   histories_read=false;warped_read=false;
   width=height=0;ready=false;
@@ -690,7 +758,7 @@ struct Backend::Impl {
  static constexpr std::uint64_t orcamento_piso=1024ull*1024*1024,orcamento_reserva=1024ull*1024*1024;
  std::uint64_t orcamento_atual{orcamento_bytes};Extensao orcamento_para{};
 
- ComPtr<IDXGIAdapter3> adaptador;bool adaptador_tentado{};unsigned long long vram_tick{};
+ ComPtr<IDXGIAdapter3> adaptador;bool adaptador_tentado{};unsigned long long vram_tick{};int uma{-1};
  bool vram(std::uint64_t& uso,std::uint64_t& orc){
   if(!adaptador&&!adaptador_tentado&&device){adaptador_tentado=true;ComPtr<IDXGIFactory4> f;
    if(SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&f))))(void)f->EnumAdapterByLuid(device->GetAdapterLuid(),IID_PPV_ARGS(&adaptador));}
@@ -706,8 +774,17 @@ struct Backend::Impl {
   return ready&&est_pso&&est_valido&&segurados_seguidos<segura_max&&policy.captured&&!composed_frame&&command==captured_command&&
          (!reduzido||(post_pso&&post_heap));
  }
+
+ struct PausaAloc{unsigned w{},h{},cw{},ch{};std::uint64_t orc{};unsigned long long ate{};unsigned quadros{};bool ativa{};} pausa_aloc;
+ std::uint64_t alocacoes_tentadas{},alocacoes_adiadas{};
+ static constexpr unsigned pausa_primeira=60u,pausa_maxima=960u;
  bool allocation(unsigned w,unsigned h,unsigned cw,unsigned ch){
   if(ready&&width==w&&height==h&&comp_w==cw&&comp_h==ch)return true;
+  if(pausa_aloc.ativa){
+   const bool mesma=pausa_aloc.w==w&&pausa_aloc.h==h&&pausa_aloc.cw==cw&&pausa_aloc.ch==ch&&pausa_aloc.orc==orcamento_atual;
+   if(mesma&&begins<pausa_aloc.ate){++alocacoes_adiadas;return false;}
+   if(!mesma)pausa_aloc.quadros=0;
+  }
   nrorc_vram::registrar(nrorc::Api::RecriaCena,std::uint64_t(w)*h*por_pixel,"backend_allocation");
 
   const std::uint64_t custo=std::uint64_t(w)*h*por_pixel;
@@ -716,20 +793,31 @@ struct Backend::Impl {
 
   if(custo>orcamento_atual){++recusas_por_limite;return false;}
   if(width||height)retire(w,h);
+  ++alocacoes_tentadas;
+  if(alocar_geometria(w,h,cw,ch)){pausa_aloc={};return true;}
+  const unsigned q=pausa_aloc.quadros?(std::min)(pausa_aloc.quadros*2u,pausa_maxima):pausa_primeira;
+  pausa_aloc={w,h,cw,ch,orcamento_atual,begins+q,q,true};
+  nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu ALOCACAO_FALHOU %ux%u saida=%ux%u nova_tentativa_em=%u capturas tentadas=%llu adiadas=%llu\n",
+   GetCurrentProcessId(),policy.frame,w,h,cw,ch,q,static_cast<unsigned long long>(alocacoes_tentadas),static_cast<unsigned long long>(alocacoes_adiadas));
+  retire(w,h,false);
+  return false;
+ }
+ bool alocar_geometria(unsigned w,unsigned h,unsigned cw,unsigned ch){
   width=w;height=h;comp_w=cw;comp_h=ch;reduzido=(w!=cw||h!=ch);stride=device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
   if(!root(device.Get(),32,8,4,temporal_root)||!root(device.Get(),16,6,3,compose_root)||!root(device.Get(),12,2,2,post_root)||
      !pipeline(device.Get(),temporal_root.Get(),g_nr_reproject_capture,capture_pso)||!pipeline(device.Get(),temporal_root.Get(),g_nr_reproject_warp,warp_pso)||!pipeline(device.Get(),compose_root.Get(),g_nr_reproject_compose,compose_pso))return false;
-  D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,12,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
-  if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&temporal_heap))))return false;hd.NumDescriptors=2*compose_variante;if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&compose_heap))))return false;hd.NumDescriptors=4;
+  if(!criar_heap(12,temporal_heap)||!criar_heap(2*compose_variante,compose_heap))return false;
   D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
   D3D12_RESOURCE_DESC td{};td.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;td.Width=w;td.Height=h;td.DepthOrArraySize=Policy::history_count;td.MipLevels=1;td.SampleDesc.Count=1;td.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
   const DXGI_FORMAT formats[]{DXGI_FORMAT_R16G16B16A16_FLOAT,DXGI_FORMAT_R16G16_FLOAT,DXGI_FORMAT_R32_FLOAT};
-  for(unsigned i=0;i<3;++i){td.Format=formats[i];if(!format_support(device.Get(),td.Format,true)||FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,write_state,nullptr,IID_PPV_ARGS(&history[i]))))return false;srv(temporal_heap.Get(),3+i,history[i].Get(),td.Format,true);uav(temporal_heap.Get(),8+i,history[i].Get(),td.Format,true);}
-  td.DepthOrArraySize=1;td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,write_state,nullptr,IID_PPV_ARGS(&warped))))return false;
+  for(unsigned i=0;i<3;++i){td.Format=formats[i];if(!format_support(device.Get(),td.Format,true)||FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,write_state,nullptr,IID_PPV_ARGS(&history[i]))))return false;nrd3d::nomear(history[i].Get(),i==0?L"nr_hist_cor":i==1?L"nr_hist_mv":L"nr_hist_prof");srv(temporal_heap.Get(),3+i,history[i].Get(),td.Format,true);uav(temporal_heap.Get(),8+i,history[i].Get(),td.Format,true);}
+
+  {unsigned n=teste_falhar_alocacao.load();while(n&&!teste_falhar_alocacao.compare_exchange_weak(n,n-1u)){}if(n)return false;}
+  td.DepthOrArraySize=1;td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,write_state,nullptr,IID_PPV_ARGS(&warped))))return false;nrd3d::nomear(warped.Get(),L"nr_warped");
   uav(temporal_heap.Get(),11,warped.Get(),td.Format);for(unsigned v=0;v<2;++v){srv(compose_heap.Get(),compose_variante*v,warped.Get(),td.Format);srv(compose_heap.Get(),compose_variante*v+1,warped.Get(),td.Format);}
   D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=4;bd.Height=1;bd.DepthOrArraySize=1;bd.MipLevels=1;bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;bd.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,write_state,nullptr,IID_PPV_ARGS(&flags_buffer))))return false;
+  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,write_state,nullptr,IID_PPV_ARGS(&flags_buffer))))return false;nrd3d::nomear(flags_buffer.Get(),L"nr_flags");
   D3D12_UNORDERED_ACCESS_VIEW_DESC bv{};bv.Format=DXGI_FORMAT_R32_TYPELESS;bv.ViewDimension=D3D12_UAV_DIMENSION_BUFFER;bv.Buffer.NumElements=1;bv.Buffer.Flags=D3D12_BUFFER_UAV_FLAG_RAW;for(unsigned v=0;v<2;++v)device->CreateUnorderedAccessView(flags_buffer.Get(),nullptr,&bv,cpu(compose_heap.Get(),compose_variante*v+compose_uavs+1));
 
   ganho_ok=alocar_ganho(!reduzido);ganho_valido=false;ganho_cur=0;
@@ -739,36 +827,46 @@ struct Backend::Impl {
    luz_prox_pso.Reset();luz_halo_pso.Reset();luz_prox.Reset();luz_halo.Reset();
    for(unsigned v=0;v<2;++v){srv(compose_heap.Get(),compose_variante*v+5,nullptr,DXGI_FORMAT_R32G32B32A32_FLOAT);srv(compose_heap.Get(),compose_variante*v+1,warped.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);}}
 
-  if(!(q_post_ganho!=1.f?(q_chave(L"NeuralQPostCR")?pipeline(device.Get(),post_root.Get(),g_nr_reproject_composepostcrg,post_pso):pipeline(device.Get(),post_root.Get(),g_nr_reproject_composepostg,post_pso)):(q_chave(L"NeuralQPostCR")?pipeline(device.Get(),post_root.Get(),g_nr_reproject_composepostcr,post_pso):pipeline(device.Get(),post_root.Get(),g_nr_reproject_composepost,post_pso)))||FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&post_heap)))){post_pso.Reset();post_heap.Reset();}
+  if(!pipeline(device.Get(),post_root.Get(),g_nr_reproject_composepost,post_pso)||!criar_heap(4,post_heap)){post_pso.Reset();post_heap.Reset();}
   else{srv(post_heap.Get(),0,warped.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);srv(post_heap.Get(),1,warped.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);device->CreateUnorderedAccessView(flags_buffer.Get(),nullptr,&bv,cpu(post_heap.Get(),3));}
-
-  if(halo_post_forca>0.f&&post_pso&&post_heap&&!alocar_halo_post(bv))hpost.soltar();
-  if(q_mapa.ligado&&post_pso&&post_heap&&!alocar_q_post(bv))qpost.soltar();
   if(cnpc_cfg.modo&&reduzido&&post_pso&&post_heap&&!alocar_cena_npc(bv))cnpc.soltar();
+
+  if(nrestext::aloca_mascara(masc_bits,masc_prof)&&reduzido&&post_pso&&post_heap&&!alocar_mascara(bv))masc.soltar();
   srv(temporal_heap.Get(),6,nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT);srv(temporal_heap.Get(),7,nullptr,DXGI_FORMAT_R32_FLOAT);
 
-  if(preenchimento>0&&!alocar_preenchimento()){preenchimento=0.f;fill_heap.Reset();fill_root.Reset();fill_pso.Reset();fill_copia.Reset();}
+  if(preenchimento>0&&!alocar_preenchimento()){preenchimento=0.f;fill_heap.Reset();fill_root.Reset();fill_pso.Reset();fill_copia.Reset();fill_rapido_pso.Reset();}
 
-  if(!alocar_estabilizador()){est_pso.Reset();est_heap.Reset();est_root.Reset();est[0].Reset();est[1].Reset();}
+  est_cur=0;est_valido=false;est_falhou=false;
 
-  if(cro_ligado()&&!alocar_croma()){cro_pso.Reset();cro_heap.Reset();cro_root.Reset();cro[0].Reset();cro[1].Reset();cro_out.Reset();}
-  if(lg_ligado()&&!alocar_luz_grossa()){lg_pso.Reset();lg_heap.Reset();lg_root.Reset();lg[0].Reset();lg[1].Reset();lg_out.Reset();}
+  const bool base_ok=base_tom_lig&&(cro_ligado()||lg_ligado())&&alocar_base_tom();
+  if(!base_ok){base_tom_root.Reset();base_tom_pso.Reset();base_tom_heap.Reset();base_tom.Reset();}
+
+  if(cro_ligado()&&!alocar_croma(base_ok)){cro_pso.Reset();cro_heap.Reset();cro_root.Reset();cro[0].Reset();cro[1].Reset();cro_out.Reset();}
+  if(lg_ligado()&&!alocar_luz_grossa(base_ok)){lg_pso.Reset();lg_heap.Reset();lg_root.Reset();lg[0].Reset();lg[1].Reset();lg_out.Reset();}
 
   if(su_cfg.ligado()&&!alocar_suave()){su_pso.Reset();su_heap.Reset();su_root.Reset();su[0].Reset();su[1].Reset();su_out.Reset();}
 
   if(reduzido&&!alocar_reduzir())return false;
-  if(!reduzido&&!alocar_bilateral()){bil_falhou=true;bilateral.forca=0.f;bil_preservado.Reset();bil_preservado_prof.Reset();bil_heap_preservado.Reset();bil_heap.Reset();bil_heap_tardia.Reset();bil_root.Reset();bil_luma_fonte.Reset();bil_luma_atual.Reset();bil_prep.Reset();bil_fit.Reset();bil_apply.Reset();bil_features.Reset();bil_luma.Reset();for(auto& t:bil_coef)t.Reset();}
   ready=true;return true;
+ }
+
+ bool est_falhou{};
+ bool garantir_est(){
+  if(est_pso)return true;
+  if(est_falhou||!ready||!warped)return false;
+  if(!alocar_estabilizador()){est_pso.Reset();est_heap.Reset();est_root.Reset();est[0].Reset();est[1].Reset();est_falhou=true;return false;}
+  for(ID3D12DescriptorHeap* h:{cro_heap.Get(),lg_heap.Get(),su_heap.Get()})if(h)
+   for(unsigned i=0;i<2;++i)for(unsigned f=1;f<=2;++f)for(unsigned d=0;d<2;++d)srv(h,filtro_variante(i,f,d),est[f-1].Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
+  return true;
  }
  bool alocar_reduzir(){
   if(!post_pso||!post_heap)return false;
   D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
   D3D12_RESOURCE_DESC td{};td.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;td.Width=width;td.Height=height;td.DepthOrArraySize=1;td.MipLevels=1;td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;td.SampleDesc.Count=1;td.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,write_state,nullptr,IID_PPV_ARGS(&res_reduzido))))return false;
+  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,write_state,nullptr,IID_PPV_ARGS(&res_reduzido))))return false;nrd3d::nomear(res_reduzido.Get(),L"nr_residuo_reduzido");
   res_reduzido_read=false;
   if(!pipeline(device.Get(),temporal_root.Get(),g_nr_reproject_reduzir,reduzir_pso))return false;
-  D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,12,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
-  if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&reduzir_heap))))return false;
+  if(!criar_heap(12,reduzir_heap))return false;
 
   const DXGI_FORMAT fs[]{DXGI_FORMAT_R16G16B16A16_FLOAT,DXGI_FORMAT_R16G16_FLOAT,DXGI_FORMAT_R32_FLOAT};
   srv(reduzir_heap.Get(),0,nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT);srv(reduzir_heap.Get(),1,nullptr,DXGI_FORMAT_R16G16_FLOAT);srv(reduzir_heap.Get(),2,nullptr,DXGI_FORMAT_R32_FLOAT);
@@ -781,7 +879,7 @@ struct Backend::Impl {
   D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
   D3D12_RESOURCE_DESC td{};td.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;td.Width=width;td.Height=height;td.DepthOrArraySize=1;td.MipLevels=1;td.Format=DXGI_FORMAT_R16_FLOAT;td.SampleDesc.Count=1;td.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
   bool ok=criar;
-  for(unsigned i=0;criar&&i<2;++i){if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,read_state,nullptr,IID_PPV_ARGS(&ganho[i])))){ok=false;ganho[0].Reset();ganho[1].Reset();break;}ganho_estado[i]=read_state;}
+  for(unsigned i=0;criar&&i<2;++i){if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,read_state,nullptr,IID_PPV_ARGS(&ganho[i])))){ok=false;ganho[0].Reset();ganho[1].Reset();break;}nrd3d::nomear(ganho[i].Get(),L"nr_ganho");ganho_estado[i]=read_state;}
   for(unsigned v=0;v<2;++v){
    const unsigned o=compose_variante*v;
    srv(compose_heap.Get(),o+2,ok?ganho[1-v].Get():nullptr,DXGI_FORMAT_R16_FLOAT);
@@ -799,12 +897,11 @@ struct Backend::Impl {
   luz_qw=(width+3)/4;luz_qh=(height+3)/4;
   D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
   D3D12_RESOURCE_DESC td{};td.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;td.Width=luz_qw;td.Height=luz_qh;td.DepthOrArraySize=1;td.MipLevels=1;td.SampleDesc.Count=1;td.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-  auto criar=[&](DXGI_FORMAT f,ComPtr<ID3D12Resource>& r){td.Format=f;return SUCCEEDED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,read_state,nullptr,IID_PPV_ARGS(&r)));};
+  auto criar=[&](DXGI_FORMAT f,ComPtr<ID3D12Resource>& r){td.Format=f;const bool ok=SUCCEEDED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,read_state,nullptr,IID_PPV_ARGS(&r)));if(ok)nrd3d::nomear(r.Get(),L"nr_luz");return ok;};
   if(!criar(DXGI_FORMAT_R32G32B32A32_FLOAT,luz_mom)||!criar(DXGI_FORMAT_R32_FLOAT,luz_base)||!criar(DXGI_FORMAT_R32G32_FLOAT,luz_ab)||
      !criar(DXGI_FORMAT_R32G32B32A32_FLOAT,luz_coef)||!criar(DXGI_FORMAT_R32G32_FLOAT,luz_hist[0])||!criar(DXGI_FORMAT_R32G32_FLOAT,luz_hist[1])||
      !criar(DXGI_FORMAT_R16_FLOAT,luz_prox)||!criar(DXGI_FORMAT_R32G32B32A32_FLOAT,luz_halo))return false;
-  D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,2*luz_variante,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
-  if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&luz_heap))))return false;
+  if(!criar_heap(2*luz_variante,luz_heap))return false;
   for(unsigned v=0;v<2;++v){
    const unsigned o=luz_variante*v,u=o+luz_uavs;
    srv(luz_heap.Get(),o,warped.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);srv(luz_heap.Get(),o+1,warped.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
@@ -862,129 +959,17 @@ struct Backend::Impl {
   ++luz_quadros;if(valido)++luz_filtrados;if(prof)++luz_prof_quadros;
   if(temporal){luz_valido=true;luz_quadro=policy.frame;luz_cur=1u-v;}else luz_valido=false;
  }
- bool alocar_bilateral(){
-  if(!root(device.Get(),15,11,8,bil_root)||
-     !pipeline(device.Get(),bil_root.Get(),g_nr_reproject_bilaterallumafonte,bil_luma_fonte)||!pipeline(device.Get(),bil_root.Get(),g_nr_reproject_bilaterallumaatual,bil_luma_atual)||
-     !pipeline(device.Get(),bil_root.Get(),g_nr_reproject_bilateralprep,bil_prep)||!pipeline(device.Get(),bil_root.Get(),g_nr_reproject_bilateralfit,bil_fit)||
-     !pipeline(device.Get(),bil_root.Get(),g_nr_reproject_bilateralapply,bil_apply))return false;
-  const unsigned cel=bilateral.celula;bil_nx=(width+cel-1)/cel+1;bil_ny=(height+cel-1)/cel+1;
-
-  {D3D12_FEATURE_DATA_FORMAT_SUPPORT fs{DXGI_FORMAT_R32G32B32A32_FLOAT};
-   const bool f32=SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT,&fs,sizeof(fs)))&&(fs.Support1&D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE)&&(fs.Support2&D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE);
-   bil_coef_format=f32?DXGI_FORMAT_R32G32B32A32_FLOAT:DXGI_FORMAT_R16G16B16A16_FLOAT;}
-  D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
-  D3D12_RESOURCE_DESC td{};td.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;td.Width=width;td.Height=height;td.DepthOrArraySize=1;td.MipLevels=1;td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;td.SampleDesc.Count=1;td.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,write_state,nullptr,IID_PPV_ARGS(&bil_features))))return false;
-  td.Format=DXGI_FORMAT_R32_FLOAT;
-  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,write_state,nullptr,IID_PPV_ARGS(&bil_luma))))return false;
-  D3D12_RESOURCE_DESC cd{};cd.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE3D;cd.Width=bil_nx;cd.Height=bil_ny;cd.DepthOrArraySize=16;cd.MipLevels=1;cd.Format=bil_coef_format;cd.SampleDesc.Count=1;cd.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-  for(auto& t:bil_coef)if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&cd,write_state,nullptr,IID_PPV_ARGS(&t))))return false;
-
-  D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,19,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
-  if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&bil_heap)))||FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&bil_heap_tardia))))return false;
-
-  for(ID3D12DescriptorHeap* h:{bil_heap.Get(),bil_heap_tardia.Get()}){
-   srv(h,10,history[2].Get(),DXGI_FORMAT_R32_FLOAT,true);
-   srv(h,0,history[0].Get(),DXGI_FORMAT_R16G16B16A16_FLOAT,true);srv(h,1,history[1].Get(),DXGI_FORMAT_R16G16_FLOAT,true);
-   srv(h,2,nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT);srv(h,3,bil_features.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);srv(h,4,bil_luma.Get(),DXGI_FORMAT_R32_FLOAT);
-   for(unsigned o=0;o<5;++o){
-    D3D12_SHADER_RESOURCE_VIEW_DESC v{};v.Format=bil_coef_format;v.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE3D;v.Texture3D.MipLevels=1;device->CreateShaderResourceView(bil_coef[o].Get(),&v,cpu(h,5+o));
-    D3D12_UNORDERED_ACCESS_VIEW_DESC u{};u.Format=bil_coef_format;u.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE3D;u.Texture3D.WSize=16;device->CreateUnorderedAccessView(bil_coef[o].Get(),nullptr,&u,cpu(h,12+o));
-   }
-   uav(h,11,bil_features.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);uav(h,17,warped.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);uav(h,18,bil_luma.Get(),DXGI_FORMAT_R32_FLOAT);
-  }
-
-  {
-   D3D12_RESOURCE_DESC pd{};pd.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;pd.Width=width;pd.Height=height;pd.DepthOrArraySize=1;pd.MipLevels=1;pd.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;pd.SampleDesc.Count=1;
-   if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&pd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&bil_preservado))))return false;
-   pd.Format=DXGI_FORMAT_R32_FLOAT;
-   if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&pd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&bil_preservado_prof))))return false;
-   if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&bil_heap_preservado))))return false;
-   ID3D12DescriptorHeap* h=bil_heap_preservado.Get();
-   {D3D12_SHADER_RESOURCE_VIEW_DESC v{};v.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;v.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2DARRAY;v.Texture2DArray.MipLevels=1;v.Texture2DArray.ArraySize=1;device->CreateShaderResourceView(bil_preservado.Get(),&v,cpu(h,0));
-    v.Format=DXGI_FORMAT_R32_FLOAT;device->CreateShaderResourceView(bil_preservado_prof.Get(),&v,cpu(h,10));}
-   srv(h,1,history[1].Get(),DXGI_FORMAT_R16G16_FLOAT,true);srv(h,2,nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT);srv(h,3,bil_features.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);srv(h,4,bil_luma.Get(),DXGI_FORMAT_R32_FLOAT);
-   for(unsigned o=0;o<5;++o){
-    D3D12_SHADER_RESOURCE_VIEW_DESC v{};v.Format=bil_coef_format;v.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;v.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE3D;v.Texture3D.MipLevels=1;device->CreateShaderResourceView(bil_coef[o].Get(),&v,cpu(h,5+o));
-    D3D12_UNORDERED_ACCESS_VIEW_DESC u{};u.Format=bil_coef_format;u.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE3D;u.Texture3D.WSize=16;device->CreateUnorderedAccessView(bil_coef[o].Get(),nullptr,&u,cpu(h,12+o));
-   }
-   uav(h,11,bil_features.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);uav(h,17,warped.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);uav(h,18,bil_luma.Get(),DXGI_FORMAT_R32_FLOAT);
-  }
-  bil_preservado_job=-1;bil_preservado_read=false;bil_duplo_late=-1;
-  bil_job=-1;bil_features_read=bil_luma_read=bil_coef_read=false;return true;
- }
 
  void atualizar_ao_vivo(){
   (void)thresholds();
   if(!nrreproject::controls.menu.load(std::memory_order_acquire))return;
   using namespace nrreproject;
-  const float tau=value(controls,BilateralDetail),ridge=value(controls,BilateralRidge);
-  const unsigned guia=value(controls,BilateralGuide)>.5f?1u:0u;
-  if(tau!=bilateral.tau||ridge!=bilateral.ridge||guia!=bilateral.guia){bil_job=-1;bil_duplo_late=-1;}
-  bilateral.forca=bil_falhou?0.f:value(controls,BilateralStrength);
-  bilateral.tau=tau;bilateral.ridge=ridge;bilateral.guia=guia;
-  bilateral.retencao=unsigned(value(controls,BilateralHold)+.5f);
   pontual=value(controls,PointMotion)>.5f;
  }
 
  static float ajuste(nrreproject::Control c,float inicial){
   return nrreproject::controls.menu.load(std::memory_order_acquire)?nrreproject::value(nrreproject::controls,c):inicial;
  }
- void preservar_fonte(ID3D12GraphicsCommandList* c){
-  if(!bil_preservado||!bil_apply||bilateral.forca<=0||bilateral.retencao==0)return;
-  const unsigned fatia=unsigned((policy.frame+1)%Policy::history_count);const auto antigo=policy.frames[fatia];if(!antigo)return;
-  int alvo=-1;for(const auto& j:policy.jobs)if(j.id>0&&j.frame==antigo&&j.id>bil_job&&j.id>alvo)alvo=j.id;
-  if(alvo<0||alvo==bil_preservado_job)return;
-  const auto antes=histories_read?read_state:write_state;
-  transition(c,history[0].Get(),antes,D3D12_RESOURCE_STATE_COPY_SOURCE);transition(c,history[2].Get(),antes,D3D12_RESOURCE_STATE_COPY_SOURCE);
-  if(bil_preservado_read){transition(c,bil_preservado.Get(),read_state,D3D12_RESOURCE_STATE_COPY_DEST);transition(c,bil_preservado_prof.Get(),read_state,D3D12_RESOURCE_STATE_COPY_DEST);}
-  D3D12_TEXTURE_COPY_LOCATION destino{},origem{};destino.pResource=bil_preservado.Get();destino.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;destino.SubresourceIndex=0;
-  origem.pResource=history[0].Get();origem.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;origem.SubresourceIndex=fatia;
-  c->CopyTextureRegion(&destino,0,0,0,&origem,nullptr);
-  destino.pResource=bil_preservado_prof.Get();origem.pResource=history[2].Get();
-  c->CopyTextureRegion(&destino,0,0,0,&origem,nullptr);
-  transition(c,history[0].Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,antes);transition(c,history[2].Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,antes);
-  transition(c,bil_preservado.Get(),D3D12_RESOURCE_STATE_COPY_DEST,read_state);transition(c,bil_preservado_prof.Get(),D3D12_RESOURCE_STATE_COPY_DEST,read_state);bil_preservado_read=true;
-  bil_preservado_job=alvo;++preservacoes;
- }
-
- void transferir(ID3D12GraphicsCommandList* c,ID3D12Resource* fonte,int job,unsigned idade,bool so_modelo=false,bool da_preservada=false){
-  const unsigned n=Policy::history_count;
-
-  const unsigned idade_grade=so_modelo?std::min(idade,n-1):idade;
-  struct K{unsigned w,h,atual,fonte,idade,nx,ny,historico;float forca,tau,ridge,escala;unsigned celula,modo,guia;}
-   k{width,height,constants.slice,(constants.slice+n-(idade%n))%n,idade_grade,bil_nx,bil_ny,n,bilateral.forca,bilateral.tau,bilateral.ridge,constants.residual_exposure,bilateral.celula,so_modelo?1u:0u,bilateral.guia};
-  ID3D12DescriptorHeap* const hb=bil_heap_override?bil_heap_override:bil_heap.Get();
-  srv(hb,2,fonte,DXGI_FORMAT_R16G16B16A16_FLOAT);
-  auto ligar=[&](ID3D12DescriptorHeap* h,const K& kk){ID3D12DescriptorHeap* heaps[]{h};c->SetDescriptorHeaps(1,heaps);
-   c->SetComputeRootSignature(bil_root.Get());c->SetComputeRoot32BitConstants(0,15,&kk,0);
-   c->SetComputeRootDescriptorTable(1,gpu(h,0));c->SetComputeRootDescriptorTable(2,gpu(h,11));};
-  const unsigned gx=(width+7)/8,gy=(height+7)/8;
-
-  if(da_preservada){srv(bil_heap_preservado.Get(),2,fonte,DXGI_FORMAT_R16G16B16A16_FLOAT);K kp=k;kp.fonte=0;ligar(bil_heap_preservado.Get(),kp);}
-  else ligar(hb,k);
-  if(da_preservada||(!so_modelo&&job!=bil_job)){
-   if(bil_luma_read)transition(c,bil_luma.Get(),read_state,write_state);
-   c->SetPipelineState(bil_luma_fonte.Get());c->Dispatch(gx,gy,1);
-   transition(c,bil_luma.Get(),write_state,read_state);bil_luma_read=true;
-   if(bil_features_read)transition(c,bil_features.Get(),read_state,write_state);
-   c->SetPipelineState(bil_prep.Get());c->Dispatch(gx,gy,1);
-   transition(c,bil_features.Get(),write_state,read_state);bil_features_read=true;
-   if(bil_coef_read)for(auto& t:bil_coef)transition(c,t.Get(),read_state,write_state);
-   c->SetPipelineState(bil_fit.Get());c->Dispatch(bil_nx,bil_ny,1);
-   for(auto& t:bil_coef)transition(c,t.Get(),write_state,read_state);bil_coef_read=true;
-   bil_job=job;++bil_fits;
-  }
-  if(!bil_coef_read)return;
-  if(da_preservada)ligar(hb,k);
-  if(bil_luma_read)transition(c,bil_luma.Get(),read_state,write_state);
-  c->SetPipelineState(bil_luma_atual.Get());c->Dispatch(gx,gy,1);
-  transition(c,bil_luma.Get(),write_state,read_state);bil_luma_read=true;
-  transition(c,warped.Get(),read_state,write_state);
-  c->SetPipelineState(bil_apply.Get());c->Dispatch(gx,gy,1);
-  transition(c,warped.Get(),write_state,read_state);
- }
-
  ComposeConstants constantes_compose(unsigned tone,unsigned w,unsigned h,float exposure){
 
   if(!nrreproject::grade_semeado.load()){static const bool lido=[]{double v{};
@@ -997,19 +982,20 @@ struct Backend::Impl {
    nrreproject::value(nrreproject::controls,nrreproject::SoftGuard)>.5f?1u:0u,0,0,0.f,0.f,0,0};
 
   k.p0|=(nrreproject::index_of(nrreproject::controls,nrreproject::RatioFloor)&3u)<<3;
-  if(k.estilo>2)k.estilo=0;if(!std::isfinite(k.tom))k.tom=1.f;return k;
+  if(k.estilo>2)k.estilo=0;if(!std::isfinite(k.tom))k.tom=1.f;
+  nrreproject::somar_grade_do_estilo(k.estilo,k.tom,k.ev,k.contraste,k.saturacao);
+  return k;
  }
  bool alocar_estabilizador(){
-  if(!root(device.Get(),32,5,1,est_root)||!(q_chave(L"NeuralQEstabCR")?pipeline(device.Get(),est_root.Get(),g_nr_reproject_estabilizarcr,est_pso):pipeline(device.Get(),est_root.Get(),g_nr_reproject_estabilizar,est_pso)))return false;
+  if(!root(device.Get(),35,5,1,est_root)||!(q_chave(L"NeuralQEstabCR")?pipeline(device.Get(),est_root.Get(),g_nr_reproject_estabilizarcr,est_pso):pipeline(device.Get(),est_root.Get(),g_nr_reproject_estabilizar,est_pso)))return false;
   const auto wd=warped->GetDesc();D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
-  for(unsigned i=0;i<2;++i){if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&wd,write_state,nullptr,IID_PPV_ARGS(&est[i]))))return false;est_estado[i]=write_state;}
-  D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,12,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
-  if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&est_heap))))return false;
+  for(unsigned i=0;i<2;++i){if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&wd,write_state,nullptr,IID_PPV_ARGS(&est[i]))))return false;nrd3d::nomear(est[i].Get(),L"nr_estabilizador");est_estado[i]=write_state;}
+  if(!criar_heap(24,est_heap))return false;
 
-  for(unsigned i=0;i<2;++i){srv(est_heap.Get(),6*i,warped.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);srv(est_heap.Get(),6*i+1,est[1-i].Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
-   srv(est_heap.Get(),6*i+2,history[1].Get(),DXGI_FORMAT_R16G16_FLOAT,true);srv(est_heap.Get(),6*i+3,history[2].Get(),DXGI_FORMAT_R32_FLOAT,true);
-   srv(est_heap.Get(),6*i+4,history[0].Get(),DXGI_FORMAT_R16G16B16A16_FLOAT,true);
-   uav(est_heap.Get(),6*i+5,est[i].Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);}
+  for(unsigned j=0;j<4;++j){const unsigned i=j&1u;srv(est_heap.Get(),6*j,j<2u?warped.Get():fill_copia.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);srv(est_heap.Get(),6*j+1,est[1-i].Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
+   srv(est_heap.Get(),6*j+2,history[1].Get(),DXGI_FORMAT_R16G16_FLOAT,true);srv(est_heap.Get(),6*j+3,history[2].Get(),DXGI_FORMAT_R32_FLOAT,true);
+   srv(est_heap.Get(),6*j+4,history[0].Get(),DXGI_FORMAT_R16G16B16A16_FLOAT,true);
+   uav(est_heap.Get(),6*j+5,est[i].Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);}
   est_cur=0;est_valido=false;return true;
  }
 
@@ -1020,7 +1006,7 @@ struct Backend::Impl {
 
   const unsigned historico_n=Policy::history_count,fatia_atual=constants.slice%historico_n,fatia_anterior=(fatia_atual+historico_n-1u)%historico_n;
   struct K{unsigned w,h,fatia;float alfa;unsigned valido;float ref;unsigned b,d;float profRel,profAbs;unsigned fatiaAnterior;float alfaMov,alfaLuz,limite,alfaLuzMov;
-   float alfaRosto,aspecto;unsigned nRostos;float rostos[12];unsigned detRampa;float detParado;}
+   float alfaRosto,aspecto;unsigned nRostos;float rostos[12];unsigned detRampa;float detParado;float expoTom,deltaClaroMax;unsigned rostoForma;}
    k{width,height,fatia_atual,alfa,est_valido?1u:0u,nrreproject::value(nrreproject::controls,nrreproject::StabilizeStill),
      segurar?2u:(sem_limite_parado&&movimento)?3u:sem_limite_parado?1u:0u,0u,
      constants.depth_relative,constants.depth_absolute,fatia_anterior,post_alfa_mov,
@@ -1031,34 +1017,44 @@ struct Backend::Impl {
 
   k.alfaRosto=est_rosto;k.aspecto=comp_h?float(comp_w)/float(comp_h):1.f;k.nRostos=0u;
   k.detRampa=(post_det_rampa&&est_rosto>0.f&&!segurar)?1u:0u;k.detParado=post_det_parado;
-  if(post_estab_luz>0.f&&!segurar&&sem_limite_parado)k.alfaLuz=post_estab_luz;
+  if(post_estab_buraco&&!segurar)k.detRampa|=2u;
+  k.expoTom=constants.current_exposure;k.deltaClaroMax=segurar?0.f:post_delta_claro;
+  {nrestab::Fonte fl=nrestab::Menu;k.alfaLuz=nrestab::luz_parada(k.alfaLuz,post_estab_luz,sem_limite_parado,segurar,&fl);
+
+   const unsigned fontes=unsigned(est_fonte_base)|(unsigned(fl)<<4)|(unsigned(est_fonte_mov)<<8)|(est_cross>0.f&&!segurar?unsigned(nrestab::Crossfade)<<12:0u);
+   if(fontes!=est_fontes_log&&est_fontes_trocas<64u){est_fontes_log=fontes;++est_fontes_trocas;
+    nrlogfila::linha(L"nr_reproject.log","pid=%lu ESTAB_FONTES alfa=%s(%.3f) luz_parada=%s(%.3f) luz_andando=%s(%.3f)%s quadro=%llu\n",GetCurrentProcessId(),
+     nrestab::nome(est_fonte_base),double(k.alfa),nrestab::nome(fl),double(k.alfaLuz),nrestab::nome(est_fonte_mov),double(k.alfaLuzMov),
+     est_cross>0.f&&!segurar?" crossfade=todas":"",static_cast<unsigned long long>(policy.frame));}}
+  k.rostoForma=0u;
   if(post_estab_rosto&&est_rosto>0.f&&!segurar&&comp_w&&comp_h){
-   auto poe=[&](){const auto& q=nrrj::quadro_render();if(k.nRostos<4u&&q.on>0&&q.lado>1.f){float* r=k.rostos+3u*k.nRostos++;
-    r[0]=q.cx/float(comp_w);r[1]=q.cy/float(comp_h);r[2]=.5f*q.lado/float(comp_h);}};
-   if(nrrj::ativo())poe();
-   if(nrrj::npc2.load(std::memory_order_relaxed))for(int kn=1;kn<=nrrj::npc_n();++kn){nrrj::Inst i1(kn);if(nrrj::ativo())poe();}
+
+   nrrj::AreaRosto a[4];const unsigned n=nrrj::areas_ligadas(nrrj::UsoArea::Estabilizador,a);
+   for(unsigned i=0;i<n;++i){float* r=k.rostos+3u*k.nRostos++;r[0]=a[i].x/float(comp_w);r[1]=a[i].y/float(comp_h);r[2]=a[i].rx/float(comp_h);if(a[i].elipse)k.rostoForma=1u;}
   }
   ID3D12DescriptorHeap* heaps[]{est_heap.Get()};c->SetDescriptorHeaps(1,heaps);
   c->SetComputeRootSignature(est_root.Get());c->SetPipelineState(est_pso.Get());
-  static_assert(sizeof(K)==32*4,"estabilizar: 32 constantes");
-  c->SetComputeRoot32BitConstants(0,32,&k,0);
-  c->SetComputeRootDescriptorTable(1,gpu(est_heap.Get(),6*cur));c->SetComputeRootDescriptorTable(2,gpu(est_heap.Get(),6*cur+5));
+  static_assert(sizeof(K)==35*4,"estabilizar: 35 constantes (dedup item 2: + rostoForma)");
+  c->SetComputeRoot32BitConstants(0,35,&k,0);
+
+  const unsigned v=6u*(cur+(cadeia_fonte==5u?2u:0u));
+  c->SetComputeRootDescriptorTable(1,gpu(est_heap.Get(),v));c->SetComputeRootDescriptorTable(2,gpu(est_heap.Get(),v+5));
   c->Dispatch((width+7)/8,(height+7)/8,1);
   if(seguinte){
    transition(c,est[cur].Get(),write_state,read_state);est_estado[cur]=read_state;cadeia_fonte=1u+cur;
   }else{
   transition(c,est[cur].Get(),write_state,D3D12_RESOURCE_STATE_COPY_SOURCE);est_estado[cur]=D3D12_RESOURCE_STATE_COPY_SOURCE;
   transition(c,warped.Get(),read_state,D3D12_RESOURCE_STATE_COPY_DEST);c->CopyResource(warped.Get(),est[cur].Get());
-  transition(c,warped.Get(),D3D12_RESOURCE_STATE_COPY_DEST,read_state);
+  transition(c,warped.Get(),D3D12_RESOURCE_STATE_COPY_DEST,read_state);cadeia_fonte=0u;
   }
   est_valido=true;est_cur=prev;
  }
 
  unsigned cadeia_fonte{};
- static constexpr unsigned filtro_fontes=5,filtro_descr=7;
+ static constexpr unsigned filtro_fontes=6,filtro_descr=7;
  static constexpr unsigned filtro_heap_n=2*filtro_fontes*2*filtro_descr;
  static constexpr unsigned filtro_variante(unsigned i,unsigned f,unsigned d){return ((i*filtro_fontes+f)*2u+d)*filtro_descr;}
- ID3D12Resource* fonte_recurso(unsigned f)const{return f==0u?warped.Get():f<=2u?est[f-1u].Get():f==3u?cro_out.Get():f==4u?lg_out.Get():nullptr;}
+ ID3D12Resource* fonte_recurso(unsigned f)const{return f==0u?warped.Get():f<=2u?est[f-1u].Get():f==3u?cro_out.Get():f==4u?lg_out.Get():f==5u?fill_copia.Get():nullptr;}
  bool roda_cro(float e)const{return cro_pso&&cro_ligado()&&std::isfinite(e)&&e>0.f;}
  bool roda_lg(float e)const{return lg_pso&&lg_ligado()&&std::isfinite(e)&&e>0.f;}
  bool roda_su(float e)const{return su_pso&&su_cfg.ligado()&&std::isfinite(e)&&e>0.f;}
@@ -1067,11 +1063,11 @@ struct Backend::Impl {
  bool ultimo_cro(float e)const{return !cadeia_direta.load(std::memory_order_relaxed)||(!roda_lg(e)&&!roda_su(e));}
  bool ultimo_lg(float e)const{return !cadeia_direta.load(std::memory_order_relaxed)||!roda_su(e);}
 
- void filtro_descritores(ID3D12DescriptorHeap* h,const ComPtr<ID3D12Resource>* x,ID3D12Resource* saida){
+ void filtro_descritores(ID3D12DescriptorHeap* h,const ComPtr<ID3D12Resource>* x,ID3D12Resource* saida,bool base=false){
   for(unsigned i=0;i<2;++i)for(unsigned f=0;f<filtro_fontes;++f)for(unsigned d=0;d<2;++d){const unsigned o=filtro_variante(i,f,d);
    srv(h,o,fonte_recurso(f),DXGI_FORMAT_R16G16B16A16_FLOAT);srv(h,o+1,x[1-i].Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
    srv(h,o+2,history[1].Get(),DXGI_FORMAT_R16G16_FLOAT,true);srv(h,o+3,history[2].Get(),DXGI_FORMAT_R32_FLOAT,true);
-   srv(h,o+4,history[0].Get(),DXGI_FORMAT_R16G16B16A16_FLOAT,true);
+   if(base)srv(h,o+4,base_tom.Get(),DXGI_FORMAT_R32G32B32A32_FLOAT);else srv(h,o+4,history[0].Get(),DXGI_FORMAT_R16G16B16A16_FLOAT,true);
    uav(h,o+5,x[i].Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);uav(h,o+6,d?warped.Get():saida,DXGI_FORMAT_R16G16B16A16_FLOAT);}
  }
 
@@ -1092,24 +1088,48 @@ struct Backend::Impl {
 
  void cadeia_fechar(ID3D12GraphicsCommandList* c){
   if(!cadeia_fonte)return;
-  D3D12_RESOURCE_STATES* st=cadeia_fonte<=2u?&est_estado[cadeia_fonte-1u]:cadeia_fonte==3u?&cro_out_estado:&lg_out_estado;
+  D3D12_RESOURCE_STATES* st=cadeia_fonte<=2u?&est_estado[cadeia_fonte-1u]:cadeia_fonte==3u?&cro_out_estado:cadeia_fonte==4u?&lg_out_estado:&fill_copia_estado;
   ID3D12Resource* f=fonte_recurso(cadeia_fonte);cadeia_fonte=0u;if(!f)return;
   transition(c,f,*st,D3D12_RESOURCE_STATE_COPY_SOURCE);*st=D3D12_RESOURCE_STATE_COPY_SOURCE;
   transition(c,warped.Get(),read_state,D3D12_RESOURCE_STATE_COPY_DEST);c->CopyResource(warped.Get(),f);
   transition(c,warped.Get(),D3D12_RESOURCE_STATE_COPY_DEST,read_state);
  }
- bool alocar_croma(){
 
-  {static const bool lds=[]{double v=0.;return ler_ini(L"NeuralCustoCromaLds",v)&&v>.5;}();const bool usa=lds&&cro_raio*cro_passo<=4u;
-   if(!root(device.Get(),20,5,2,cro_root)||(usa?!pipeline(device.Get(),cro_root.Get(),g_nr_reproject_cromalds,cro_pso):!pipeline(device.Get(),cro_root.Get(),g_nr_reproject_croma,cro_pso)))return false;
-   if(usa)nrlogfila::linha(L"nr_reproject.log","pid=%lu CUSTO_CROMA_LDS ligado (raio=%u passo=%u)\n",GetCurrentProcessId(),cro_raio,cro_passo);}
+ bool alocar_filtro(ComPtr<ID3D12Resource> (&x)[2],D3D12_RESOURCE_STATES (&x_estado)[2],ComPtr<ID3D12Resource>& out,D3D12_RESOURCE_STATES& out_estado,
+                    ComPtr<ID3D12DescriptorHeap>& heap,bool base){
   const auto wd=warped->GetDesc();D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
-  for(unsigned i=0;i<2;++i){if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&wd,write_state,nullptr,IID_PPV_ARGS(&cro[i]))))return false;cro_estado[i]=write_state;}
-  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&wd,write_state,nullptr,IID_PPV_ARGS(&cro_out))))return false;cro_out_estado=write_state;
-  D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,filtro_heap_n,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
-  if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&cro_heap))))return false;
+  for(unsigned i=0;i<2;++i){if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&wd,write_state,nullptr,IID_PPV_ARGS(&x[i]))))return false;nrd3d::nomear(x[i].Get(),L"nr_filtro_cena");x_estado[i]=write_state;}
+  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&wd,write_state,nullptr,IID_PPV_ARGS(&out))))return false;nrd3d::nomear(out.Get(),L"nr_filtro_cena_saida");out_estado=write_state;
+  if(!criar_heap(filtro_heap_n,heap))return false;
 
-  filtro_descritores(cro_heap.Get(),cro,cro_out.Get());
+  filtro_descritores(heap.Get(),x,out.Get(),base);
+  return true;
+ }
+
+ void passe_filtro(ID3D12GraphicsCommandList* c,unsigned cur,ComPtr<ID3D12Resource> (&x)[2],D3D12_RESOURCE_STATES (&x_estado)[2],
+                   ID3D12Resource* out,D3D12_RESOURCE_STATES& out_estado,ID3D12DescriptorHeap* heap,ID3D12RootSignature* raiz,
+                   ID3D12PipelineState* pso,const void* k,bool ultimo,unsigned fonte_out){
+  const unsigned prev=1u-cur;
+  transition(c,x[cur].Get(),x_estado[cur],write_state);x_estado[cur]=write_state;
+  transition(c,x[prev].Get(),x_estado[prev],read_state);x_estado[prev]=read_state;
+  bool direto{};const unsigned o=filtro_inicio(c,cur,ultimo,out,out_estado,direto);
+  ID3D12DescriptorHeap* heaps[]{heap};c->SetDescriptorHeaps(1,heaps);
+  c->SetComputeRootSignature(raiz);c->SetPipelineState(pso);
+  c->SetComputeRoot32BitConstants(0,20,k,0);
+  c->SetComputeRootDescriptorTable(1,gpu(heap,o));c->SetComputeRootDescriptorTable(2,gpu(heap,o+5));
+  c->Dispatch((width+7)/8,(height+7)/8,1);
+  transition(c,x[cur].Get(),write_state,read_state);x_estado[cur]=read_state;
+  filtro_fim(c,ultimo,direto,out,out_estado,fonte_out);
+ }
+
+ bool alocar_croma(bool base=false){
+
+  {const bool lds=cfg_croma_lds;const bool usa=lds&&cro_raio*cro_passo<=4u;
+   const bool ok=root(device.Get(),20,5,2,cro_root)&&(base?(usa?pipeline(device.Get(),cro_root.Get(),g_nr_reproject_cromaldsbase,cro_pso):pipeline(device.Get(),cro_root.Get(),g_nr_reproject_cromabase,cro_pso)):
+                                                          (usa?pipeline(device.Get(),cro_root.Get(),g_nr_reproject_cromalds,cro_pso):pipeline(device.Get(),cro_root.Get(),g_nr_reproject_croma,cro_pso)));
+   if(!ok)return false;
+   if(usa)nrlogfila::linha(L"nr_reproject.log","pid=%lu CUSTO_CROMA_LDS ligado (raio=%u passo=%u)\n",GetCurrentProcessId(),cro_raio,cro_passo);}
+  if(!alocar_filtro(cro,cro_estado,cro_out,cro_out_estado,cro_heap,base))return false;
   cro_cur=0;cro_valido=false;
   {{nrlogfila::linha(L"nr_reproject.log","pid=%lu CROMA_ESTAVEL ligado alfa=%.3f mov=%.3f ref=%.2f delta=%.3f raio=%u passo=%u sigma=%.3f limite=%.3f %ux%u\n",GetCurrentProcessId(),
    double(cro_alfa),double(cro_mov),double(cro_ref),double(cro_delta),cro_raio,cro_passo,double(cro_sigma),double(cro_limite),width,height);}}
@@ -1120,66 +1140,65 @@ struct Backend::Impl {
   if(!roda_cro(expo)){cro_valido=false;return;}
   const unsigned cur=cro_cur,prev=1u-cur;
   const bool valido=cro_valido&&cro_quadro+1u==policy.frame;
-  transition(c,cro[cur].Get(),cro_estado[cur],write_state);cro_estado[cur]=write_state;
-  transition(c,cro[prev].Get(),cro_estado[prev],read_state);cro_estado[prev]=read_state;
-  bool direto{};const unsigned o=filtro_inicio(c,cur,ultimo,cro_out.Get(),cro_out_estado,direto);
   const unsigned historico_n=Policy::history_count,fatia_atual=constants.slice%historico_n,fatia_anterior=(fatia_atual+historico_n-1u)%historico_n;
   struct K{unsigned w,h,fatia,fatiaAnterior,valido,raio,tom,passo;float alfa,alfaMov,delta,expo,profRel,profAbs,refMov,limite,sigma,r0,r1,r2;}
    k{width,height,fatia_atual,fatia_anterior,valido?1u:0u,cro_raio,tom&1u,cro_passo,cro_alfa,cro_mov,cro_delta,expo,
      constants.depth_relative,constants.depth_absolute,cro_ref,cro_limite,cro_sigma,0.f,0.f,0.f};
   static_assert(sizeof(K)==80);
-  ID3D12DescriptorHeap* heaps[]{cro_heap.Get()};c->SetDescriptorHeaps(1,heaps);
-  c->SetComputeRootSignature(cro_root.Get());c->SetPipelineState(cro_pso.Get());
-  c->SetComputeRoot32BitConstants(0,20,&k,0);
-  c->SetComputeRootDescriptorTable(1,gpu(cro_heap.Get(),o));c->SetComputeRootDescriptorTable(2,gpu(cro_heap.Get(),o+5));
-  c->Dispatch((width+7)/8,(height+7)/8,1);
-  transition(c,cro[cur].Get(),write_state,read_state);cro_estado[cur]=read_state;
-  filtro_fim(c,ultimo,direto,cro_out.Get(),cro_out_estado,3u);
+  passe_filtro(c,cur,cro,cro_estado,cro_out.Get(),cro_out_estado,cro_heap.Get(),cro_root.Get(),cro_pso.Get(),&k,ultimo,3u);
   cro_valido=true;cro_quadro=policy.frame;cro_cur=prev;++cro_quadros;
  }
- bool alocar_luz_grossa(){
-  if(!root(device.Get(),20,5,2,lg_root)||!pipeline(device.Get(),lg_root.Get(),g_nr_reproject_luzgrossa,lg_pso))return false;
-  const auto wd=warped->GetDesc();D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
-  for(unsigned i=0;i<2;++i){if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&wd,write_state,nullptr,IID_PPV_ARGS(&lg[i]))))return false;lg_estado[i]=write_state;}
-  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&wd,write_state,nullptr,IID_PPV_ARGS(&lg_out))))return false;lg_out_estado=write_state;
-  D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,filtro_heap_n,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
-  if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&lg_heap))))return false;
-  filtro_descritores(lg_heap.Get(),lg,lg_out.Get());
+ bool alocar_luz_grossa(bool base=false){
+  if(!root(device.Get(),20,5,2,lg_root)||!(base?pipeline(device.Get(),lg_root.Get(),g_nr_reproject_luzgrossabase,lg_pso):pipeline(device.Get(),lg_root.Get(),g_nr_reproject_luzgrossa,lg_pso)))return false;
+  if(!alocar_filtro(lg,lg_estado,lg_out,lg_out_estado,lg_heap,base))return false;
   lg_cur=0;lg_valido=false;
   {{nrlogfila::linha(L"nr_reproject.log","pid=%lu LUZ_GROSSA ligada alfa=%.3f mov=%.3f ref=%.2f delta=%.3f raio=%u passo=%u limite=%.3f segura_max=%u segura_fade=%u %ux%u\n",GetCurrentProcessId(),
    double(lg_alfa),double(lg_mov),double(lg_ref),double(lg_delta),lg_raio,lg_passo,double(lg_limite),segura_max,segura_fade,width,height);}}
   return true;
  }
+
+ bool alocar_base_tom(){
+  if(!root(device.Get(),20,5,2,base_tom_root)||!pipeline(device.Get(),base_tom_root.Get(),g_nr_reproject_basetom,base_tom_pso))return false;
+  D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
+  D3D12_RESOURCE_DESC td{};td.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;td.Width=width;td.Height=height;td.DepthOrArraySize=1;td.MipLevels=1;td.Format=DXGI_FORMAT_R32G32B32A32_FLOAT;td.SampleDesc.Count=1;td.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+  if(!format_support(device.Get(),td.Format,true)||FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,read_state,nullptr,IID_PPV_ARGS(&base_tom))))return false;nrd3d::nomear(base_tom.Get(),L"nr_base_tom");
+  base_tom_estado=read_state;
+  if(!criar_heap(7,base_tom_heap))return false;
+  ID3D12DescriptorHeap* h=base_tom_heap.Get();
+  srv(h,0,nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT);srv(h,1,nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT);
+  srv(h,2,nullptr,DXGI_FORMAT_R16G16_FLOAT,true);srv(h,3,nullptr,DXGI_FORMAT_R32_FLOAT,true);
+  srv(h,4,history[0].Get(),DXGI_FORMAT_R16G16B16A16_FLOAT,true);
+  uav(h,5,base_tom.Get(),DXGI_FORMAT_R32G32B32A32_FLOAT);uav(h,6,nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT);
+  nrlogfila::linha(L"nr_reproject.log","pid=%lu CUSTO_BASE_TOM ligado (NeuralCustoBaseTom=1) %ux%u\n",GetCurrentProcessId(),width,height);
+  return true;
+ }
+
+ void calcular_base_tom(ID3D12GraphicsCommandList* c,float expo,unsigned tom){
+  if(!base_tom_pso||!(roda_cro(expo)||roda_lg(expo)))return;
+  const unsigned historico_n=Policy::history_count,fatia_atual=constants.slice%historico_n,fatia_anterior=(fatia_atual+historico_n-1u)%historico_n;
+  struct K{unsigned w,h,fatia,fatiaAnterior,valido,raio,tom,passo;float alfa,alfaMov,delta,expo,r[8];}
+   k{width,height,fatia_atual,fatia_anterior,0u,0u,tom&1u,0u,0.f,0.f,0.f,expo,{}};
+  static_assert(sizeof(K)==80);
+  transition(c,base_tom.Get(),base_tom_estado,write_state);base_tom_estado=write_state;
+  bind(c,base_tom_heap.Get(),base_tom_root.Get(),base_tom_pso.Get(),20,&k,5);
+  c->Dispatch((width+7)/8,(height+7)/8,1);
+  transition(c,base_tom.Get(),write_state,read_state);base_tom_estado=read_state;++base_tom_quadros;
+ }
  void luz_grossa(ID3D12GraphicsCommandList* c,float expo,unsigned tom,bool ultimo=true){
   if(!roda_lg(expo)){lg_valido=false;return;}
   const unsigned cur=lg_cur,prev=1u-cur;
   const bool valido=lg_valido&&lg_quadro+1u==policy.frame;
-  transition(c,lg[cur].Get(),lg_estado[cur],write_state);lg_estado[cur]=write_state;
-  transition(c,lg[prev].Get(),lg_estado[prev],read_state);lg_estado[prev]=read_state;
-  bool direto{};const unsigned o=filtro_inicio(c,cur,ultimo,lg_out.Get(),lg_out_estado,direto);
   const unsigned historico_n=Policy::history_count,fatia_atual=constants.slice%historico_n,fatia_anterior=(fatia_atual+historico_n-1u)%historico_n;
   struct K{unsigned w,h,fatia,fatiaAnterior,valido,raio,tom,passo;float alfa,alfaMov,delta,expo,profRel,profAbs,refMov,limite,r0,r1,r2,r3;}
    k{width,height,fatia_atual,fatia_anterior,valido?1u:0u,lg_raio,tom&1u,lg_passo,lg_alfa,lg_mov,lg_delta,expo,
      constants.depth_relative,constants.depth_absolute,lg_ref,lg_limite,lg_teto,lg_piso,lg_cor,0.f};
   static_assert(sizeof(K)==80);
-  ID3D12DescriptorHeap* heaps[]{lg_heap.Get()};c->SetDescriptorHeaps(1,heaps);
-  c->SetComputeRootSignature(lg_root.Get());c->SetPipelineState(lg_pso.Get());
-  c->SetComputeRoot32BitConstants(0,20,&k,0);
-  c->SetComputeRootDescriptorTable(1,gpu(lg_heap.Get(),o));c->SetComputeRootDescriptorTable(2,gpu(lg_heap.Get(),o+5));
-  c->Dispatch((width+7)/8,(height+7)/8,1);
-  transition(c,lg[cur].Get(),write_state,read_state);lg_estado[cur]=read_state;
-  filtro_fim(c,ultimo,direto,lg_out.Get(),lg_out_estado,4u);
+  passe_filtro(c,cur,lg,lg_estado,lg_out.Get(),lg_out_estado,lg_heap.Get(),lg_root.Get(),lg_pso.Get(),&k,ultimo,4u);
   lg_valido=true;lg_quadro=policy.frame;lg_cur=prev;++lg_quadros;
  }
  bool alocar_suave(){
   if(!root(device.Get(),20,5,2,su_root)||!pipeline(device.Get(),su_root.Get(),g_nr_reproject_suave,su_pso))return false;
-  const auto wd=warped->GetDesc();D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
-  for(unsigned i=0;i<2;++i){if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&wd,write_state,nullptr,IID_PPV_ARGS(&su[i]))))return false;su_estado[i]=write_state;}
-  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&wd,write_state,nullptr,IID_PPV_ARGS(&su_out))))return false;su_out_estado=write_state;
-  D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,filtro_heap_n,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
-  if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&su_heap))))return false;
-
-  filtro_descritores(su_heap.Get(),su,su_out.Get());
+  if(!alocar_filtro(su,su_estado,su_out,su_out_estado,su_heap,false))return false;
   su_cur=0;su_valido=false;
   {{nrlogfila::linha(L"nr_reproject.log","pid=%lu SUAVE ligado forca=%.3f entrada=%.2f residuo=%.2f mov=%.2f escuro=%d banda=%u %ux%u\n",GetCurrentProcessId(),
    double(su_cfg.forca),double(su_cfg.entrada),double(su_cfg.residuo),double(su_cfg.mov),su_cfg.escuro?1:0,su_cfg.banda,width,height);}}
@@ -1190,28 +1209,25 @@ struct Backend::Impl {
   if(!roda_su(expo)){su_valido=false;return;}
   const unsigned cur=su_cur,prev=1u-cur;
   const bool valido=su_valido&&su_quadro+1u==policy.frame;
-  transition(c,su[cur].Get(),su_estado[cur],write_state);su_estado[cur]=write_state;
-  transition(c,su[prev].Get(),su_estado[prev],read_state);su_estado[prev]=read_state;
-  bool direto{};const unsigned o=filtro_inicio(c,cur,true,su_out.Get(),su_out_estado,direto);
   const unsigned historico_n=Policy::history_count,fatia_atual=constants.slice%historico_n,fatia_anterior=(fatia_atual+historico_n-1u)%historico_n;
   const nrsuave::Constantes k=nrsuave::constantes(su_cfg,width,height,fatia_atual,fatia_anterior,valido,tom,expo,constants.depth_relative,constants.depth_absolute);
-  ID3D12DescriptorHeap* heaps[]{su_heap.Get()};c->SetDescriptorHeaps(1,heaps);
-  c->SetComputeRootSignature(su_root.Get());c->SetPipelineState(su_pso.Get());
-  c->SetComputeRoot32BitConstants(0,20,&k,0);
-  c->SetComputeRootDescriptorTable(1,gpu(su_heap.Get(),o));c->SetComputeRootDescriptorTable(2,gpu(su_heap.Get(),o+5));
-  c->Dispatch((width+7)/8,(height+7)/8,1);
-  transition(c,su[cur].Get(),write_state,read_state);su_estado[cur]=read_state;
-  filtro_fim(c,true,direto,su_out.Get(),su_out_estado,0u);
+  passe_filtro(c,cur,su,su_estado,su_out.Get(),su_out_estado,su_heap.Get(),su_root.Get(),su_pso.Get(),&k,true,0u);
   su_valido=true;su_quadro=policy.frame;su_cur=prev;++su_quadros;
  }
+
  bool alocar_preenchimento(){
   if(!root(device.Get(),8,2,1,fill_root)||!pipeline(device.Get(),fill_root.Get(),g_nr_reproject_fill,fill_pso))return false;
   const auto wd=warped->GetDesc();D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
-  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&wd,read_state,nullptr,IID_PPV_ARGS(&fill_copia))))return false;
-  D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,3,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
-  if(FAILED(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&fill_heap))))return false;
+  if(FAILED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&wd,read_state,nullptr,IID_PPV_ARGS(&fill_copia))))return false;nrd3d::nomear(fill_copia.Get(),L"nr_fill_copia");
+  fill_copia_estado=read_state;
+
+  if(!criar_heap(6,fill_heap))return false;
   srv(fill_heap.Get(),0,history[2].Get(),DXGI_FORMAT_R32_FLOAT,true);srv(fill_heap.Get(),1,fill_copia.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
   uav(fill_heap.Get(),2,warped.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
+  srv(fill_heap.Get(),3,history[2].Get(),DXGI_FORMAT_R32_FLOAT,true);srv(fill_heap.Get(),4,warped.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
+  uav(fill_heap.Get(),5,fill_copia.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
+
+  if(!pipeline(device.Get(),fill_root.Get(),g_nr_reproject_fillrapido,fill_rapido_pso))fill_rapido_pso.Reset();
   return true;
  }
 
@@ -1220,12 +1236,21 @@ struct Backend::Impl {
   struct K{unsigned w,h,fatia;float limiar,relativa,absoluta;unsigned raio,pad;}
    k{width,height,constants.slice,preenchimento,constants.depth_relative,constants.depth_absolute,256u,modo_preenchimento()};
 
-  static const bool dupla=[]{double v=0.;return ler_ini(L"NeuralTesteFillCopiaDupla",v)&&v>.5;}();
+  if(fill_direto.load(std::memory_order_relaxed)&&fill_rapido_pso){
+   transition(c,fill_copia.Get(),fill_copia_estado,write_state);fill_copia_estado=write_state;
+   ID3D12DescriptorHeap* heaps[]{fill_heap.Get()};c->SetDescriptorHeaps(1,heaps);
+   c->SetComputeRootSignature(fill_root.Get());c->SetPipelineState(fill_rapido_pso.Get());
+   c->SetComputeRoot32BitConstants(0,8,&k,0);
+   c->SetComputeRootDescriptorTable(1,gpu(fill_heap.Get(),3));c->SetComputeRootDescriptorTable(2,gpu(fill_heap.Get(),5));
+   c->Dispatch((width+7)/8,(height+7)/8,1);
+   transition(c,fill_copia.Get(),write_state,read_state);fill_copia_estado=read_state;cadeia_fonte=5u;
+   return;
+  }
   {
+  transition(c,fill_copia.Get(),fill_copia_estado,read_state);fill_copia_estado=read_state;
   transition(c,fill_copia.Get(),read_state,D3D12_RESOURCE_STATE_COPY_DEST);
   transition(c,warped.Get(),read_state,D3D12_RESOURCE_STATE_COPY_SOURCE);
   c->CopyResource(fill_copia.Get(),warped.Get());
-  if(dupla)c->CopyResource(fill_copia.Get(),warped.Get());
   transition(c,fill_copia.Get(),D3D12_RESOURCE_STATE_COPY_DEST,read_state);
   transition(c,warped.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,write_state);}
   ID3D12DescriptorHeap* heaps[]{fill_heap.Get()};c->SetDescriptorHeaps(1,heaps);
@@ -1275,7 +1300,7 @@ struct Backend::Impl {
    device->GetCopyableFootprints(&sd,0,1,0,&sf,nullptr,nullptr,&stotal);
    ComPtr<ID3D12Resource> leitura_fonte;
    D3D12_RESOURCE_DESC sbd=bd;sbd.Width=stotal;
-   if(stotal&&SUCCEEDED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&sbd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&leitura_fonte)))) {
+   if(stotal&&SUCCEEDED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&sbd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&leitura_fonte)))) {nrd3d::nomear(leitura_fonte.Get(),L"nr_f9_leitura_fonte");
     D3D12_TEXTURE_COPY_LOCATION sdst{},ssrc{};
     sdst.pResource=leitura_fonte.Get();sdst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;sdst.PlacedFootprint=sf;
     ssrc.pResource=fonte;ssrc.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;ssrc.SubresourceIndex=0;
@@ -1294,7 +1319,7 @@ struct Backend::Impl {
    device->GetCopyableFootprints(&md,fatia,1,0,&mf,nullptr,nullptr,&mtotal);
    ComPtr<ID3D12Resource> leitura_mv;
    D3D12_RESOURCE_DESC mbd=bd;mbd.Width=mtotal;
-   if(mtotal&&SUCCEEDED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&mbd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&leitura_mv)))) {
+   if(mtotal&&SUCCEEDED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&mbd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&leitura_mv)))) {nrd3d::nomear(leitura_mv.Get(),L"nr_f9_leitura_mv");
     transition(c,history[1].Get(),read_state,D3D12_RESOURCE_STATE_COPY_SOURCE);
     D3D12_TEXTURE_COPY_LOCATION md_destino{},md_origem{};
     md_destino.pResource=leitura_mv.Get();md_destino.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;md_destino.PlacedFootprint=mf;
@@ -1313,7 +1338,7 @@ struct Backend::Impl {
    device->GetCopyableFootprints(&dd,fatia,1,0,&df,nullptr,nullptr,&dtotal);
    ComPtr<ID3D12Resource> leitura_depth;
    D3D12_RESOURCE_DESC dbd=bd;dbd.Width=dtotal;
-   if(dtotal&&SUCCEEDED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&dbd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&leitura_depth)))) {
+   if(dtotal&&SUCCEEDED(device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&dbd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&leitura_depth)))) {nrd3d::nomear(leitura_depth.Get(),L"nr_f9_leitura_prof");
     transition(c,history[2].Get(),read_state,D3D12_RESOURCE_STATE_COPY_SOURCE);
     D3D12_TEXTURE_COPY_LOCATION dst{},src{};
     dst.pResource=leitura_depth.Get();dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;dst.PlacedFootprint=df;
@@ -1343,8 +1368,20 @@ struct Backend::Impl {
   if(od)nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu job=%d post_composed=%llu post_refused=%llu post_lost=%llu formato=%u saida=%llux%u entrada=%ux%u reason=%s\n",GetCurrentProcessId(),policy.frame,job,post_composed,post_refused,post_lost,unsigned(od->Format),static_cast<unsigned long long>(od->Width),od->Height,width,height,reason);
   else nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu job=%d post_composed=%llu post_refused=%llu post_lost=%llu reason=%s\n",GetCurrentProcessId(),policy.frame,job,post_composed,post_refused,post_lost,reason);
   }}
- void log(int job,int age,const char* reason){trace(job,age,reason);const auto events=composed+skipped+unsupported;if(events>3&&(events&255)!=0)return;{nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu job=%d age=%d composed=%llu skipped=%llu unsupported=%llu retidos=%llu preservadas=%llu reason=%s\n",GetCurrentProcessId(),policy.frame,job,age,composed,skipped,unsupported,retidos,preservacoes,reason);}}
+ void log(int job,int age,const char* reason){trace(job,age,reason);const auto events=composed+skipped+unsupported;if(events>3&&(events&255)!=0)return;{nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu job=%d age=%d composed=%llu skipped=%llu unsupported=%llu reason=%s\n",GetCurrentProcessId(),policy.frame,job,age,composed,skipped,unsupported,reason);}}
 };
+
+namespace {
+constexpr std::uint64_t impl_velho_margem=3;
+struct ImplsVelhos{std::mutex m;std::vector<std::pair<std::shared_ptr<void>,std::uint64_t>> v;std::uint64_t capturas{};};
+ImplsVelhos& impls_velhos(){static auto* a=new ImplsVelhos;return *a;}
+void impls_velhos_passo() noexcept {
+ std::vector<std::shared_ptr<void>> soltar;
+ try{auto& V=impls_velhos();std::lock_guard<std::mutex> l(V.m);++V.capturas;
+  for(auto it=V.v.begin();it!=V.v.end();){if(it->second<=V.capturas){soltar.push_back(std::move(it->first));it=V.v.erase(it);}else ++it;}}catch(...){}
+}
+unsigned impls_velhos_vivos() noexcept {try{auto& V=impls_velhos();std::lock_guard<std::mutex> l(V.m);return unsigned(V.v.size());}catch(...){return 0u;}}
+}
 
 Backend::Backend():p_([]{nrinijogo::Lote lote;return std::make_unique<Impl>();}()){}Backend::~Backend()=default;
 
@@ -1353,7 +1390,11 @@ void Backend::invalidate() noexcept {if(p_){p_->policy.invalidate();p_->est_vali
 
 void Backend::invalidate_suave() noexcept {if(p_){p_->policy.invalidate();p_->perder_post("post_lost_invalidate_suave");for(auto& a:p_->late.armed)a=0;}}
 
-void Backend::reset() noexcept {nrinijogo::Lote lote;p_.reset(new(std::nothrow) Impl);nrrj::epoca_backend.fetch_add(1,std::memory_order_acq_rel);}
+void Backend::reset() noexcept {nrinijogo::Lote lote;
+ if(p_){try{auto& V=impls_velhos();std::lock_guard<std::mutex> l(V.m);
+   V.v.emplace_back(std::shared_ptr<void>(p_.get(),[](void* x){delete static_cast<Impl*>(x);}),V.capturas+impl_velho_margem);(void)p_.release();}
+  catch(...){}}
+ p_.reset(new(std::nothrow) Impl);nrrj::epoca_backend.fetch_add(1,std::memory_order_acq_rel);}
 void Backend::accepted(int job) noexcept {if(p_){p_->policy.accepted(job);rj_aceito(job);
  if(nrrj::npc2.load(std::memory_order_relaxed))for(int kn=1;kn<=nrrj::npc_n();++kn){nrrj::Inst i1(kn);rj_aceito(job);}
 }}
@@ -1366,9 +1407,12 @@ void Backend::refuse_post(const char* reason) noexcept {
 Backend::Counters Backend::counters() const noexcept {
  if(!p_)return {};const auto& p=*p_;
  return Counters{p.composed,p.skipped,p.unsupported,p.realocacoes,p.recusas_por_limite,
-                 unsigned(p.retired.size()),p.post_composed,p.post_refused,p.post_lost};
+                 unsigned(p.retired.size()),p.post_composed,p.post_refused,p.post_lost,
+                 p.alocacoes_tentadas,p.alocacoes_adiadas,p.est_pso!=nullptr,p.base_tom_quadros,impls_velhos_vivos()};
 }
+CachePsoInfo cache_pso_info() noexcept{auto& c=cache_pso();std::lock_guard<std::mutex> trava(c.m);return {c.criados,c.reusados};}
 bool Backend::begin(const NrCaptureRecord& r){
+ impls_velhos_passo();
  if(!p_)return false;auto& p=*p_;
  p.atualizar_ao_vivo();
 
@@ -1398,9 +1442,9 @@ bool Backend::begin(const NrCaptureRecord& r){
            !nrformato::motivo_papel("mv",motion?&dm:nullptr,mov_vista,campo,sizeof campo)&&
            !nrformato::motivo_papel("prof",depth?&dp:nullptr,prof_vista,campo,sizeof campo))
     NRLOGF(campo,sizeof campo,"mvScale %.4g,%.4g",static_cast<double>(r.motion_scale_x),static_cast<double>(r.motion_scale_y));
-   NRLOGF(detalhe,sizeof detalhe,"campo=\"%s\" cor=fmt%u_%llux%u_flags0x%x mv=fmt%u_%llux%u_flags0x%x prof=fmt%u_%llux%u_flags0x%x mvScale=%.6g,%.6g limite=4096",campo,
+   NRLOGF(detalhe,sizeof detalhe,"campo=\"%s\" cor=fmt%u_%llux%u_flags0x%x mv=fmt%u_%llux%u_flags0x%x prof=fmt%u_%llux%u_flags0x%x mvScale=%.6g,%.6g limite=%u",campo,
                  unsigned(dc.Format),static_cast<unsigned long long>(dc.Width),dc.Height,unsigned(dc.Flags),unsigned(dm.Format),static_cast<unsigned long long>(dm.Width),dm.Height,unsigned(dm.Flags),
-                 unsigned(dp.Format),static_cast<unsigned long long>(dp.Width),dp.Height,unsigned(dp.Flags),static_cast<double>(r.motion_scale_x),static_cast<double>(r.motion_scale_y));
+                 unsigned(dp.Format),static_cast<unsigned long long>(dp.Width),dp.Height,unsigned(dp.Flags),static_cast<double>(r.motion_scale_x),static_cast<double>(r.motion_scale_y),nrformato::lado_maximo);
    p.relatar(nrcompat::Origem::Captura,p.captura_relatada,"capture_formato_de_entrada",detalhe,campo);}
   return reject(linha);
  }
@@ -1412,7 +1456,10 @@ bool Backend::begin(const NrCaptureRecord& r){
   p.relatar(nrcompat::Origem::Captura,p.captura_relatada,"capture_exposicao",detalhe,campo);
   return reject("capture_exposicao");
  }
- const unsigned states[]{r.color_state,r.motion_state,r.depth_state,r.exposure_state};for(unsigned i=0;i<(exposure?4u:3u);++i)if(state(states[i])==D3D12_RESOURCE_STATES(~0u)){
+
+ const bool lista_compute=c&&c->GetType()==D3D12_COMMAND_LIST_TYPE_COMPUTE;
+ const unsigned states[]{r.color_state,r.motion_state,r.depth_state,r.exposure_state};for(unsigned i=0;i<(exposure?4u:3u);++i)if(state(states[i])==D3D12_RESOURCE_STATES(~0u)||
+   (lista_compute&&!nrffx_estado::valido_em_compute(unsigned(state(states[i]))))){
   if(!p.nova(nrcompat::Origem::Captura,p.captura_relatada,"capture_estado_de_recurso"))return reject("capture_estado_de_recurso");
   const char* papel[]{"cor","mv","prof","exp"};char detalhe[120],campo[48];
   NRLOGF(detalhe,sizeof detalhe,"papel=%s estado_ffx=0x%x",papel[i],states[i]);NRLOGF(campo,sizeof campo,"%s estado 0x%x",papel[i],states[i]);
@@ -1433,11 +1480,18 @@ bool Backend::begin(const NrCaptureRecord& r){
  {const auto agora=GetTickCount64();
   if(agora-p.vram_tick>=500){p.vram_tick=agora;std::uint64_t uso{},orc{};
    if(p.vram(uso,orc)){nrposteto::uso.store(uso);nrposteto::orcamento.store(orc);
+
+    auto& G=nrorc::estado().guarda;
+    const std::uint64_t b_cena=G.bytes[unsigned(nrorc::Origem::Cena)].load(),b_rosto=G.bytes_rosto(),b_f9=G.bytes[unsigned(nrorc::Origem::F9)].load();
+    if(p.uma<0){D3D12_FEATURE_DATA_ARCHITECTURE a{};p.uma=p.device&&SUCCEEDED(p.device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE,&a,sizeof a))&&a.UMA?1:0;}
+    const std::uint64_t uso_cena=nrposteto::uso_da_cena(uso,b_rosto,p.uma==1?b_f9:0);
+    const bool gravando=agora<nrorc::estado().calib_pausa_ate.load(std::memory_order_relaxed);
     if(!post||!nrposteto::folga_pre.load()){
      const std::uint64_t folga=orc>uso?orc-uso:1;const auto q=nrprescale::unpack_quadro(nrprescale::quadro.load(std::memory_order_acquire));
      nrposteto::folga_pre.store(folga);
 
-     if(post)nrposteto::medida_vram.uso_pre=uso;
+     if(post)nrposteto::medida_vram.uso_pre=uso_cena;
+     nrposteto::base_partes={b_cena,b_rosto,b_f9,uso};
      const unsigned vram=unsigned(nrposteto::teto_vram(folga,std::uint64_t(q.saida_w)*q.saida_h)*100.+.5);
      nrposteto::teto_vram_centi.store(vram);
 
@@ -1445,17 +1499,20 @@ bool Backend::begin(const NrCaptureRecord& r){
 
     {const auto q=nrprescale::unpack_quadro(nrprescale::quadro.load(std::memory_order_acquire));
      const std::uint64_t saida_px=std::uint64_t(q.saida_w)*q.saida_h;
-     const double medido=nrposteto::amostra_vram(nrposteto::medida_vram,post,uso,nrposteto::folga_pre.load(),saida_px,
-                                                 post?nrprescale::efetivo.load(std::memory_order_relaxed):100.,agora);
+     const double medido=nrposteto::amostra_vram(nrposteto::medida_vram,post,uso_cena,nrposteto::folga_pre.load(),saida_px,
+                                                 post?nrprescale::efetivo.load(std::memory_order_relaxed):100.,agora,gravando);
      if(!post)nrposteto::medida_vram_relatada=false;
      const double atual=double(nrposteto::teto_vram_centi.load())/100.;
-     const double aplicado=nrposteto::aplicar_medido(nrposteto::medida_vram,atual,medido,uso);
+     const double aplicado=nrposteto::aplicar_medido(nrposteto::medida_vram,atual,medido,uso_cena);
      if(medido>0){const unsigned centi=unsigned(aplicado*100.+.5);
 
-      if(nrposteto::teto_vram_centi.exchange(centi)!=centi||!nrposteto::medida_vram_relatada){nrposteto::medida_vram_relatada=true;char d[160];
-       NRLOGF(d,sizeof d,"teto_vram_medido=%.1f%% aplicado=%.1f%% custo=%llu MB rede=%.1f%% folga_pre=%llu MB",medido,aplicado,
-                     static_cast<unsigned long long>((uso>nrposteto::medida_vram.uso_pre?uso-nrposteto::medida_vram.uso_pre:0)>>20),
-                     nrprescale::efetivo.load(std::memory_order_relaxed),static_cast<unsigned long long>(nrposteto::folga_pre.load()>>20));
+      if(nrposteto::teto_vram_centi.exchange(centi)!=centi||!nrposteto::medida_vram_relatada){nrposteto::medida_vram_relatada=true;char d[320];
+       const auto& B=nrposteto::base_partes;const auto mb=[](std::int64_t v){return static_cast<long long>(v/(1<<20));};
+       const std::int64_t d_uso=std::int64_t(uso)-std::int64_t(B.uso),d_cena=std::int64_t(b_cena)-std::int64_t(B.cena),d_rosto=std::int64_t(b_rosto)-std::int64_t(B.rosto);
+       NRLOGF(d,sizeof d,"teto_vram_medido=%.1f%% aplicado=%.1f%% custo=%llu MB rede=%.1f%% folga_pre=%llu MB cena_mb=%lld rosto_mb=%lld f9_mb=%lld jogo_mb=%lld uso_mb=%lld uma=%d",medido,aplicado,
+                     static_cast<unsigned long long>((uso_cena>nrposteto::medida_vram.uso_pre?uso_cena-nrposteto::medida_vram.uso_pre:0)>>20),
+                     nrprescale::efetivo.load(std::memory_order_relaxed),static_cast<unsigned long long>(nrposteto::folga_pre.load()>>20),
+                     mb(d_cena),mb(d_rosto),mb(std::int64_t(b_f9)),mb(d_uso-d_rosto-d_cena-(p.uma==1?std::int64_t(b_f9)-std::int64_t(B.f9):0)),mb(d_uso),p.uma);
        nrcompat::report("post_teto_vram_medido",d);}}}}}}
 
  {const auto pedida=historico_post(unsigned(cd.Width),cd.Height,post,chave,0,~0ull,teto);
@@ -1493,12 +1550,10 @@ bool Backend::begin(const NrCaptureRecord& r){
 
  if(nrexpofresca::fresca.load(std::memory_order_relaxed))expoanel::gravar(c,p.device.Get(),exposure,exposure?state(states[3]):D3D12_RESOURCE_STATE_COMMON);
  ID3D12Resource* inputs[]{color,motion,depth,exposure};for(unsigned i=0;i<(exposure?4u:3u);++i)transition(c,inputs[i],state(states[i]),read_state);
- p.preservar_fonte(c);
  if(p.histories_read)for(auto& h:p.history)transition(c,h.Get(),read_state,write_state);p.histories_read=false;
- const float dual=Impl::ajuste(nrreproject::DualMotion,thresholds().dual_motion),limiar_dual=Impl::ajuste(nrreproject::DualThreshold,thresholds().dual_threshold);
- auto& k=p.constants;k={};k.width=p.width;k.height=p.height;k.slice=p.policy.begin();k.mask=p.policy.mask();k.count=Policy::history_count;k.flags=1u|bits_cor(cor_vista)|(p.pontual?512u:0u)|(exposure&&p.portao_exposicao?2u:0u)|(dual>0.f?(unsigned(std::min(7.f,std::max(1.f,std::floor(dual+.5f))))<<2):0u)|(unsigned(std::min(15.f,std::max(0.f,std::floor(limiar_dual*4.f+.5f))))<<5);
+ auto& k=p.constants;k={};k.width=p.width;k.height=p.height;k.slice=p.policy.begin();k.mask=p.policy.mask();k.count=Policy::history_count;k.flags=1u|bits_cor_efetivo(cor_vista)|(p.pontual?512u:0u)|(exposure&&p.portao_exposicao?2u:0u);
 
- if(nrreproject::index_of(nrreproject::controls,nrreproject::DepthAwareRead)!=0u)k.flags|=1024u;
+ if(prof_normal())k.flags|=0x1000000u;
  k.inverse_x=1.f/p.width;k.inverse_y=1.f/p.height;k.depth_absolute=Impl::ajuste(nrreproject::DepthAbsolute,thresholds().depth_absolute);k.current_exposure=k.source_exposure=1;{k.residual_exposure=nrreproject::multiplicador_escala();}
  k.motion_reference=Impl::ajuste(nrreproject::MotionReference,thresholds().motion_reference);
 
@@ -1509,67 +1564,48 @@ bool Backend::begin(const NrCaptureRecord& r){
  k.color_threshold=nrreproject::value(nrreproject::controls,nrreproject::Color);
  k.clamp_strength=nrreproject::value(nrreproject::controls,nrreproject::Clamp);
  k.motion_divergence=nrreproject::value(nrreproject::controls,nrreproject::Divergence);
- k.confidence_rate=nrreproject::value(nrreproject::controls,nrreproject::Hysteresis);
- k.deform_tolerance=nrreproject::value(nrreproject::controls,nrreproject::DeformTolerance);
- k.gate_smooth=Impl::ajuste(nrreproject::GateSmooth,thresholds().gate_smooth);
- k.deform_blur=Impl::ajuste(nrreproject::DeformBlur,thresholds().deform_blur);
+
  k.detail_motion=nrreproject::value(nrreproject::controls,nrreproject::DetailMotion);
- k.occlusion_tolerance=nrreproject::value(nrreproject::controls,nrreproject::OcclusionTolerance);
- k.residual_floor=Impl::ajuste(nrreproject::ResidualFloor,thresholds().residual_floor);
- k.confidence_floor=Impl::ajuste(nrreproject::ConfidenceFloor,thresholds().confidence_floor);
-
- {static const unsigned motivo=[]{double v=0;return ler_ini(L"NeuralReprojectDebugReason",v)&&v==1.?1u:0u;}();
-
-  k.pad=motivo|(unsigned(nrreproject::value(nrreproject::controls,nrreproject::DepthSnap)+.5f)&3u)<<8;
-
-  {const float rp=nrreproject::value(nrreproject::controls,nrreproject::MotionRepair);k.pad|=(rp>3.5f?3u:rp>2.5f?2u:rp>1.5f?1u:0u)<<10;}
-  {static const unsigned simula=[]{double v=0;return ler_ini(L"NeuralReprojectSimulateHalo",v)&&v>=1&&v<=3?unsigned(v):0u;}();k.pad|=simula<<12;}
+ {
 
   {const float rd=nrreproject::value(nrreproject::controls,nrreproject::RawDivergence);k.pad|=(rd<.5f?0u:rd>15.f?1u:rd>6.f?2u:3u)<<16;}
 
   k.pad|=(nrreproject::index_of(nrreproject::controls,nrreproject::MotionStrength)&7u)<<20;
   k.pad|=(nrreproject::index_of(nrreproject::controls,nrreproject::MotionStrengthRef)&3u)<<24;
 
-  k.pad|=(nrreproject::index_of(nrreproject::controls,nrreproject::NoiseCancel)&7u)<<26;
-
-  k.pad|=(nrreproject::index_of(nrreproject::controls,nrreproject::RatioTransfer)&1u)<<30;
-
-  if(nrreproject::value(nrreproject::controls,nrreproject::EdgeCarry)>.5f){
-   const unsigned rb=nrreproject::faixa_borda_raio(p.borda_r100,p.pct_raio());
-   if(rb){k.flags|=2048u;k.pad|=(rb&127u)<<1;++p.borda_quadros;p.borda_raio=rb;}
-  }}
+ }
  if(k.slice<Policy::history_count){p.jitter_fatia[k.slice*2]=nrreproject::jitter_atual_x.load();p.jitter_fatia[k.slice*2+1]=nrreproject::jitter_atual_y.load();p.jitter_ok[k.slice]=nrreproject::jitter_valido.load();}
  p.log_constants(k);
 
- {static const bool nn=[]{double v=0;return ler_ini(L"NeuralReprojectNearNorm",v)&&v==1.;}();static float near_ref=0.f;static unsigned long long trocas=0;static float near_ult=0.f;
+ {const bool nn=p.cfg_near_norm;static float near_ref=0.f;static unsigned long long trocas=0;static float near_ult=0.f;
   const float nq=nrreproject::near_atual.load(std::memory_order_relaxed);
   if(nn&&nq>0.f){if(!(near_ref>0.f))near_ref=nq;const float f=near_ref/nq;if(f!=1.f&&std::isfinite(f)&&f>.01f&&f<100.f)std::memcpy(&k.age,&f,4);
    if(nq!=near_ult){++trocas;if(trocas<=8||(trocas&255u)==0)nrlogfila::linha(L"nr_reproject.log","pid=%lu NEAR_NORM near=%.5f ref=%.5f fator=%.4f trocas=%llu\n",GetCurrentProcessId(),double(nq),double(near_ref),double(f),trocas);near_ult=nq;}}}
- p.bind(c,p.temporal_heap.Get(),p.temporal_root.Get(),p.capture_pso.Get(),32,&k,8);c->Dispatch((p.width+7)/8,(p.height+7)/8,1);
+ {nrtgpu::Escopo tg(c,nrtgpu::Captura);p.bind(c,p.temporal_heap.Get(),p.temporal_root.Get(),p.capture_pso.Get(),32,&k,8);c->Dispatch((p.width+7)/8,(p.height+7)/8,1);}
  k.age=0;
  for(auto& h:p.history)transition(c,h.Get(),write_state,read_state);p.histories_read=true;
 
+ {nrtgpu::Escopo tg(c,nrtgpu::RostoRecorte);
  rj_recorte(r.command_list,color,unsigned(cor_vista),post);
  if(nrrj::npc2.load(std::memory_order_relaxed))for(int kn=1;kn<=nrrj::npc_n();++kn){nrrj::Inst i1(kn);rj_recorte(r.command_list,color,unsigned(cor_vista),post);}
+ }
  for(unsigned i=0;i<(exposure?4u:3u);++i)transition(c,inputs[i],read_state,state(states[i]));p.captured_command=r.command_list;return true;
 }
 Result Backend::compose(void* command,void* destination,unsigned destination_state,void* residual,int job,float exposure,unsigned tone){
  if(!p_)return Result::Failed;auto& p=*p_;p.atualizar_ao_vivo();int age=p.policy.age(job);p.trace_expo=exposure;
 
- int idade_modelo=-1;bool da_preservada=false;
- if(p.ready&&!p.reduzido&&age<0&&p.bilateral.retencao>0&&p.bilateral.forca>0&&p.bil_apply){
-
-  if(job==p.bil_preservado_job&&job!=p.bil_job){const int longa=p.policy.long_age(job);if(longa>=0&&unsigned(longa)<=p.bilateral.retencao){idade_modelo=longa;da_preservada=true;}}
-  else if(p.bil_coef_read&&p.bil_job>0){const int longa=p.policy.long_age(p.bil_job);if(longa>=0&&unsigned(longa)<=p.bilateral.retencao)idade_modelo=longa;}}
-
  bool segurar=false;
- if(!p.ready||(age<0&&idade_modelo<0)){
+ if(!p.ready||age<0){
   if(p.pode_segurar(command))segurar=true;
   else{++p.skipped;p.log(job,age,"old_or_missing_source");return Result::Skipped;}
  }
 
  if(p.composed_frame||command!=p.captured_command){++p.skipped;p.log(job,age,"duplicate_or_different_command");return Result::Skipped;}
  auto* c=static_cast<ID3D12GraphicsCommandList*>(command);auto* dst=static_cast<ID3D12Resource*>(destination);auto* res=static_cast<ID3D12Resource*>(residual);
+
+ nrtgpu::quadro();nrtgpu::Escopo tg_total(c,nrtgpu::ComposeTotal);unsigned tg=0;
+ auto tg_troca=[&](unsigned prox){nrtgpu::fim(c,tg);tg=prox<nrtgpu::Passes?nrtgpu::inicio(c,prox):0u;};
+ struct TgFecha{ID3D12GraphicsCommandList* c;unsigned& t;~TgFecha(){nrtgpu::fim(c,t);}} tg_fecha{c,tg};
  auto unsupported=[&]{++p.unsupported;p.log(job,age,"compose_unsupported");
   if(!p.nova(nrcompat::Origem::Composicao,p.composicao_relatada,"compose_unsupported"))return Result::Unsupported;
 
@@ -1588,6 +1624,7 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
  ID3D12DescriptorHeap* const warp_heap=p.warp_heap_override?p.warp_heap_override:p.temporal_heap.Get();
 
  ID3D12Resource* res_warp=res;
+ tg_troca(nrtgpu::Reduzir);
  if(p.reduzido){
   if(!p.reduzir_pso||!p.reduzir_heap||!p.res_reduzido||!p.post_pso||!p.post_heap){
    if(p.nova(nrcompat::Origem::Composicao,p.composicao_relatada,"compose_post_reduzido"))
@@ -1611,7 +1648,7 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
     static_cast<unsigned long long>(p.red_cache_hits),static_cast<unsigned long long>(p.red_cache_misses));}
   }
  }
- nrcusto::marca(c,nrcusto::ReduzirFim);
+ nrcusto::marca(c,nrcusto::ReduzirFim);tg_troca(segurar?nrtgpu::Cadeia:nrtgpu::Warp);
  if(!segurar)p.srv(warp_heap,6,res_warp,res_warp==res?rd.Format:DXGI_FORMAT_R16G16B16A16_FLOAT);
  p.uav(p.compose_heap.Get(),compose_variante*variante+compose_uavs,dst,dd.Format);
  if(segurar){++p.segurados_seguidos;++p.segurados_total;nrposteto::segurados_total.fetch_add(1,std::memory_order_relaxed);
@@ -1624,13 +1661,13 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
     f=rampa(p.segurados_seguidos)/rampa(p.segurados_seguidos-1u);}
    p.cadeia_fonte=0u;p.estabilizar(c,f,false,true,false,p.cadeia_segue(exposure));}
 
+  p.calcular_base_tom(c,exposure,tone);
   if(p.cro_ligado())p.croma(c,exposure,tone,p.ultimo_cro(exposure));
   if(p.lg_ligado())p.luz_grossa(c,exposure,tone,p.ultimo_lg(exposure));
   if(p.su_cfg.ligado())p.suave(c,exposure,tone);
   p.cadeia_fechar(c);
  }else{
  p.segurados_seguidos=0;
- if(idade_modelo<0){
  if(p.warped_read)transition(c,p.warped.Get(),read_state,write_state);p.warped_read=false;p.constants.age=unsigned(age);
  {
 
@@ -1638,7 +1675,6 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
   const unsigned n=Policy::history_count,atual=p.constants.slice%n,fonte=(p.constants.slice+n-unsigned(age)%n)%n;
   p.constants.jitter_x=p.constants.jitter_y=0.f;
 
-  p.constants.pad=(p.constants.pad&~(1u<<29))|((tone&1u)<<29);
   if(std::isfinite(exposure)&&exposure>0.f)p.constants.current_exposure=p.constants.source_exposure=exposure;
   if(sinal!=0.f&&p.jitter_ok[atual]&&p.jitter_ok[fonte]&&p.width&&p.height){
    p.constants.jitter_x=sinal*(p.jitter_fatia[fonte*2]-p.jitter_fatia[atual*2])/float(p.width);
@@ -1646,31 +1682,24 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
  }
  {
 
-  const unsigned nivel=unsigned(nrreproject::value(nrreproject::controls,nrreproject::HaloCutMoving)+.5f);
-  p.corte_raio_warp=nrreproject::corte_raio_warp(nivel,p.pct_raio());
-  p.constants.flags&=~((3u<<12)|(63u<<16));
-  if(p.corte_raio_warp)p.constants.flags|=((nivel&3u)<<12)|((p.corte_raio_warp&63u)<<16);
   if(age>=0)p.idade_media=p.idade_media>0.f?p.idade_media+.1f*(float(age)-p.idade_media):float(age);
  }
  p.bind(c,warp_heap,p.temporal_root.Get(),p.warp_pso.Get(),32,&p.constants,8);c->Dispatch((p.width+7)/8,(p.height+7)/8,1);transition(c,p.warped.Get(),write_state,read_state);p.warped_read=true;
- }else if(!p.warped_read){transition(c,p.warped.Get(),write_state,read_state);p.warped_read=true;}
- nrcusto::marca(c,nrcusto::WarpFim);
+ p.diag_rodar_warp(c,res_warp,res_warp==res?rd.Format:DXGI_FORMAT_R16G16B16A16_FLOAT);
+ nrcusto::marca(c,nrcusto::WarpFim);tg_troca(nrtgpu::Fill);
 
  const auto despejo=p.reservar_despejo(c);
 
- if(despejo.leitura){{nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu DUMPINFO indice=%u job=%d age=%d modelo=%d\n",GetCurrentProcessId(),p.policy.frame,despejo.indice,job,age,idade_modelo);}}
+ if(despejo.leitura){{nrlogfila::linha(L"nr_reproject.log","pid=%lu frame=%llu DUMPINFO indice=%u job=%d age=%d\n",GetCurrentProcessId(),p.policy.frame,despejo.indice,job,age);}}
+ p.cadeia_fonte=0u;
+ if(p.preenchimento>0&&p.fill_pso)p.preencher(c);
+ nrcusto::marca(c,nrcusto::FillFim);tg_troca(nrtgpu::Estab);
 
- if(idade_modelo>=0)p.transferir(c,res,da_preservada?job:p.bil_job,unsigned(idade_modelo),true,da_preservada);
- else if(!p.reduzido&&p.bilateral.forca>0&&p.bil_apply)p.transferir(c,res,job,unsigned(age));
- else if(p.preenchimento>0&&p.fill_pso)p.preencher(c);
- nrcusto::marca(c,nrcusto::FillFim);
-
- {float alfa=nrreproject::value(nrreproject::controls,nrreproject::Stabilize);
-  bool sem_limite=false;
-  if(p.post_atual&&!(alfa>0.f&&alfa<1.f)&&p.post_estab>0.f){alfa=p.post_estab;sem_limite=true;}
+ {const auto eb=nrestab::base(nrreproject::value(nrreproject::controls,nrreproject::Stabilize),p.post_atual,p.post_estab);
+  float alfa=eb.alfa;bool sem_limite=eb.sem_limite;p.est_fonte_base=eb.fonte;
   {const bool troca=job!=p.est_ultimo_job;p.est_ultimo_job=job;
    const bool fg=nrreproject::fg_ativo();
-   p.est_luz_mov=(troca&&p.fg_troca_luz>0.f&&(p.fg_troca_sempre||fg))?p.fg_troca_luz:p.post_luz_mov;
+   p.est_luz_mov=nrestab::luz_andando(troca,fg,p.fg_troca_luz,p.fg_troca_sempre,p.post_luz_mov,&p.est_fonte_mov);
 
    if(p.fg_log_estado!=int(fg)){p.fg_log_estado=int(fg);{
     nrlogfila::linha(L"nr_reproject.log","pid=%lu FG_TROCA fg_ativo=%d NeuralFgTrocaLuz=%.3f NeuralFgTrocaLuzSempre=%d NeuralPostLuzMov=%.3f NeuralFgCrossfade=%d estabilizador_post=%.3f mov=%.3f quadro=%llu\n",
@@ -1685,10 +1714,10 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
    if(cross_on){p.est_cross=std::clamp(a,.05f,.999f);alfa=p.est_cross;sem_limite=true;}
    else p.est_rosto=std::clamp(a,.05f,.999f);
   }
-  p.cadeia_fonte=0u;
-  if(alfa>0.f&&alfa<1.f&&p.est_pso)p.estabilizar(c,alfa,sem_limite,false,p.est_cross>0.f||(sem_limite&&p.post_filtro_mov),p.cadeia_segue(exposure));else p.est_valido=false;}
- nrcusto::marca(c,nrcusto::EstabFim);
+  if(alfa>0.f&&alfa<1.f&&p.garantir_est())p.estabilizar(c,alfa,sem_limite,false,p.est_cross>0.f||(sem_limite&&p.post_filtro_mov),p.cadeia_segue(exposure));else p.est_valido=false;}
+ nrcusto::marca(c,nrcusto::EstabFim);tg_troca(nrtgpu::Cadeia);
 
+ p.calcular_base_tom(c,exposure,tone);
  if(p.cro_ligado())p.croma(c,exposure,tone,p.ultimo_cro(exposure));
  if(p.lg_ligado())p.luz_grossa(c,exposure,tone,p.ultimo_lg(exposure));
 
@@ -1696,26 +1725,33 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
  p.cadeia_fechar(c);
  p.gravar_despejo(c,res_warp,despejo);
  }
- nrcusto::marca(c,nrcusto::CadeiaFim);
+ nrcusto::marca(c,nrcusto::CadeiaFim);tg_troca(nrtgpu::Passes);
  if(p.reduzido){
 
   p.ganho_valido=false;p.luz_valido=false;p.halo_exc_raio=0u;p.corte_raio_comp=0u;
 
-  ID3D12DescriptorHeap* const ph=p.halo_post(c,exposure,tone)?p.hpost.post_heap.Get():p.q_post(c,exposure,tone)?p.qpost.post_heap.Get():p.post_heap.Get();
+  const bool masc_ok=p.masc_bits&&p.mascara_pronta();
+
+  const auto modo_masc=nrestext::modo_halo(p.masc_bits,p.masc_prof,masc_ok);
+  if(modo_masc==nrestext::ModoHalo::Personagem){nrtgpu::Escopo tm(c,nrtgpu::MascaraHalo);p.mascara_halo(c);}
+  else if(modo_masc==nrestext::ModoHalo::SoProfundidade){nrtgpu::Escopo tm(c,nrtgpu::MascaraHalo);p.mascara_halo(c,false);}
+  ID3D12DescriptorHeap* const ph=p.post_heap.Get();
   p.uav(ph,2,dst,dd.Format);
+  {nrtgpu::Escopo tl(c,nrtgpu::RostoLimpa);rj_limpa_preparar(c,dst,destination_state,p.policy.frame^(std::uint64_t(nrrj::epoca_backend.load(std::memory_order_relaxed))<<44));}
+  tg_troca(nrtgpu::ComposePost);
   transition(c,dst,D3D12_RESOURCE_STATES(destination_state),write_state);
   p.tl_medir_jogo(c,dst,dd.Format,p.comp_w,p.comp_h);
-  ComposeConstants k=p.constantes_compose(teto_unico(tone)&~6u,p.comp_w,p.comp_h,exposure);
-  if(p.q_post_ganho!=1.f)std::memcpy(&k.p2,&p.q_post_ganho,sizeof k.p2);
+  ComposeConstants k=p.constantes_compose(teto_unico(tone)&~6u,p.comp_w,p.comp_h,exposure);k.p2=protege_realce_codigo();
 
   const bool npc_cena=ph==p.post_heap.Get()&&p.cnpc_cfg.modo&&p.cena_npc(c,dst,dd.Format,&k);
-  if(!npc_cena)p.bind(c,ph,p.post_root.Get(),p.post_pso.Get(),12,&k,2);
-  c->Dispatch((p.comp_w+7)/8,(p.comp_h+7)/8,1);order_uav(c,dst);
+  if(!npc_cena&&!(masc_ok&&p.mascara_post(c,dst,dd.Format,&k)))p.bind(c,ph,p.post_root.Get(),p.post_pso.Get(),12,&k,2);
+  c->Dispatch((p.comp_w+7)/8,(p.comp_h+7)/8,1);order_uav(c,dst);tg_troca(nrtgpu::Passes);
+  if(p.diag_gravando()){p.diag_copiar(c,dst,p.diag_cena,nrreproject::diag_cena_recurso,L"nr_diag_cena");if(p.warped_read)nrreproject::diag_realce_recurso.store(p.warped.Get());}
 
-  if(!segurar)rj_compor(c,dst,unsigned(dd.Format),job,age,exposure,tone);
-  if(!segurar&&nrrj::npc2.load(std::memory_order_relaxed))for(int kn=1;kn<=nrrj::npc_n();++kn){nrrj::Inst i1(kn);rj_compor(c,dst,unsigned(dd.Format),job,age,exposure,tone);}
-  rj_camada(c,dst,exposure,tone);
-  p.tl_aplicar(c,dst);
+  if(!segurar){nrtgpu::Escopo tr(c,nrtgpu::Rosto);rj_compor(c,dst,unsigned(dd.Format),job,age,exposure,tone);}
+  if(!segurar&&nrrj::npc2.load(std::memory_order_relaxed)){nrtgpu::Escopo tn(c,nrtgpu::RostoNpc);for(int kn=1;kn<=nrrj::npc_n();++kn){nrrj::Inst i1(kn);rj_compor(c,dst,unsigned(dd.Format),job,age,exposure,tone);}}
+  {nrtgpu::Escopo tc(c,nrtgpu::Camada);rj_camada(c,dst,exposure,tone);}
+  if(p.diag_gravando())p.diag_copiar(c,dst,p.diag_rostos,nrreproject::diag_rostos_recurso,L"nr_diag_rostos");
   transition(c,dst,write_state,D3D12_RESOURCE_STATES(destination_state));
   nrcusto::marca(c,nrcusto::ComposeFim);
   p.composed_frame=true;++p.composed;nrreproject::idade_composta.store(age);
@@ -1725,10 +1761,9 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
  if(p.modo_post()){
 
   p.ganho_valido=false;p.luz_valido=false;
-  p.perder_post("post_lost_sobrescrito");p.post={true,command,job,exposure,tone};p.composed_frame=true;++p.composed;nrreproject::idade_composta.store(idade_modelo>=0?idade_modelo:age);
+  p.perder_post("post_lost_sobrescrito");p.post={true,command,job,exposure,tone};p.composed_frame=true;++p.composed;nrreproject::idade_composta.store(age);
   nrreproject::base_fatia.store(p.constants.slice);nrreproject::base_recurso.store(p.history[0].Get());
-  if(idade_modelo>=0)++p.retidos;
-  p.log(job,idade_modelo>=0?idade_modelo:age,segurar?"ok_segurado_adiado_pos_fsr":"ok_adiado_pos_fsr");return Result::Composed;
+  p.log(job,age,segurar?"ok_segurado_adiado_pos_fsr":"ok_adiado_pos_fsr");return Result::Composed;
  }
  transition(c,dst,D3D12_RESOURCE_STATES(destination_state),write_state);
  ComposeConstants k=p.constantes_compose(tone&~6u,p.width,p.height,exposure);
@@ -1757,8 +1792,8 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
    p.corte_raio_comp=(p.luz_prox_pso&&p.luz_halo_pso)?nrreproject::corte_raio_compose(nivel,p.pct_raio()):0u;
    if(p.corte_raio_comp){p.halo_exc_raio=std::max(p.halo_exc_raio,p.corte_raio_comp);forca64=255u;}}
 
-  {static const float forcaTeto=[]{double v=0;return ler_ini(L"NeuralHaloTeto",v)&&v>0.?float(std::min(v,1.)):0.f;}();
-   static const double raioTeto=[]{double v=16;return ler_ini(L"NeuralHaloTetoRaio",v)&&v>=2.&&v<=30.?v:16.;}();
+  {const float forcaTeto=p.cfg_halo_teto_forca;
+   const double raioTeto=p.cfg_halo_teto_raio;
    p.halo_teto_raio=0u;
    if(forcaTeto>0.f&&p.luz_prox_pso&&p.luz_halo_pso){
     const double pct=p.pct_raio();const double r=(pct>0.&&pct<100.)?raioTeto*100./pct:raioTeto;
@@ -1799,7 +1834,7 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
  }
 
  if(p.halo_teto_raio){
-  static const unsigned forca15=[]{double v=0;return ler_ini(L"NeuralHaloTeto",v)&&v>0.?unsigned(std::lround(std::min(v,1.)*15.)):0u;}();
+  const unsigned forca15=p.cfg_halo_teto_forca15;
   if(forca15){k.p0|=((p.halo_teto_raio/2u)&15u)<<28;k.p1|=32u|(forca15<<28);if(!limitar)k.p1|=(p.constants.slice%Policy::history_count)<<8;++p.halo_teto_quadros;}
  }
  {ID3D12DescriptorHeap* heaps[]{p.compose_heap.Get()};c->SetDescriptorHeaps(1,heaps);c->SetComputeRootSignature(p.compose_root.Get());c->SetPipelineState(p.compose_pso.Get());
@@ -1808,9 +1843,9 @@ Result Backend::compose(void* command,void* destination,unsigned destination_sta
  transition(c,dst,write_state,D3D12_RESOURCE_STATES(destination_state));
  nrcusto::marca(c,nrcusto::ComposeFim);
  if(limitar){p.ganho_valido=true;p.ganho_dividido=dividir;p.ganho_quadro=p.policy.frame;p.ganho_cur=1u-variante;}else p.ganho_valido=false;
- p.composed_frame=true;++p.composed;nrreproject::idade_composta.store(idade_modelo>=0?idade_modelo:age);
+ p.composed_frame=true;++p.composed;nrreproject::idade_composta.store(age);
  nrreproject::base_fatia.store(p.constants.slice);nrreproject::base_recurso.store(p.history[0].Get());
- if(idade_modelo>=0){++p.retidos;p.log(job,idade_modelo,da_preservada?"ok_modelo_fonte_preservada":"ok_modelo_retido");}else p.log(job,age,segurar?"ok_segurado":"ok");return Result::Composed;
+ p.log(job,age,segurar?"ok_segurado":"ok");return Result::Composed;
 }
 
 Result Backend::compose_post(void* command,void* output,std::uint32_t ffx_state){
@@ -1818,22 +1853,23 @@ Result Backend::compose_post(void* command,void* output,std::uint32_t ffx_state)
  if(!p.post.ativo||command!=p.post.command||command!=p.captured_command)return Result::Skipped;
  p.post.ativo=false;
  auto* c=static_cast<ID3D12GraphicsCommandList*>(command);auto* out=static_cast<ID3D12Resource*>(output);
+ nrtgpu::Escopo tg_post(c,nrtgpu::PostTardio);
  auto recusar=[&](const char* motivo,const D3D12_RESOURCE_DESC* od){p.post_recusado=true;++p.post_refused;p.log_post(p.post.job,motivo,od);return Result::Unsupported;};
 
  const auto estado=state(ffx_state);
- if(estado==D3D12_RESOURCE_STATES(~0u))return recusar("post_unsupported_state_fallback_pre",nullptr);
+ if(estado==D3D12_RESOURCE_STATES(~0u)||(c&&c->GetType()==D3D12_COMMAND_LIST_TYPE_COMPUTE&&!nrffx_estado::valido_em_compute(unsigned(estado))))
+  return recusar("post_unsupported_state_fallback_pre",nullptr);
  if(!c||!out||!device_matches(p.device.Get(),c)||!device_matches(p.device.Get(),out))return recusar("post_unsupported_device_fallback_pre",nullptr);
  const auto od=out->GetDesc();
 
  if(od.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D||od.DepthOrArraySize!=1||od.MipLevels!=1||od.SampleDesc.Count!=1||!(od.Flags&D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)||
     od.Width<p.width||od.Height<p.height||od.Width>16384||od.Height>16384||!format_support(p.device.Get(),od.Format,true))return recusar("post_unsupported_format_fallback_pre",&od);
  if(!p.warped_read){transition(c,p.warped.Get(),write_state,read_state);p.warped_read=true;}
- ID3D12DescriptorHeap* const ph=p.halo_post(c,p.post.exposure,p.post.tone)?p.hpost.post_heap.Get():p.q_post(c,p.post.exposure,p.post.tone)?p.qpost.post_heap.Get():p.post_heap.Get();
+ ID3D12DescriptorHeap* const ph=p.post_heap.Get();
  p.uav(ph,2,out,od.Format);
 
  if(estado==write_state)order_uav(c,out);else transition(c,out,estado,write_state);
- ComposeConstants k=p.constantes_compose(teto_unico(p.post.tone)&~6u,unsigned(od.Width),od.Height,p.post.exposure);
- if(p.q_post_ganho!=1.f)std::memcpy(&k.p2,&p.q_post_ganho,sizeof k.p2);
+ ComposeConstants k=p.constantes_compose(teto_unico(p.post.tone)&~6u,unsigned(od.Width),od.Height,p.post.exposure);k.p2=protege_realce_codigo();
  p.bind(c,ph,p.post_root.Get(),p.post_pso.Get(),12,&k,2);
  c->Dispatch((unsigned(od.Width)+7)/8,(od.Height+7)/8,1);order_uav(c,out);
  transition(c,out,write_state,estado);
@@ -1845,8 +1881,24 @@ Result Backend::compose_post(void* command,void* output,std::uint32_t ffx_state)
 namespace nrreproject {
 namespace {
 
-constexpr unsigned lados_final=6;
-struct Buffers { ComPtr<ID3D12Resource> leitura[lados_final];UINT64 tamanho[lados_final]{}; };
+constexpr unsigned lados_final=10;
+
+std::atomic<unsigned long long> f9_liberados_n{0},f9_liberados_bytes{0};
+void f9_conta_libera(UINT64 n) noexcept {nrorc::estado().guarda.liberar(nrorc::Origem::F9,n);f9_liberados_n.fetch_add(1,std::memory_order_relaxed);f9_liberados_bytes.fetch_add(n,std::memory_order_relaxed);}
+
+void tela_conta_f9(bool criar,std::uint64_t n) noexcept {
+ if(!criar){f9_conta_libera(n);return;}
+ nrorc_vram::pausar_calib();nrorc::EscopoOrigem eo(nrorc::Origem::F9);nrorc_vram::registrar(nrorc::Api::Recurso,n,"f9_tela");
+}
+struct Buffers {
+ ComPtr<ID3D12Resource> leitura[lados_final];UINT64 tamanho[lados_final]{};
+ Buffers()=default;Buffers(const Buffers&)=delete;Buffers& operator=(const Buffers&)=delete;
+ Buffers(Buffers&& o) noexcept {for(unsigned k=0;k<lados_final;++k){leitura[k]=std::move(o.leitura[k]);tamanho[k]=o.tamanho[k];o.tamanho[k]=0;}}
+ Buffers& operator=(Buffers&& o) noexcept {if(this!=&o){soltar();for(unsigned k=0;k<lados_final;++k){leitura[k]=std::move(o.leitura[k]);tamanho[k]=o.tamanho[k];o.tamanho[k]=0;}}return *this;}
+ ~Buffers(){soltar();}
+ void soltar_lado(unsigned k) noexcept {if(leitura[k]){leitura[k].Reset();if(tamanho[k])f9_conta_libera(tamanho[k]);}tamanho[k]=0;}
+ void soltar() noexcept {for(unsigned k=0;k<lados_final;++k)soltar_lado(k);}
+};
 struct Final {
  Buffers b;D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp[lados_final]{};UINT altura[lados_final]{};unsigned formato[lados_final]{};
  unsigned modo{},indice{},espera{4};int idade{-1};std::uint64_t quadro{};
@@ -1865,7 +1917,7 @@ FinalMarcas* final_marcas(ID3D12Device* d){
  auto* f=new(std::nothrow) FinalMarcas;if(!f)return nullptr;
  D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_READBACK;D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=4u*final_teto_max;bd.Height=1;
  bd.DepthOrArraySize=1;bd.MipLevels=1;bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;void* m{};
- if(FAILED(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&f->buf)))||FAILED(f->buf->Map(0,nullptr,&m))||!m){delete f;return nullptr;}
+ if(FAILED(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&f->buf)))||FAILED(f->buf->Map(0,nullptr,&m))||!m){delete f;return nullptr;}nrd3d::nomear(f->buf.Get(),L"nr_f9_final");
  std::memset(m,0,4u*final_teto_max);f->m=static_cast<volatile std::uint32_t*>(m);f->dev=d;atual=f;return f;
 }
 bool final_seguro_ini(){static const bool v=[]{double x=1.;return !(ler_ini(L"NeuralDumpFinalSeguro",x)&&x==0.);}();return v;}
@@ -1900,7 +1952,7 @@ Buffers alocar_lote(ID3D12Device* dev,const UINT64* total,const bool* lado,DWORD
  for(unsigned k=0;k<lados_final;++k){if(!lado[k])continue;
   D3D12_RESOURCE_DESC bd{};bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;bd.Width=total[k];bd.Height=1;bd.DepthOrArraySize=1;bd.MipLevels=1;bd.SampleDesc.Count=1;bd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
   (GetCurrentThreadId()==chamadora?reserva_aloc_chamadora:reserva_aloc_fundo).fetch_add(1);
-  if(SUCCEEDED(dev->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&b.leitura[k])))){b.tamanho[k]=total[k];bytes+=total[k];{nrorc::EscopoOrigem eo(nrorc::Origem::F9);nrorc_vram::registrar(nrorc::Api::Recurso,0,"f9_readback");}}}
+  if(SUCCEEDED(dev->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&b.leitura[k])))){nrd3d::nomear(b.leitura[k].Get(),L"nr_f9_reserva");b.tamanho[k]=total[k];bytes+=total[k];{nrorc::EscopoOrigem eo(nrorc::Origem::F9);nrorc_vram::registrar(nrorc::Api::Recurso,total[k],"f9_readback");}}}
  return b;
 }
 
@@ -1910,12 +1962,13 @@ bool reserva_serve(const std::vector<Buffers>& v,ID3D12Resource* const* rs,const
 }
 
 void soltar_no_fundo(std::vector<Buffers>& v){
- if(v.empty())return;std::vector<Buffers> w;w.swap(v);
+ if(v.empty())return;nrorc_vram::pausar_calib();std::vector<Buffers> w;w.swap(v);
  try{std::thread([x=std::move(w)]()mutable{x.clear();}).detach();}catch(...){}
 }
 
 void lancar_reserva(ID3D12Device* dev,const UINT64* total,ID3D12Resource* const* rs,unsigned n){
  if(!n||reserva_voo.exchange(true))return;
+ nrorc_vram::pausar_calib();
  std::array<UINT64,lados_final> t{};std::array<bool,lados_final> l{};for(unsigned k=0;k<lados_final;++k){t[k]=total[k];l[k]=rs[k]!=nullptr;}
  ComPtr<ID3D12Device> d(dev);const unsigned modo=final_reserva_modo();reserva_lancamentos.fetch_add(1);
  {char linha[96];NRLOGF(linha,sizeof linha,"pedido modo=%u lotes=%u",modo,n);log_reserva(linha);}
@@ -1950,6 +2003,7 @@ void preparar_final(void* command,void* input,void* output,unsigned modo) noexce
  (void)command;(void)input;(void)output;(void)modo;
 }
 bool despejar_final(void* command,void* input,std::uint32_t estado_entrada,void* output,std::uint32_t estado_saida,unsigned modo,std::uint64_t quadro) noexcept{
+ nrorc_vram::pausar_calib();
  (void)command;(void)input;(void)estado_entrada;(void)output;(void)estado_saida;(void)modo;(void)quadro;return false;
 }
 void despejo_final_tick() noexcept{
@@ -1957,7 +2011,6 @@ void despejo_final_tick() noexcept{
 }
 }
 #include "late_compose.inl"
-#include "halo_post.inl"
-#include "q_post.inl"
 #include "rosto_jogador_d3d.inl"
 #include "cena_npc.inl"
+#include "mascara.inl"

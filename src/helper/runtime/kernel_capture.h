@@ -1,4 +1,5 @@
 #pragma once
+#include "hip_api.h"
 #include "nr_publico.h"
 
 #include <windows.h>

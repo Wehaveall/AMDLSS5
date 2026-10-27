@@ -125,7 +125,13 @@ inline double aplicar_medido(MedidaVram& m,double atual,double medido,std::uint6
     return medido<acima?medido:acima;
 }
 
-inline double amostra_vram(MedidaVram& m,bool post,std::uint64_t uso,std::uint64_t folga_pre,std::uint64_t saida_px,double efetivo_pct,std::uint64_t agora_ms){
+inline std::uint64_t uso_da_cena(std::uint64_t uso,std::uint64_t rosto_bytes,std::uint64_t f9_local_bytes){
+    const std::uint64_t fora=rosto_bytes+f9_local_bytes;
+    return uso>fora?uso-fora:0;
+}
+inline double amostra_vram(MedidaVram& m,bool post,std::uint64_t uso,std::uint64_t folga_pre,std::uint64_t saida_px,double efetivo_pct,std::uint64_t agora_ms,
+                           bool gravando=false){
+    if(post&&gravando)return 0.0;
     if(!post){m.uso_pre=uso;m.centi=0;m.desde_ms=agora_ms;m.travado=m.desceu=false;m.px_max=0;m.uso_descida=0;return 0.0;}
     const unsigned c=unsigned(efetivo_pct*100.0+.5);
     if(c!=m.centi){m.centi=c;m.desde_ms=agora_ms;return 0.0;}
@@ -138,6 +144,9 @@ inline double amostra_vram(MedidaVram& m,bool post,std::uint64_t uso,std::uint64
 }
 
 inline std::atomic<std::uint64_t> folga_pre{0},uso{0},orcamento{0};
+
+struct BasePartes {std::uint64_t cena{},rosto{},f9{},uso{};};
+inline BasePartes base_partes{};
 inline std::atomic<unsigned> teto_vram_centi{10000};
 
 inline std::atomic<std::uint64_t> segurados_total{0};

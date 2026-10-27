@@ -5,6 +5,7 @@
 #define NOMINMAX
 #endif
 #include "nr_publico.h"
+#include "proxy_layout.h"
 #include "overlay_amd.h"
 #include "native_ini_path.h"
 #include "../source/implementation/compat-diag/compat.h"
@@ -78,13 +79,14 @@ Sinais sondar() noexcept {
  classificar_modulos(nomes,3,s);
  return s;
 }
-void iniciar_sonda() noexcept {
+
+void iniciar_sonda(unsigned intervalo_ms) noexcept {
  try{
-  std::thread([]{
+  std::thread([intervalo_ms]{
    for(;;){
     const Sinais s=sondar();
     amostra_bits.store(empacotar(s),std::memory_order_relaxed);amostra_seq.fetch_add(1,std::memory_order_release);
-    Sleep(1000);
+    Sleep(intervalo_ms);
    }
   }).detach();
  }catch(...){}
@@ -110,10 +112,10 @@ void tick(void* base,const void* ini_anchor) noexcept {
  modo_ini=v;
   recria_ini=ler_ini(base,ini_anchor,L"NeuralOverlayAmdRecria",0)!=0;
   dvr_ini=ler_ini(base,ini_anchor,L"NeuralOverlayAmdRiscoDvr",0)!=0;
-  iniciar_sonda();
+  iniciar_sonda(modo_ini==0?30000u:1000u);
  }
  const Modo modo=modo_de(modo_ini);
- auto& enabled=*reinterpret_cast<volatile std::uint8_t*>(static_cast<std::uint8_t*>(base)+0x94A8C);
+ auto& enabled=nrproxy::enabled(base);
  static Guarda guarda;static PausaRecria recria;static Sinais s{};static bool tem_amostra=false;
  char texto[400];
  static std::uint32_t visto=0;

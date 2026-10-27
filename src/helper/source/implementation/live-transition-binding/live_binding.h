@@ -64,6 +64,8 @@ public:
 
     virtual unsigned reproject_post(void* command,void* output,unsigned ffx_state)noexcept{(void)command;(void)output;(void)ffx_state;return 1;}
 
+    virtual unsigned filtros_post(void* command,void* output,unsigned ffx_state)noexcept{(void)command;(void)output;(void)ffx_state;return 1;}
+
     virtual bool dump_final(void*,void*,unsigned,void*,unsigned,unsigned,std::uint64_t)noexcept{return false;}
     virtual void dump_final_tick()noexcept{}
 
@@ -140,5 +142,9 @@ void forget_present_queues() noexcept;
 
 void note_frame_generation() noexcept;
 bool frame_generation_seen() noexcept;
+
+inline constexpr unsigned listas_por_submissao_max=65536;
+
+bool slot_callback_publicavel(const void* image_base,const void* slot) noexcept;
 bool post_reset_matches(const nractive::Globals& before,const nractive::Globals& after) noexcept;
 }

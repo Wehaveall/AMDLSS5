@@ -22,13 +22,6 @@ struct Policy {
         return int(frame-j.frame);
     }
 
-    int long_age(int job) const noexcept {
-        if(!captured||job<=0)return -1;
-        const auto& j=jobs[unsigned(job)%jobs.size()];
-        if(j.id!=job||!j.frame||j.frame>frame)return -1;
-        return int(frame-j.frame);
-    }
-
     int age_frame(std::uint64_t f) const noexcept {
         if(!captured||!f||f>frame||frame-f>=history_count)return -1;
         for(auto g=f;g<=frame;++g)if(frames[g%history_count]!=g)return -1;

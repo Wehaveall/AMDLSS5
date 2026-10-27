@@ -1,17 +1,23 @@
 #include "../../../runtime/nr_publico.h"
+#include "../../../runtime/proxy_layout.h"
 #include "tela_captura.h"
 #include "../../../layout/menu_compacto.h"
 #include "../../../runtime/native_ini_path.h"
+#include "../../../runtime/protecao_pagina.h"
 #include "menu_input.h"
 #include "menu_i18n.h"
 #include "../async-reprojection/reproject_controls.h"
 #include "../present-runtime/print_state.h"
 #include "../../../runtime/expo_trava.h"
+#include "../../../runtime/log_fila.h"
+#include "../../../runtime/pasta_helper.h"
 #include <atomic>
 #include <mutex>
 #include <cstdio>
 #include <cstdint>
 #include <filesystem>
+#include <string>
+#include <vector>
 namespace nrmenuinput {
 namespace {
 using detail::Block;
@@ -38,7 +44,7 @@ std::atomic<StrokeCall> pad_stroke{};
 detail::PollLatch poll_latch;
 detail::EventLatch raw_latch,message_latch,dinput_latch;
 detail::PadLatch pad_latch;
-bool visible() noexcept {auto* b=proxy.load(std::memory_order_acquire);return b&&*reinterpret_cast<volatile std::uint8_t*>(b+0x923B0)!=0&&!nrmenucompacto::desenhando.load(std::memory_order_relaxed);}
+bool visible() noexcept {auto* b=proxy.load(std::memory_order_acquire);return b&&nrproxy::menu_visivel(b)!=0&&!nrmenucompacto::desenhando.load(std::memory_order_relaxed);}
 Block block() noexcept {return nrmenu::input_block()==nrmenu::InputBlock::Everything?Block::Everything:Block::MenuKeys;}
 SHORT WINAPI async_hook(int k){return detail::async_key(async_key.load(),k,visible(),block(),poll_latch);}
 SHORT WINAPI sync_hook(int k){return detail::sync_key(sync_key.load(),k,visible(),block(),poll_latch);}
@@ -81,7 +87,7 @@ Entry* entry(void* device) noexcept {
     for(auto& e:entries)if(e.table.load(std::memory_order_acquire)==table)return &e;
     return nullptr;
 }
-Device kind(void* device) noexcept {
+Device kind_lido(void* device) noexcept {
 
     DIDEVCAPS caps{};caps.dwSize=sizeof(caps);
     auto** table=*static_cast<void***>(device);
@@ -90,6 +96,14 @@ Device kind(void* device) noexcept {
     if(FAILED(hr))return Device::Other;
     const auto type=GET_DIDEVICE_TYPE(caps.dwDevType);
     return type==DI8DEVTYPE_KEYBOARD?Device::Keyboard:type==DI8DEVTYPE_MOUSE?Device::Mouse:Device::Other;
+}
+
+Device kind(void* device) noexcept {
+    struct Visto{void* device;Device tipo;ULONGLONG quando;};
+    thread_local Visto vistos[4]{};thread_local unsigned proximo=0;
+    const ULONGLONG agora=GetTickCount64();
+    for(auto& v:vistos)if(v.device==device){if(agora-v.quando<1000)return v.tipo;v.tipo=kind_lido(device);v.quando=agora;return v.tipo;}
+    auto& v=vistos[proximo++%4];v={device,kind_lido(device),agora};return v.tipo;
 }
 HRESULT STDMETHODCALLTYPE state_hook(void* device,DWORD bytes,void* out){
     auto* e=entry(device);if(!e)return DIERR_GENERIC;
@@ -109,14 +123,15 @@ void log(const char* status) noexcept {
 (void)status;
 }
 bool patch(void** slot,void* before,void* after) noexcept {
-    DWORD old{};if(!VirtualProtect(slot,sizeof(void*),PAGE_READWRITE,&old))return false;
+
+    DWORD old{};if(!VirtualProtect(slot,sizeof(void*),nrpagina::gravavel_faixa(slot,sizeof(void*)),&old))return false;
     const bool ok=InterlockedCompareExchangePointer(slot,after,before)==before;
     DWORD ignored{};const bool restored=VirtualProtect(slot,sizeof(void*),old,&ignored)!=0;
     if(!restored)log("vtable_protection_restore_failed");
     return ok;
 }
 bool install(void* device) noexcept {
-    if(kind(device)!=Device::Keyboard)return false;
+    if(kind_lido(device)!=Device::Keyboard)return false;
     auto** table=*static_cast<void***>(device);
 
     MEMORY_BASIC_INFORMATION mbi{};HMODULE table_owner{};
@@ -201,54 +216,57 @@ void install_game_imports() noexcept {
     std::snprintf(line,sizeof line,"game_imports keyboard=%u raw_input=%u messages=%u xinput=%u",keyboard,raw,messages,pads);
     log(changed?line:"game_keyboard_imports_not_found");
 }
-void persist_enabled(bool next) noexcept {
+
+void persist_enabled(void* base,bool next) noexcept {
     try {
-        wchar_t executable[32768]{};
-        const DWORD length=GetModuleFileNameW(nullptr,executable,32768);
-        if(length&&length<32768){
-            const auto ini=std::filesystem::path(executable).parent_path()/L"dlssnr_on_amd.ini";
-            if(!NRCFG_ESCREVER(L"DlssNrOnAmd",L"Enabled",next?L"1":L"0",ini.c_str()))log("f10_persist_failed");
+        std::wstring ini=nrinipath::native(base);
+        if(ini.empty()){
+            std::vector<wchar_t> executable(32768);
+            const DWORD length=GetModuleFileNameW(nullptr,executable.data(),32768);
+            if(length&&length<32768)ini=(std::filesystem::path(executable.data()).parent_path()/L"dlssnr_on_amd.ini").wstring();
         }
+        if(!ini.empty()&&!NRCFG_ESCREVER(L"DlssNrOnAmd",L"Enabled",next?L"1":L"0",ini.c_str()))log("f10_persist_failed");
     }catch(...){log("f10_persist_failed");}
 }
 }
 void tick(void* base) noexcept {
-    if(!base)return;
+    if(!base||!nrproxy::admitido(base))return;
     proxy.store(static_cast<std::uint8_t*>(base),std::memory_order_release);
     std::unique_lock<std::mutex> guard(setup_mutex,std::try_to_lock);if(!guard)return;
 
     static detail::ToggleKey shortcut;
     DWORD foreground_pid{};
     GetWindowThreadProcessId(GetForegroundWindow(),&foreground_pid);
-    auto& enabled=*reinterpret_cast<volatile std::uint8_t*>(static_cast<std::uint8_t*>(base)+0x94A8C);
+    auto& enabled=nrproxy::enabled(base);
 
     {static int auto_s=-1;
-     if(auto_s<0){auto_s=0;try{const auto ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&tick));if(!ini.empty())auto_s=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralMenuAutoFecha",5,ini.c_str()));}catch(...){}
+     if(auto_s<0){auto_s=0;try{const auto ini=nrproxy::ini(base);if(!ini.empty())auto_s=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralMenuAutoFecha",5,ini.c_str()));}catch(...){}
       if(auto_s<0||auto_s>3600)auto_s=0;if(auto_s){char t[48];std::snprintf(t,sizeof t,"menu_auto_fecha_%ds",auto_s);log(t);}}
-     if(nrmenucompacto::modo.load()<0){int m=0;try{const auto ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&tick));if(!ini.empty())m=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralMenuCompacto",1,ini.c_str()));}catch(...){}
+     if(nrmenucompacto::modo.load()<0){int m=0;try{const auto ini=nrproxy::ini(base);if(!ini.empty())m=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralMenuCompacto",1,ini.c_str()));}catch(...){}
       if(m<0||m>2)m=0;nrmenucompacto::modo.store(m);if(m){char t[40];std::snprintf(t,sizeof t,"menu_compacto_modo_%d",m);log(t);}}
 
-     if(*reinterpret_cast<volatile std::uint8_t*>(static_cast<std::uint8_t*>(base)+0x923B0)!=0&&!nrmenucompacto::desenhando.load())nrmenucompacto::recolhido.store(false);
+     if(nrproxy::menu_visivel(base)!=0&&!nrmenucompacto::desenhando.load())nrmenucompacto::recolhido.store(false);
      if(auto_s>0){
       static ULONGLONG ultimo=0;static bool era=false;
-      auto* b=static_cast<std::uint8_t*>(base);auto& vis=*reinterpret_cast<volatile std::uint8_t*>(b+0x923B0);
+      auto* b=static_cast<std::uint8_t*>(base);auto& vis=nrproxy::menu_visivel(b);
       const ULONGLONG agora=GetTickCount64();bool tecla=false;
-      for(int k:{VK_UP,VK_DOWN,VK_LEFT,VK_RIGHT,VK_RETURN,VK_END,VK_PRIOR,VK_NEXT,VK_HOME,VK_BACK})if(GetAsyncKeyState(k)&0x8000)tecla=true;
       const bool aberto=vis!=0;
+
+      if(aberto)for(int k:{VK_UP,VK_DOWN,VK_LEFT,VK_RIGHT,VK_RETURN,VK_END,VK_PRIOR,VK_NEXT,VK_HOME,VK_BACK})if(GetAsyncKeyState(k)&0x8000)tecla=true;
       if(aberto&&(!era||tecla))ultimo=agora;
       era=aberto;
 
       if(aberto&&agora-ultimo>ULONGLONG(auto_s)*1000ull){
        vis=0;
-       if(void* obj=*reinterpret_cast<void* volatile*>(b+0x92440)){int novo=0;using Aviso=void(__fastcall*)(void*,int*);(*reinterpret_cast<Aviso**>(obj))[2](obj,&novo);}
+       nrproxy::avisar_menu_fechado(b);
        era=false;
        if(nrmenucompacto::modo.load()==1){nrmenucompacto::recolhido.store(true);log("menu_recolhido_compacto_fg");}else log("menu_auto_fechado_fg");
       }
      }}
 
     static int aq_fase=-1;static unsigned aq_n=0;static ULONGLONG aq_t0=0,aq_feito=0;
-    {auto* b8=static_cast<std::uint8_t*>(base);volatile std::uint8_t& aq_flag=*reinterpret_cast<volatile std::uint8_t*>(b8+0x948B0);
-     if(aq_fase<0){aq_fase=0;try{const auto ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&tick));
+    {auto* b8=static_cast<std::uint8_t*>(base);volatile std::uint8_t& aq_flag=*reinterpret_cast<volatile std::uint8_t*>(b8+nrproxy::rva_aquecido);
+     if(aq_fase<0){aq_fase=0;try{const auto ini=nrproxy::ini(base);
        if(!ini.empty()&&NRCFG_INT(L"DlssNrOnAmd",L"NeuralAquecerInicio",1,ini.c_str())==0)aq_fase=3;}catch(...){}}
      if(aq_fase==0&&++aq_n>=1500){
       if(enabled==0&&aq_flag==0){enabled=1;aq_fase=1;aq_t0=GetTickCount64();log("aquecer_liga");}else aq_fase=3;}
@@ -259,17 +277,19 @@ void tick(void* base) noexcept {
         if(aq_fase==1){enabled=1;aq_fase=2;log("aquecer_f10_usuario");}
         const bool next=enabled!=0;
         log(next?"f10_enabled":"f10_disabled");
-        persist_enabled(next);
+        persist_enabled(base,next);
     }
 
     {static std::wstring ini_expo;static bool ini_expo_lido=false;
-     if(!ini_expo_lido){ini_expo_lido=true;try{ini_expo=nrinipath::resolve(base,reinterpret_cast<const void*>(&tick));}catch(...){}}
+     if(!ini_expo_lido){ini_expo_lido=true;try{ini_expo=nrproxy::ini(base);}catch(...){}}
      if(!ini_expo.empty())nrexpotrava::tick(base,ini_expo.c_str());}
 
     static bool imports_attempted{};
     if(!imports_attempted){imports_attempted=true;install_game_imports();}
     static bool attempted{};
-    if(!attempted){
+
+    static unsigned dinput_presents{};
+    if(!attempted&&(dinput_presents++%30u)==0u){
         HMODULE module=GetModuleHandleW(L"dinput8.dll");
         if(module){
             using Create=HRESULT(WINAPI*)(HINSTANCE,DWORD,REFIID,void**,IUnknown*);

@@ -16,6 +16,10 @@ constexpr unsigned aceitar(long long valor) noexcept {
     return valor>=minimo&&valor<=maximo?unsigned(valor):0u;
 }
 
+constexpr unsigned real_com_fg(unsigned limite,bool fg_mod) noexcept {
+    return fg_mod&&limite?(std::max)(limite/2,1u):limite;
+}
+
 constexpr unsigned proximo(unsigned atual,int delta) noexcept {
     if(delta<0){
 
@@ -68,6 +72,8 @@ inline std::atomic<unsigned> modo{0};
 
 void ritmar(void* base) noexcept;
 void depois() noexcept;
+
+unsigned pedido_real() noexcept;
 
 long long agora_ns() noexcept;
 void esperar_ate(long long prazo_ns) noexcept;

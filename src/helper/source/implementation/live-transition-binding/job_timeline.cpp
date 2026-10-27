@@ -71,7 +71,8 @@ void Ages::composed(int job, unsigned age_frames, std::int64_t now, bool first) 
     static constexpr Stamp to[6]={Submetido,EvalInicio,EvalFim,Publicado,Notado,PrimeiroUso};
     for(unsigned i=0;i<6;++i)if(t[from[i]]>0&&t[to[i]]>=t[from[i]]){phase_sum_[i]+=timeline_.ms(t[to[i]]-t[from[i]]);++phase_n_[i];}
     if(t[EvalInicio]>0&&t[EvalFim]>t[EvalInicio])job_ms_.push_back(timeline_.ms(t[EvalFim]-t[EvalInicio]));
-    if(job_bytes_<job_bytes_limit){
+
+    if(NR_LOG_ATIVO&&job_bytes_<job_bytes_limit){
         char line[512];
         const int n=NRLOGF(line,sizeof(line),"JOB job=%d capt=%lld subm=%lld eval_ini=%lld eval_fim=%lld publ=%lld notado=%lld uso=%lld idade_uso=%u eval_ms=%.3f idade_uso_ms=%.3f\n",
             job,static_cast<long long>(t[Capturado]),static_cast<long long>(t[Submetido]),static_cast<long long>(t[EvalInicio]),
@@ -91,7 +92,7 @@ void Ages::composed(int job, unsigned age_frames, std::int64_t now, bool first) 
             if(ok){capt_sum_[i]+=v[i];++capt_n_[i];}
         }
         ++capt_jobs_;
-        if(job_bytes_<job_bytes_limit){
+        if(NR_LOG_ATIVO&&job_bytes_<job_bytes_limit){
             char line[320];
             const int n=NRLOGF(line,sizeof(line),"CAPT job=%d subm_antes=%.3f begin=%.3f copia=%.3f compoe=%.3f resto=%.3f acordar=%.3f subm_eval=%.3f\n",
                 job,v[0],v[1],v[2],v[3],v[4],v[5],v[6]);
@@ -106,54 +107,8 @@ double percentile(std::vector<double>& v,double q){
 }
 }
 std::string Ages::take(const Tuning& tuning) {
-    const unsigned long pid=GetCurrentProcessId();
-    char head[1400];
-    std::string hist;
-    unsigned p50=0,p90=0;{unsigned run=0;bool h50=false,h90=false;
-        for(unsigned a=0;a<=max_age;++a){if(!hist_[a])continue;char b[24];NRLOGF(b,sizeof b,"%s%u:%u",hist.empty()?"":",",a,hist_[a]);hist+=b;
-            run+=hist_[a];if(!h50&&run*2>=composed_){p50=a;h50=true;}if(!h90&&run*10>=composed_*9){p90=a;h90=true;}}}
-    double mean_ms=0;for(double v:ages_ms_)mean_ms+=v;mean_ms=ages_ms_.empty()?-1:mean_ms/double(ages_ms_.size());
-    const double p90_ms=percentile(ages_ms_,.9);
-    const double job_med=percentile(job_ms_,.5),job_p90=percentile(job_ms_,.9);
-    double phase[6];for(unsigned i=0;i<6;++i)phase[i]=phase_n_[i]?phase_sum_[i]/phase_n_[i]:-1;
 
-    static unsigned long long segurados_antes=0;
-    const unsigned long long segurados_agora=nrposteto::segurados_total.load(std::memory_order_relaxed),segurados=segurados_agora-segurados_antes;
-    segurados_antes=segurados_agora;
-    NRLOGF(head,sizeof head,
-        "IDADE pid=%lu quadros=%u compostos=%u segurados=%llu jobs=%u P=%.3f hist=%s media=%.3f p50=%u p90=%u media_ms=%.3f p90_ms=%.3f L=%.3f "
-        "job_ms_med=%.3f job_ms_p90=%.3f jobs_medidos=%zu fases_ms=capt_subm:%.3f,subm_eval:%.3f,eval:%.3f,eval_publ:%.3f,publ_notado:%.3f,notado_uso:%.3f "
-        "espera_curta=%u adiantados=%u estouros=%u espera_curta_ms=%.3f janela=%u janela_antes=%u janela_ms=%.3f "
-        "chave_espera_curta_ms=%u chave_janela_ms=%u ema_rede_ms=%.3f qpc=%lld\n",
-        pid,frames_,composed_,segurados,captured_,captured_?double(frames_)/captured_:-1.0,hist.c_str(),composed_?age_sum_/composed_:-1.0,p50,p90,mean_ms,p90_ms,
-        first_uses_?first_age_sum_/first_uses_:-1.0,job_med,job_p90,job_ms_.size(),phase[0],phase[1],phase[2],phase[3],phase[4],phase[5],
-        waits_.short_waits,waits_.short_early,waits_.short_timeouts,waits_.short_ms,waits_.window_waits,waits_.window_early,waits_.window_ms,
-        tuning.short_wait_ms,tuning.exclusive_ms,double(timeline_.eval_ema_us())/1000.0,static_cast<long long>(qpc()));
-    std::string out(head);
-    {
-        const auto& a=late_now_;const auto& b=late_prev_;
-        if(a.armed!=b.armed||a.recorded!=b.recorded||a.resolved!=b.resolved||a.desligada!=b.desligada){
-            const double dg=a.gain_frames-b.gain_frames,dm=a.gain_ms-b.gain_ms;
-            char late[512];
-            NRLOGF(late,sizeof late,
-                "TARDIA pid=%lu armados=%llu tardia_gravadas=%llu tardia_resolvidas=%llu tardia_executou_J=%llu tardia_recusas=%llu tardia_falhas_B=%llu tardia_inconsistentes=%llu "
-                "ganho_quadros=%.3f ganho_ms=%.3f media_efetiva=%.3f media_ms_efetiva=%.3f tardia_desligada=%u\n",
-                pid,static_cast<unsigned long long>(a.armed-b.armed),static_cast<unsigned long long>(a.recorded-b.recorded),static_cast<unsigned long long>(a.resolved-b.resolved),
-                static_cast<unsigned long long>(a.executed-b.executed),static_cast<unsigned long long>(a.refused-b.refused),static_cast<unsigned long long>(a.b_failed-b.b_failed),
-                static_cast<unsigned long long>(a.inconsistent-b.inconsistent),composed_?dg/composed_:0.0,composed_?dm/composed_:0.0,
-                composed_?(age_sum_-dg)/composed_:-1.0,(mean_ms>=0&&composed_)?mean_ms-dm/composed_:-1.0,a.desligada?1u:0u);
-            out+=late;
-        }
-        late_prev_=late_now_;
-    }
-    if(capt_jobs_){
-        double m[7];for(unsigned i=0;i<7;++i)m[i]=capt_n_[i]?capt_sum_[i]/capt_n_[i]:-1.0;
-        char capt[400];
-        NRLOGF(capt,sizeof capt,"CAPTURA pid=%lu n=%u subm_antes=%.3f begin=%.3f copia=%.3f compoe=%.3f resto=%.3f acordar=%.3f subm_eval=%.3f\n",
-            pid,capt_jobs_,m[0],m[1],m[2],m[3],m[4],m[5],m[6]);
-        out+=capt;
-    }
-    out+=job_lines_;
+    (void)tuning;std::string out;late_prev_=late_now_;
     frames_=captured_=composed_=first_uses_=0;for(auto& h:hist_)h=0;age_sum_=first_age_sum_=0;ages_ms_.clear();job_ms_.clear();
     for(unsigned i=0;i<6;++i){phase_sum_[i]=0;phase_n_[i]=0;}for(unsigned i=0;i<7;++i){capt_sum_[i]=0;capt_n_[i]=0;}capt_jobs_=0;waits_={};job_lines_.clear();
     return out;

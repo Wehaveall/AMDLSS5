@@ -1,12 +1,15 @@
 #pragma once
 
+#include "camada_dela.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <vector>
 #include "rosto_npc_canon.h"
+#include "rosto_cpu.h"
 
 namespace nrrj {
 inline constexpr int npc_det_max=7;
@@ -23,6 +26,15 @@ struct Parametros {
 
     float liga_gen=.80f;
     int perde_n=15;
+
+    int salto_cadeia=0;
+
+    int cabeca_prof=0,cp_liga_n=3;float cp_nota=.35f,cp_liga=.50f,cp_salto=.8f;
+
+    float predicao_s=0.f;unsigned pv_bits=127u;
+    bool pv(unsigned b) const {return predicao_s>0.f&&(pv_bits&b)!=0u;}
+
+    float id_s=0.f;unsigned id_bits=1u;
     float escala_max=2600.f;
     int liga_n=2,desliga_n=4;
     float corte_ok=.25f;int corte_seg=6;
@@ -32,9 +44,13 @@ struct Parametros {
     int rosto_ancora=0;float ancora_nota=.75f,ancora_centro=.3f;
 
     float nota_grande=0.f,nota_grande_px=900.f;
-    float nota_para(float base,double cab4k)const{return nota_grande>0.f&&cab4k>=double(nota_grande_px)?(std::min)(base,nota_grande):base;}
 
-    bool corte_multi=false;
+    bool nota_rastreio=false;
+
+    float lugar_rosto_s=0.f;
+
+    bool adq_elig_min=false;
+    float nota_para(float base,double cab4k)const{return nota_grande>0.f&&cab4k>=double(nota_grande_px)?(std::min)(base,nota_grande):base;}
 
     int corte_modo=0;
 
@@ -68,22 +84,10 @@ struct Parametros {
 
     bool usa_rival=true;float rival_frac=.85f,rival_dist=1.5f,rival_min=.30f,rival_tam=.80f;
 
-    bool npc=false;int npc_min=160,npc_recorte=512;float npc_expande=.8f,npc_nota=.15f,npc_alfa=.2f,npc_troca_fator=1.5f;
-    float npc_liga_s=1.f,npc_desliga_s=.25f,npc_fica_s=1.5f;int npc_troca_n=8,npc_segura=3;
-
     bool perto=false;float perto_cab4k=540.f,perto_max_s=3.f,perto_ref_dist=1.f,perto_ref_tam=1.6f;
 
-    int npc_modo=0;float rosto_nota=.7f,rosto_baixa=.5f,rosto_cab=1.6f,rosto_dy=.15f,rosto_sem_s=.5f,rosto_g_min=200.f;int rosto_ref_jobs=60;
-    float rosto_idade_max=.3f,rosto_npc_some_s=.5f;int rosto_volta_n=2;
-
-    float rosto_dela=.35f;
-
-    float npc_segura_s=1.5f;
-
-    float npc_nota_seg=.4f,npc_alfa_c=.5f,npc_alfa_prof=.15f,npc_salto=.25f,npc_tam_seg=.5f;
-    float npc_repoe_tam=1.3f,npc_repoe_dist=1.5f;
-
-    float rosto_sem_npc=1.f,rosto_conf=.6f,npc_perde_s=1.5f,npc_espera_s=3.f;int rosto_conf_n=3;
+    float rosto_nota=.7f,rosto_baixa=.5f,rosto_cab=1.6f,rosto_dy=.15f;
+    float rosto_idade_max=.3f;
 
     bool npc2=false;int npc2_conf_n=2;float npc2_ausente_s=1.5f,npc2_espera_s=3.f,npc2_salto=.5f;
 
@@ -99,8 +103,6 @@ struct Parametros {
     float npc2_vel_novo=1.5f,npc2_nota_salto=.6f,npc2_cand_falta_s=.5f,npc2_mv_max=1.5f;
 
     int npc_max=3;float npc2_cab_min=96.f;int npc2_recorte_min=640;float npc2_dup=.5f;
-
-    int npc_degraus=0;float npc2_segura_peq=0.f,npc2_peq_cab=160.f;
 
     int npc2_recorte_forcado=0;
 
@@ -125,6 +127,7 @@ struct Parametros {
     float vida2_in_s=.15f,vida2_cam_zona=1.6f,vida2_nota=.75f;
     int npc_leve=0;float npc_leve_salto=.6f;
 
+    int todos_perto_teto=0;
     int npc_todos=0;float todos_nota=.8f;int todos_perto=0,todos_perto_l=600,todos_mig_l=681;float todos_recente=.25f,todos_fica=.5f,todos_cab_max=700.f,todos_fora_s=.5f,todos_prof_s=2.f,todos_perde_s=8.f;
     int npc_canon=0;nrcanon::Param canon{};
     float npc2_conf_s=0.f;
@@ -136,11 +139,31 @@ struct Parametros {
 
     int reancora=0,rea_jobs=2;float rea_prox=.9f;
 
-    int caminha_dela=0;float cd_tol=1.25f;
+    int caminha_dela=0;float cd_tol=camada_dela_tol;
 
 };
 
 struct RostoDet {float x,y,w,h,nota;float lm[10]{};float px=0.f;};
+
+template<class B> struct ListaCruaT {std::vector<B> l;float reg[4]{};float res=0.f;bool tem=false;};
+template<class B> bool junta_lista(std::vector<B>& nova,const float reg[4],float res,const ListaCruaT<B>& ant,float h_max=1e30f){
+    if(!ant.tem)return false;bool usou=false;
+    for(const auto& b:ant.l){if(!(b.h<=h_max))continue;const float cx=b.x+.5f*b.w,cy=b.y+.5f*b.h;int j=-1;
+        for(size_t i=0;i<nova.size()&&j<0;++i){const auto& a=nova[i];if(std::fabs(a.x+.5f*a.w-cx)<.5f*(std::max)(a.h,b.h)&&std::fabs(a.y+.5f*a.h-cy)<.5f*(std::max)(a.h,b.h))j=int(i);}
+
+        if(j>=0){if(b.nota>nova[size_t(j)].nota){nova[size_t(j)]=b;usou=true;}continue;}
+        const bool fora_reg=cx<reg[0]||cx>=reg[2]||cy<reg[1]||cy>=reg[3];
+        if(fora_reg||ant.res>res){nova.push_back(b);usou=true;}}
+    return usou;}
+
+inline std::atomic<double> t_corte_listas{-1e30};
+template<class B> struct CrusT {static constexpr int N=6;ListaCruaT<B> c[N];std::uint64_t q[N]{};double t[N]{};int i=0;
+    void junta_guarda(std::vector<B>& nova,const float reg[4],float res,std::uint64_t qn,double tn,double idade_max,bool juntar,float h_max_velhas,std::uint64_t& q_l,double& t_l){
+        ListaCruaT<B> cr;cr.l=nova;cr.tem=true;cr.res=res;for(int k=0;k<4;++k)cr.reg[k]=reg[k];q_l=qn;t_l=tn;
+        const double tc=t_corte_listas.load(std::memory_order_relaxed);
+        if(juntar)for(int k=1;k<=N;++k){const int j=((i-k)%N+N)%N;if(!c[j].tem||tn-t[j]>idade_max||t[j]<=tc)continue;(void)junta_lista(nova,reg,res,c[j],tn-t[j]<=.05?1e30f:h_max_velhas);}
+        c[i]=std::move(cr);q[i]=qn;t[i]=tn;i=(i+1)%N;}};
+using ListaCrua=ListaCruaT<RostoDet>;using Crus=CrusT<RostoDet>;
 
 struct Grades {
     int W=0,H=0;
@@ -155,6 +178,11 @@ struct Grades {
 
     const RostoDet* rostos=nullptr;int n_rostos=0;std::uint64_t rostos_versao=0;float rostos_idade=0.f;double rostos_t=-1.0;
     const RostoDet* roi[npc_det_max]{};int n_roi[npc_det_max]{};std::uint64_t roi_versao[npc_det_max]{};float roi_idade[npc_det_max]{};double roi_t[npc_det_max]{-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0};
+
+    void* linhas_ctx=nullptr;bool(*linhas)(void*,int,int)=nullptr;
+
+    bool ext_tem=false;float ext[3]{};
+    bool ext_fora=false;
 };
 
 struct Resultado {
@@ -169,32 +197,24 @@ struct Resultado {
     float tend=-1.f;
     bool conv_errada=false,busca=false,adotou=false,duvida=false;float rival=0.f,rival_xy[3]{},nb_melhor=0.f;bool direita=false;int votos=0;unsigned motivo_off=0;float kface=0.f,med_prox=0.f,ok_neg=0.f;int sinal=1,hip=0;
 
-    bool alvo_npc{},troca_alvo{},npc_ativo{};float npc_expande{},npc_bruto{},npc_cab4k{};int npc_celulas{};
+    bool troca_alvo{};float npc_cab4k{};
 
     bool perto{},perto_inicio{},perto_fim{};unsigned perto_jobs{},perto_motivo{};float perto_escala{1.f};
 
-    bool rf_novo{},rf_vis{},rf_g{};int rf_n{};float rf_nota{},rf_sem{};
-
-    int rf_motivo{};float rf_npc_nota{},rf_idade_s{};
+    int rf_n{};int rf_motivo{};
     bool tem_camada{};float camada[2]{};
 
     int mig_de{-1},mig_para{-1};
     bool vida_pend{},vida_sai{},vida_pub_novo{},vida_era_pub{},vida_re{},vida_oculto{},vida_oculto_novo{},vida_volta{},vida_camq{};
 
-    bool adquiriu{},escala_conf{},adocao_vetada{},lista_velha{},giro{},giro_rosto{},reancorou{};float cd_dbg[10]{};
+    bool adquiriu{},escala_conf{},adocao_vetada{},lista_velha{},giro{},giro_rosto{},reancorou{};unsigned veto{};float cd_dbg[10]{};
     float dg[7]{};int g_motivo{},adq_n{};float g_dmin{-1.f},kf_razao{};
 };
 
 namespace det {
 
-inline float mediana(std::vector<float> v){
-    if(v.empty())return NAN;
-    const size_t n=v.size(),m=n/2;
-    std::nth_element(v.begin(),v.begin()+std::ptrdiff_t(m),v.end());
-    if(n&1u)return v[m];
-    const float a=v[m];const float b=*std::max_element(v.begin(),v.begin()+std::ptrdiff_t(m));
-    return .5f*(a+b);
-}
+inline float mediana_em(std::vector<float>& v){return nrdet::mediana_numpy(v);}
+inline float mediana(std::vector<float> v){return nrdet::mediana_numpy(v);}
 
 inline int arred(double x){return int(std::nearbyint(x));}
 inline float clip01(float v){return v<0.f?0.f:(v>1.f?1.f:v);}
@@ -209,8 +229,8 @@ inline int npc_lado_fracao(int lado,double pede,float f0,int teto_rede,int rmax,
 }
 
 struct Comp {int x0,y0,x1,y1,area;};
-inline int rotular(const unsigned char* m,int W,int H,bool oito,std::vector<int>& lab,std::vector<Comp>& comps){
-    lab.assign(size_t(W)*H,0);comps.clear();std::vector<int> pilha;
+inline int rotular(const unsigned char* m,int W,int H,bool oito,std::vector<int>& lab,std::vector<Comp>& comps,std::vector<int>& pilha){
+    lab.assign(size_t(W)*H,0);comps.clear();
     for(int y=0;y<H;++y)for(int x=0;x<W;++x){
         const size_t i=size_t(y)*W+x;if(!m[i]||lab[i])continue;
         const int id=int(comps.size())+1;Comp c{x,y,x,y,0};pilha.assign(1,int(i));lab[i]=id;
@@ -227,6 +247,7 @@ inline int rotular(const unsigned char* m,int W,int H,bool oito,std::vector<int>
     }
     return int(comps.size());
 }
+inline int rotular(const unsigned char* m,int W,int H,bool oito,std::vector<int>& lab,std::vector<Comp>& comps){std::vector<int> pilha;return rotular(m,W,H,oito,lab,comps,pilha);}
 
 inline void runs_cabeca(const unsigned char* m,int W,int H,double x0,int y0,int nrows,std::vector<float>& larg,std::vector<float>& cent){
     larg.clear();cent.clear();double xc=x0;
@@ -251,6 +272,11 @@ inline float maxv(const std::vector<float>& v,size_t a,size_t b){float m=-1e30f;
 
 struct Cand {double x,ytop,wh,topo_oc,alt,wexp,d,omb;int area,bx,by,bw,bh;bool fundo;};
 }
+}
+#include "rosto_jogador_prof.h"
+namespace nrrj {
+
+inline double perto_relogio(double t,double dt,bool medida){return medida?0.0:t+dt;}
 
 class Rastreio {
 public:
@@ -270,21 +296,8 @@ public:
 
     double kf=0;int kf_idx=0,sem_n=0,hip_cursor=0;int hip_hits[32]{};
     int sinal=1,sinal_votos=0;
-
-    double npc_ema=0;bool npc_ativo=false;double npc_liga_t=0,npc_desl_t=0,npc_desde=1e9,npc_t_ant=-1.0;
-    bool npc_tem=false;double npc_est[3]{};int npc_perdido=0,npc_troca_c=0;unsigned npc_id=0;
-    bool npc_tem_rec=false;int npc_rec[2]{};bool npc_alvo_ant=false;unsigned npc_id_ant=0;
     bool perto_seg=false;double perto_seg_t=0,perto_t_ant=-1.0;unsigned perto_jobs=0,perto_motivo=0;
-
-    std::uint64_t rf_versao=0;bool rf_vis=false;double rf_sem_t=0,rf_t_ant=-1.0;float rf_nota=0;int rf_n=0;
-    bool rf_g_tem=false;double rf_g_est[3]{};int rf_g_rec[2]{};bool rf_g_tem_rec=false;int rf_g_lado=0;
-    int rf_vis_n=0;double rf_baixo_t=0,rf_desde=1e9,npc_sem_t=0;float npc_nota=0;bool rf_alvo_npc=false;float rf_idade_ult=0;double npc_vis[2]{};int npc_falta_n=0;double npc_med[3]{},npc_tam_t=0;
-
-    struct EstadoAlvo {bool tem_prev=false;double prev_x=0,prev_ytop=0,prev_wh=0;bool tem_est=false;double est[3]{};bool on=false;
-        int cont_on=0,cont_off=0,seg_corte=0,perdido=0;double ref_cab[3]{};int ref_idade=-1;bool tem_recorte=false;int recorte[2]{};int rec_lado=0;
-        bool tem_escala=false;double escala=0;bool perto_seg=false;double perto_seg_t=0;};
-    EstadoAlvo grace_salva;bool trk_npc=false;int troca_pend=0,troca_motivo=0;double pend_est[3]{};float pend_nota=0;
-    bool cand_tem=false;double cand_est[3]{};int cand_n=0;float cand_nota=0;double npc_ausente_t=0,npc_perd_t=0;
+    double lugar_hx=0,lugar_hy=0,lugar_wh=0,lugar_t=-1,lugar_z=0;
 
     struct Npc2Slot {
         bool tem=false;double est[3]{};int rec[2]{};bool tem_rec=false;int lado=0;unsigned id=0;float nota=0;
@@ -322,6 +335,11 @@ public:
     unsigned long long adquiriu_n=0,promovido_n=0,escala_conf_n=0,adocoes_vetadas=0,giros=0;double ok_ant=1.0;
     int giro_desde=999;unsigned long long giro_rosto_n=0;
     int rea_off=0;bool rea_pend=false;double rea_p[3]{};unsigned long long reancorou_n=0;
+    bool rej_tem=false;double rej[3]{};unsigned long long cadeia_n=0;
+
+    CabecaProf cprof;CabecaProf::Saida cps{};unsigned long long prof_med_n=0,prof_liga_n=0,prof_corte_vet=0,prof_id_veto=0;
+    double pred_v[2]{},pred_z=0,pred_t=-1;unsigned long long pred_volta_n=0,frente_n=0,tamanho_n=0,lugar_rec_n=0;unsigned via=0;bool presa=false;
+    bool id_tem=false,ela_cont=false,id_ok_ult=false,est_ant_tem=false;double id_x=0,id_y=0,id_l=0,id_t=-1,id_z=0,est_ant[3]{};std::uint64_t id_versao=0;unsigned long long id_veto_n=0,id_volta_n=0,id_conf_n=0,id_freio_n=0;double id_dbg[8]{};double id_visto_t=-1,id_visto[3]{},id_lmed=0,ext_med[3]{},lmax_mem=0,lmax_t=-1,vc[3]{};int vc_n=0;unsigned long long id_maior_n=0,ext_n=0,ext_corte_vet=0,ext_fora_n=0;bool ext_med_tem=false,ext_ant_tem=false;double ext_ant[3]{};
     double cd_z=0;bool cd_tem=false,cd_dela_ant=false;unsigned long long cd_parou_n=0,cd_valeu_n=0;
     double vida_mem[8][5]{};int vida_mem_n=0;double vida_relogio=0;unsigned long long vida_re_n=0;
     double dbg_prof_ela=0;
@@ -330,28 +348,32 @@ public:
     std::vector<std::array<double,6>> dbg_cs;
     unsigned long long sem_lugar_n=0;
 
+    struct Trabalho {
+        std::vector<float> lq,mags,mvs,dd,blk;
+        std::vector<unsigned char> e,ne,m,tampa;std::vector<int> lab,labt,ordem,pilha;std::vector<det::Comp> comps,compt;
+        std::vector<float> larg,cent,vals,fa,fc;
+        std::vector<unsigned char> mf_m,mf_er,mf_mo,mf_mm;std::vector<int> mf_lab,mf_cnt,mf_tops;std::vector<det::Comp> mf_comps;
+        std::vector<float> mf_larg,mf_cent,mf_seg,mf_cs;
+        std::vector<float> pr,va,vb,pz,pa,pb,qa,qb;
+    };
+    mutable Trabalho tb;
     void reiniciar(){*this=Rastreio{P};}
     explicit Rastreio(const Parametros& p=Parametros{}):P(p){}
 
+    static size_t passo_amostra(size_t n){return (std::max<size_t>)(1,n/4096);}
     static float mediana_amostra(const float* d,size_t n){
-        if(!d||!n)return 0.f;const size_t passo=(std::max<size_t>)(1,n/4096);std::vector<float> v;v.reserve(n/passo+1);
+        if(!d||!n)return 0.f;const size_t passo=passo_amostra(n);std::vector<float> v;v.reserve(n/passo+1);
         for(size_t i=0;i<n;i+=passo)v.push_back(d[i]);return det::mediana(v);
     }
-    Resultado passo(const Grades& g0){
+    Resultado passo(const Grades& g0){via=0;presa=presa_calc(g0);
         Resultado R{};
+        const double est0[3]{est[0],est[1],est[2]};const bool est0_tem=tem_est;
         const float LIGA=P.generico?P.liga_gen:P.liga;
         const int W=g0.W,H=g0.H,q=P.q;
         if(kf<=0)kf=P.k_face;
         R.kface=float(kf);R.sinal=sinal;R.hip=kf_idx;
-        if(corte_t_pend){t_corte=g0.t;corte_t_pend=false;}
+        if(corte_t_pend){t_corte=g0.t;corte_t_pend=false;t_corte_listas.store(t_corte,std::memory_order_relaxed);}
         adq_job=false;
-
-        {static const double* sem=[]{static double v[3]{};char b[64]{};size_t n=0;
-            if(getenv_s(&n,b,sizeof b,"NR_RJ_SEMENTE")==0&&n>1&&sscanf_s(b,"%lf,%lf,%lf",&v[0],&v[1],&v[2])==3&&v[2]>=32)return (const double*)v;return (const double*)nullptr;}();
-         static bool semeado=false;
-         if(sem&&!semeado&&g0.dq){semeado=true;const double e4=double(g0.esc)*(2160.0/(std::max)(1.f,g0.saida_h));
-             est[0]=sem[0]/e4;est[1]=sem[1]/e4;est[2]=sem[2]/e4;tem_est=true;on=false;tem_prev=true;prev_x=est[0]/P.q;prev_wh=est[2]/1.25/P.q;prev_ytop=(est[1]-.5*est[2])/P.q;
-             ref_cab[0]=est[0];ref_cab[1]=est[1];ref_cab[2]=est[2];ref_idade=0;}}
         if(!g0.dq||!g0.mvq||!g0.d||W<8||H<8||g0.w<W||g0.h<H){R.corte=true;reset_corte();R.motivo_off=1;return R;}
 
         if(P.generico){
@@ -359,21 +381,19 @@ public:
             if(R.med_prox>P.conv_med){R.conv_errada=true;reset_corte();R.motivo_off=64;return R;}
         }
 
-        std::vector<float> mvs;Grades g=g0;
+        auto& mvs=tb.mvs;Grades g=g0;
         if(P.generico&&sinal<0){mvs.assign(g0.mvq,g0.mvq+size_t(W)*H*2);for(auto& v:mvs)v=-v;g.mvq=mvs.data();}
         const double sh=double(g.h)/720.0;
         const double kface=(P.generico?kf:double(P.k_face))*sh;
         const float dmin=P.generico?float(double(P.d_min)*P.k_face/kf):P.d_min;
-        std::vector<float> lq(size_t(W)*H);
+        auto& lq=tb.lq;lq.resize(size_t(W)*H);
         for(size_t i=0;i<lq.size();++i)lq[i]=std::log((std::max)(g.dq[i],1e-6f));
-        {std::vector<float> mags(size_t(W)*H);for(size_t i=0;i<mags.size();++i)mags[i]=std::hypot(g.mvq[2*i],g.mvq[2*i+1]);mv_g=det::mediana(mags);}
+        {auto& mags=tb.mags;mags.resize(size_t(W)*H);for(size_t i=0;i<mags.size();++i)mags[i]=std::hypot(g.mvq[2*i],g.mvq[2*i+1]);mv_g=det::mediana_em(mags);}
 
         double perto_dt=0;bool perto_ok=false,perto_expirou=false;
-
-        const bool modo_rosto=P.npc&&P.npc_modo==1;
-        if(P.perto||modo_rosto){
+        if(P.perto){
             perto_dt=(g.t>=0&&perto_t_ant>=0)?std::clamp(g.t-perto_t_ant,0.0,.5):double(g.k)/60.0;perto_t_ant=g.t;
-            perto_ok=on&&tem_est&&(modo_rosto||est[2]*g.esc*(2160.0/(std::max)(1.f,g.saida_h))>=P.perto_cab4k);
+            perto_ok=on&&tem_est&&est[2]*g.esc*(2160.0/(std::max)(1.f,g.saida_h))>=P.perto_cab4k;
             if(perto_ok&&perto_seg&&perto_seg_t+perto_dt>=P.perto_max_s){perto_ok=false;perto_expirou=true;}
         }
 
@@ -391,7 +411,7 @@ public:
                 }
             }
             ok=double(bons)/double(lq.size());okn=double(bons_n)/double(lq.size());
-            if((P.corte_multi||(P.corte_modo&4))&&ok<P.corte_ok&&g.k>1.f){
+            if((P.corte_modo&4)&&ok<P.corte_ok&&g.k>1.f){
                 for(const float ks:{(std::max)(1.f,std::floor(g.k*.5f)),1.f}){
                     size_t b2=0;
                     for(int y=0;y<H;++y)for(int x=0;x<W;++x){
@@ -405,19 +425,19 @@ public:
             }
 
             if((P.corte_modo&1)&&ok<P.corte_ok){
-                std::vector<float> dd(lq.size());
+                auto& dd=tb.dd;dd.resize(lq.size());
                 for(int y=0;y<H;++y)for(int x=0;x<W;++x){const size_t i=size_t(y)*W+x;
                     const int xi=std::clamp(int(std::lround(float(x)+g.k*g.mvq[2*i])),0,W-1),yi=std::clamp(int(std::lround(float(y)+g.k*g.mvq[2*i+1])),0,H-1);
                     dd[i]=lq[i]-lq_ant[size_t(yi)*W+xi];}
-                const int B=(std::max)(2,P.corte_bloco);size_t b=0;std::vector<float> v;
+                const int B=(std::max)(2,P.corte_bloco);size_t b=0;auto& v=tb.blk;
                 for(int by=0;by<H;by+=B)for(int bx=0;bx<W;bx+=B){v.clear();
                     for(int y=by;y<(std::min)(H,by+B);++y)for(int x=bx;x<(std::min)(W,bx+B);++x)v.push_back(dd[size_t(y)*W+x]);
-                    const float md=det::mediana(v);for(const float u:v)if(std::fabs(u-md)<.05f)++b;}
+                    const float md=det::mediana_em(v);for(const float u:v)if(std::fabs(u-md)<.05f)++b;}
                 tend=double(b)/double(lq.size());
             }
 
             const bool voto_fraco=P.caminha_dela>=2&&(okn<.6||cd_dela_ant);
-            if(P.generico&&P.sinal_n>0&&mv_g>P.sinal_mov&&!perto_ok&&!modo_rosto){
+            if(P.generico&&P.sinal_n>0&&mv_g>P.sinal_mov&&!perto_ok){
                 if(okn>ok+P.sinal_dif&&!voto_fraco)++sinal_votos;else if(ok>okn+P.sinal_dif)sinal_votos=0;
                 if(sinal_votos>=P.sinal_n){sinal=-sinal;sinal_votos=0;reset_corte();R.sinal=sinal;R.ok=float(ok);R.ok_neg=float(okn);R.motivo_off=1;return R;}
             }
@@ -426,6 +446,9 @@ public:
         lq_ant=lq;lq_W=W;lq_H=H;
         bool corte=ok<P.corte_ok;
         std::vector<det::Cand> cands;candidatos(g,lq,kface,dmin,cands);
+
+        cps=CabecaProf::Saida{};
+        if(P.cabeca_prof){const double dica[3]{est[0],est[1],est[2]};cps=cprof.passo(g,lq,(on&&tem_est)?dica:nullptr);}
 
         R.tend=float(tend);
         if(corte&&(P.corte_modo&(1|16))&&ref_idade>=0&&ref_idade<=P.corte_ref_jobs&&!cands.empty()&&
@@ -449,13 +472,17 @@ public:
         bool perto_corte=false;
         if(corte&&perto_ok){corte=false;perto_corte=true;}
 
+        if(corte&&g.ext_tem&&ext_ant_tem&&std::hypot(double(g.ext[0])-ext_ant[0],double(g.ext[1])-ext_ant[1])<.5*(std::max)(1.0,double(g.ext[2]))){corte=false;R.recontou=true;++cortes_vetados;++ext_corte_vet;}
+        ext_ant_tem=g.ext_tem;ext_ant[0]=g.ext[0];ext_ant[1]=g.ext[1];ext_ant[2]=g.ext[2];
+
+        if(corte&&(P.cabeca_prof&2)&&on&&tem_est&&cps.tem&&cps.seguiu){corte=false;R.recontou=true;++cortes_vetados;++prof_corte_vet;}
+
         if(corte&&(P.adquire&8)&&on&&tem_est&&tend>=P.corte_tend&&ok_ant<=P.giro_ok_ant){corte=false;R.giro=true;++giros;}
         ok_ant=ok;if(R.giro)giro_desde=0;else if(giro_desde<999)++giro_desde;
         if(corte){tem_prev=false;tem_est=false;seg_corte=(P.corte_modo&2)?0:P.corte_seg;tem_recorte=false;tem_escala=false;
-            cd_tem=false;
+            cd_tem=false;ela_cont=false;est_ant_tem=false;
         }
-        if(corte){t_corte=g.t;adq_pend=false;adq_sem=false;adq_outro_n=0;}
-        if(modo_rosto)rostos_aplica(g,cands,corte,R);
+        if(corte){t_corte=g.t;t_corte_listas.store(t_corte,std::memory_order_relaxed);adq_pend=false;adq_sem=false;adq_outro_n=0;}
         int ib=-1;double bs=-1;
         std::vector<double> nb(cands.size(),0.0);
         for(size_t i=0;i<cands.size();++i){const double sc=pontua(cands[i],W,H,g,kface,false,&nb[i]);if(sc>bs){bs=sc;ib=int(i);}}
@@ -474,7 +501,7 @@ public:
         bool tem_meas=false;double mx=0,mytop=0,mwh=0,md=0;
         double conf=ib>=0?bs:0.0;
 
-        const double LIGA2=((P.corte_modo&2)&&!tem_prev&&ib>=0&&ref_idade>=0&&ref_idade<=P.corte_ref_jobs&&no_ref(cands[size_t(ib)],g))?(std::min)(double(LIGA),double(P.corte_nota)):double(LIGA);
+        const double LIGA2=((((P.corte_modo&2)&&ref_idade<=P.corte_ref_jobs)||pred_valida(g))&&!tem_prev&&ib>=0&&ref_idade>=0&&no_ref(cands[size_t(ib)],g))?(std::min)(double(LIGA),double(P.corte_nota)):double(LIGA);
         if(ib>=0&&conf>=(tem_prev?double(P.aceita):LIGA2)){
             double fx,fy,fw;
             if(mede_fino(g,cands[size_t(ib)],fx,fy,fw)&&fw/(std::max)(cands[size_t(ib)].wh*q,1.0)>=.6&&fw/(std::max)(cands[size_t(ib)].wh*q,1.0)<=1.7){
@@ -485,16 +512,18 @@ public:
         if(tem_est){
             const int gx=std::clamp(int(est[0])/q,0,W-1),gy=std::clamp(int(est[1])/q,0,H-1);
 
-            double sx=0,sy=0;int n=0;
-            for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx){const int xx=gx+dx,yy=gy+dy;if(xx<0||yy<0||xx>=W||yy>=H)continue;const size_t i=size_t(yy)*W+xx;sx+=g.mvq[2*i];sy+=g.mvq[2*i+1];++n;}
-            double mvx=n?sx/n*q*g.k:0,mvy=n?sy/n*q*g.k:0;
-            if((P.caminha_dela>=1)&&cd_tem&&!trk_npc){
+            double mvx,mvy;mv_em(g,q,est[0],est[1],mvx,mvy);mvx*=g.k;mvy*=g.k;
+            if((P.caminha_dela>=1)&&cd_tem){
                 double ex=0,ey=0;int ne=0;const double zl=cd_z/double(P.cd_tol),zh=cd_z*double(P.cd_tol);
                 for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx){const int xx=gx+dx,yy=gy+dy;if(xx<0||yy<0||xx>=W||yy>=H)continue;const size_t i=size_t(yy)*W+xx;
                     const double z=g.dq[i];if(z>=zl&&z<=zh){ex+=g.mvq[2*i];ey+=g.mvq[2*i+1];++ne;}}
                 mvx=ne?ex/ne*q*g.k:0;mvy=ne?ey/ne*q*g.k:0;R.cd_dbg[8]=float(ne);if(!ne)++cd_parou_n;}
             pred[0]=est[0]-mvx;pred[1]=est[1]-mvy;pred[2]=est[2];tem_pred=true;
+
+            if(P.id_s>0.f&&ela_cont&&est_ant_tem){const double ax=est[0]-est_ant[0],ay=est[1]-est_ant[1],dvx=pred[0]-est[0]-ax,dvy=pred[1]-est[1]-ay,dm=.25*(std::max)(est[2],1.0),dd=std::hypot(dvx,dvy);
+                if(dd>dm){pred[0]=est[0]+ax+dvx*dm/dd;pred[1]=est[1]+ay+dvy*dm/dd;++id_freio_n;}}
         }
+        bool rej_nova=false;
         double cx=0,cy=0,lado=0,salto=0;bool tem_caixa=false;[[maybe_unused]] bool cd_dela=false;
         double raw[3]{};bool tem_raw=false;
         if(tem_meas){R.cd_dbg[0]=float(mx);R.cd_dbg[1]=float(mytop+.625*mwh);R.cd_dbg[2]=float(1.25*mwh);}
@@ -503,14 +532,26 @@ public:
             lado=1.25*mwh;cx=mx;cy=mytop+.5*lado;tem_caixa=true;
             raw[0]=cx;raw[1]=cy;raw[2]=lado;tem_raw=true;
             if(P.rosto_calibra&&cal_tem){cx+=cal_x*lado;cy+=cal_y*lado;lado*=cal_s;}
-            if((P.caminha_dela>=1)&&cd_tem&&!trk_npc&&tem_pred&&tem_est){
+            if((P.caminha_dela>=1)&&cd_tem&&tem_pred&&tem_est){
                 const double zm=prox_rosto(g,cx,cy,lado),t=lado/(std::max)(est[2],1.0);
                 cd_dela=zm>=cd_z/double(P.cd_tol)&&zm<=cd_z*double(P.cd_tol)&&t>=.75&&t<=1.0/.75;
                 if(cd_dela&&
                    std::hypot(cx-est[0],cy-est[1])<std::hypot(cx-pred[0],cy-pred[1])){pred[0]=est[0];pred[1]=est[1];R.cd_dbg[9]=1.f;++cd_valeu_n;}}
             if(tem_pred){
                 salto=std::hypot(cx-pred[0],cy-pred[1])/(std::max)(pred[2],1.0);
-                if(salto>=.6&&conf<LIGA&&perdido<P.perde_n)tem_meas=false;
+                if(salto>=.6&&conf<LIGA&&perdido<P.perde_n){
+                    bool cadeia=false;
+                    if(P.salto_cadeia&&rej_tem){double vx,vy;mv_em(g,q,rej[0],rej[1],vx,vy);
+                        const double d=std::hypot(cx-(rej[0]-vx*g.k),cy-(rej[1]-vy*g.k))/(std::max)(lado,1.0),t=lado/(std::max)(rej[2],1.0),te=lado/(std::max)(pred[2],1.0);
+                        cadeia=d<.6&&t>=.75&&t<=1.0/.75&&te>=.6&&te<=1.6;}
+                    if(cadeia){++cadeia_n;rej_tem=false;}
+                    else{tem_meas=false;rej[0]=cx;rej[1]=cy;rej[2]=lado;rej_nova=true;}}
+
+                const bool lenta=presa&&lugar_t>=0&&std::hypot(pred[0]-lugar_hx*double(g.w),pred[1]-lugar_hy*double(g.h))<=.35*(std::max)(pred[2],1.0);
+
+                if(tem_meas&&lenta&&P.pv(1u)&&lugar_z>0&&salto>=.3&&salto<=1.0){const double zm=prox_rosto(g,cx,cy,lado);if(zm>lugar_z*1.35){tem_meas=false;++frente_n;R.veto|=1u;}}
+
+                if(tem_meas&&lenta&&P.pv(2u)&&salto>=.3&&salto<=1.0){const double rt=lado/(std::max)(pred[2],1.0);if(rt<.75||rt>1.0/.75){tem_meas=false;++tamanho_n;R.veto|=2u;}}
             }
         }
 
@@ -518,19 +559,19 @@ public:
         if(perto_ok&&tem_pred){
             if(perto_seg&&tem_meas){const double dd=salto,t=lado/(std::max)(pred[2],1.0);
                 if(dd>P.perto_ref_dist||t>P.perto_ref_tam||t*P.perto_ref_tam<1.0)tem_meas=false;}
-            perto_hold=perto_corte||!tem_meas||(sinal_votos>0&&!modo_rosto);
+            perto_hold=perto_corte||!tem_meas||(sinal_votos>0);
             if(!tem_meas){const double e=perto_escala(g,pred);R.perto_escala=float(e);
                 pred[2]=(std::min)(pred[2]*e,double((std::min)(g.w,g.h)));}
         }
 
-        if((P.rosto_calibra||P.rosto_manda)&&P.npc2&&!modo_rosto&&tem_meas&&tem_raw&&!corte&&g.rostos&&g.rostos_versao!=rm_versao){
+        if((P.rosto_calibra||P.rosto_manda)&&P.npc2&&tem_meas&&tem_raw&&!corte&&g.rostos&&g.rostos_versao!=rm_versao){
             rm_versao=g.rostos_versao;
             const double idade_s=(g.t>=0&&g.rostos_t>=0)?g.t-g.rostos_t:double(g.rostos_idade)/60.0;
             if(idade_s<=P.rosto_idade_max){
                 const double esc=(std::max)(double(g.esc),1e-3),idade=std::clamp(double(g.rostos_idade),0.0,30.0);double dm=1e30,fcx=0,fcy=0,fl=0;
                 for(int i=0;i<g.n_rostos;++i){const auto& f=g.rostos[i];if(!(f.nota>=P.rosto_nota)||!(f.h>0.f))continue;
                     double fx=(f.x+.5*f.w)/esc,fy=(f.y+.5*f.h)/esc;const double fh=f.h/esc;
-                    double vx,vy;mv_em(g,q,fx,fy,vx,vy);fx-=vx*idade;fy-=vy*idade;
+                    double vx,vy;mv_dela(g,fx,fy,double(P.rosto_cab)*fh,idade,vx,vy);fx-=vx*idade;fy-=vy*idade;
                     const double l=double(P.rosto_cab)*fh,y=fy-double(P.rosto_dy)*fh,r=l/(std::max)(lado,1.0),d=std::hypot(fx-cx,y-cy)/(std::max)(lado,1.0);
                     if(d<=P.g_rosto_dist&&r>=.4&&r<=2.5&&d<dm){dm=d;fcx=fx;fcy=y;fl=l;}}
                 if(dm<1e29){
@@ -542,28 +583,34 @@ public:
                     if(P.rosto_manda){cx=fcx;cy=fcy;lado=fl;++manda_n;if(tem_pred)salto=std::hypot(cx-pred[0],cy-pred[1])/(std::max)(pred[2],1.0);}}
             }
         }
-        bool g_rosto=false;
-        if(P.npc2&&!modo_rosto&&!tem_meas&&g.rostos&&g.rostos_versao==gy_versao)R.g_motivo=1;
-        if(P.npc2&&!modo_rosto&&!tem_meas&&g.rostos&&g.rostos_versao!=gy_versao){
+        bool g_rosto=false;if(tem_meas)via|=1u;
+        if(P.npc2&&!tem_meas&&g.rostos&&g.rostos_versao==gy_versao)R.g_motivo=1;
+        if(P.npc2&&!tem_meas&&g.rostos&&g.rostos_versao!=gy_versao){
             gy_versao=g.rostos_versao;
             const double idade_s=(g.t>=0&&g.rostos_t>=0)?g.t-g.rostos_t:double(g.rostos_idade)/60.0;
-            const double* ref=tem_pred?pred:((ref_idade>=0&&ref_idade<=P.corte_ref_jobs)?ref_cab:nullptr);
+            const bool pv=!tem_pred&&pred_valida(g);
+            const double* ref=tem_pred?pred:((ref_idade>=0&&(ref_idade<=P.corte_ref_jobs||pv))?ref_cab:nullptr);
             R.g_motivo=!ref?2:corte?3:idade_s>P.rosto_idade_max?4:5;
             if(ref&&!corte&&idade_s<=P.rosto_idade_max){
                 const double esc=(std::max)(double(g.esc),1e-3),idade=std::clamp(double(g.rostos_idade),0.0,30.0);double dm=1e30,gdm=1e30;
-                for(int i=0;i<g.n_rostos;++i){const auto& f=g.rostos[i];if(!(f.nota>=P.rosto_nota)||!(f.h>0.f))continue;
-                    double fx=(f.x+.5*f.w)/esc,fy=(f.y+.5*f.h)/esc;const double fh=f.h/esc;
-                    double vx,vy;mv_em(g,q,fx,fy,vx,vy);fx-=vx*idade;fy-=vy*idade;
+                const double e4=g.esc*(2160.0/(std::max)(1.f,g.saida_h));
+                for(int i=0;i<g.n_rostos;++i){const auto& f=g.rostos[i];if(!(f.h>0.f))continue;const double fh=f.h/esc;
+                    {const float nbase=P.nota_rastreio?P.nota_para(P.rosto_nota,double(P.rosto_cab)*fh*e4):P.rosto_nota;
+                     if(!(f.nota>=(pv?(std::min)(nbase,P.rosto_baixa):nbase)))continue;}
+                    double fx=(f.x+.5*f.w)/esc,fy=(f.y+.5*f.h)/esc;
+                    double vx,vy;mv_dela(g,fx,fy,double(P.rosto_cab)*fh,idade,vx,vy);fx-=vx*idade;fy-=vy*idade;
                     const double l=double(P.rosto_cab)*fh,y=fy-double(P.rosto_dy)*fh,r=l/(std::max)(ref[2],1.0),d=std::hypot(fx-ref[0],y-ref[1])/(std::max)(ref[2],1.0);
                     gdm=(std::min)(gdm,d);
+                    if(P.id_s>0.f&&id_tem&&id_z>0){const double z=prox_rosto(g,(f.x+.5*f.w)/esc,(f.y+.5*f.h)/esc-double(P.rosto_dy)*fh,l);if(z>0&&z<.75*id_z)continue;}
+                    if(P.id_s>0.f&&ela_cont&&id_fresco(g)&&id_dist(fx,y)>.6)continue;
                     if(d<=P.g_rosto_dist&&r>=.6&&r<=1.6&&d<dm){dm=d;cx=fx;cy=y;lado=l;}}
                 if(gdm<1e29)R.g_dmin=float(gdm);
-                if(dm<1e29){g_rosto=true;tem_meas=true;tem_caixa=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;R.g_motivo=8;
+                if(dm<1e29){g_rosto=true;tem_meas=true;tem_caixa=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;R.g_motivo=8;via|=2u;if(P.id_s>0.f)rej_nova=false;if(pv)++pred_volta_n;
                     salto=tem_pred?std::hypot(cx-pred[0],cy-pred[1])/(std::max)(pred[2],1.0):1.0;conf=(std::max)(conf,double(LIGA));++g_rosto_n;}}
         }
 
         bool adq=false,escala_rosto=false,adq_lista_nova=false;
-        if(P.adquire&&P.npc2&&!modo_rosto&&g.rostos&&g.rostos_versao!=adq_versao){
+        if(P.adquire&&P.npc2&&g.rostos&&g.rostos_versao!=adq_versao){
             adq_versao=g.rostos_versao;adq_el_n=0;
             const double idade_s=(g.t>=0&&g.rostos_t>=0)?g.t-g.rostos_t:double(g.rostos_idade)/60.0;
             const bool velha=t_corte>=0&&g.rostos_t>=0&&g.rostos_t<=t_corte;R.lista_velha=velha;
@@ -577,11 +624,18 @@ public:
                      if(!(f.nota>=P.nota_para(P.adq_nota1,l*e4)&&l*e4>=P.adq_cab1))bits|=32;if(velha||corte||tem_est||tem_meas)bits|=64;}
                     int na=0;for(int i=0;i<g.n_rostos;++i)if(g.rostos[i].nota>=P.ancora_nota&&std::fabs((g.rostos[i].x+.5*g.rostos[i].w)/esc/(std::max)(double(g.w),1.0)-.5)<=P.ancora_centro)++na;
                     const double v[10]{double(g.n_rostos),nm,lm,xm,ym,double(bits),double(na),tem_est?1.0:0.0,tem_meas?1.0:0.0,velha?1.0:0.0};for(int z=0;z<10;++z)ad_ult[z]=v[z];++ad_n;}
+
+                const bool lug_ok=P.pv(4u)&&!corte&&!velha&&g.t>=0&&lugar_t>=0&&lugar_t>t_corte&&g.t-lugar_t<=double(P.predicao_s)&&lugar_wh>0&&g.W>0&&g.H>0;
+                const double lgl=1.25*lugar_wh*q,lgx=lugar_hx*double(g.w),lgy=lugar_hy*double(g.h);const bool rfv=pred_valida(g);
+                auto no_lugar=[&](double x,double y,double l){
+                    auto perto=[&](double ax,double ay,double al){return al>0&&std::hypot(x-ax,y-ay)<=1.5*al&&l>=.6*al&&l<=1.6*al;};
+                    return perto(lgx,lgy,lgl)||(rfv&&perto(ref_cab[0],ref_cab[1],ref_cab[2]));};
                 for(int i=0;i<g.n_rostos;++i){const auto& f=g.rostos[i];if(!(f.h>0.f))continue;
                     double fx=(f.x+.5*f.w)/esc,fy=(f.y+.5*f.h)/esc;const double fh=f.h/esc,l=double(P.rosto_cab)*fh;
-                    if(!(f.nota>=P.nota_para(P.rosto_nota,l*e4)))continue;
+                    if(!(f.nota>=P.nota_para(P.adq_elig_min?(std::min)(P.rosto_nota,P.adq_nota1):P.rosto_nota,l*e4)))continue;
                     if(l*e4<P.adq_min)continue;
-                    double vx,vy;mv_em(g,q,fx,fy,vx,vy);fx-=vx*idade;fy-=vy*idade;const double y=fy-double(P.rosto_dy)*fh;
+                    double vx,vy;mv_dela(g,fx,fy,double(P.rosto_cab)*fh,idade,vx,vy);fx-=vx*idade;fy-=vy*idade;const double y=fy-double(P.rosto_dy)*fh;
+                    if(lug_ok&&!no_lugar(fx,y,l)){++lugar_rec_n;continue;}
                     bool unico=true;for(int j=0;j<g.n_rostos&&unico;++j)if(j!=i&&g.rostos[j].nota>=P.rosto_baixa&&g.rostos[j].h>=P.adq_unico*f.h)unico=false;
                     const double pr=prox_rosto(g,fx,y,l);if(!unico||!(pr>0)||!corpo_abaixo(g,fx,y,l,pr))continue;
                     if(adq_el_n<8){adq_el[adq_el_n][0]=fx;adq_el[adq_el_n][1]=y;adq_el[adq_el_n][2]=l;++adq_el_n;}
@@ -594,7 +648,7 @@ public:
                     if((P.adquire&1)&&!tem_est&&!tem_meas&&!corte&&!velha){
                         const bool forte=bn>=P.nota_para(P.adq_nota1,bl*e4)&&bl*e4>=P.adq_cab1;
                         const bool confirma=adq_pend&&std::hypot(bx-adq_p[0],by-adq_p[1])<=P.adq_dist*(std::max)(bl,1.0)&&bl/(std::max)(adq_p[2],1.0)>=.67&&bl/(std::max)(adq_p[2],1.0)<=1.5;
-                        if(forte||confirma){adq=true;adq_pend=false;cx=bx;cy=by;lado=bl;tem_meas=true;tem_caixa=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;
+                        if(forte||confirma){adq=true;adq_pend=false;via|=4u;cx=bx;cy=by;lado=bl;tem_meas=true;tem_caixa=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;
                             salto=1.0;conf=(std::max)(conf,double(LIGA));adq_sem=true;adq_outro_n=0;adq_job=true;++adquiriu_n;R.adquiriu=true;
                             if(P.corte_modo&2)seg_corte=0;}
                         else{adq_pend=true;adq_p[0]=bx;adq_p[1]=by;adq_p[2]=bl;}
@@ -605,7 +659,7 @@ public:
                     if((P.reancora&1)&&tem_est&&!on&&rea_off>=P.rea_jobs&&!corte&&!velha&&!adq&&!(tem_meas&&conf>=LIGA)&&(cega||bp>=double(P.rea_prox)*prox_rosto(g,est[0],est[1],est[2]))){
                         const bool forte=bn>=P.nota_para(P.adq_nota1,bl*e4)&&bl*e4>=P.adq_cab1;
                         const bool confirma=rea_pend&&std::hypot(bx-rea_p[0],by-rea_p[1])<=P.adq_dist*(std::max)(bl,1.0)&&bl/(std::max)(rea_p[2],1.0)>=.67&&bl/(std::max)(rea_p[2],1.0)<=1.5;
-                        if(forte||confirma){adq=true;rea_pend=false;cx=bx;cy=by;lado=bl;tem_meas=true;tem_caixa=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;g_rosto=false;
+                        if(forte||confirma){adq=true;rea_pend=false;via|=8u;cx=bx;cy=by;lado=bl;tem_meas=true;tem_caixa=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;g_rosto=false;
                             salto=1.0;conf=(std::max)(conf,double(LIGA));adq_sem=true;adq_outro_n=0;adq_job=true;++reancorou_n;R.reancorou=true;
                             if(P.corte_modo&2)seg_corte=0;}
                         else{rea_pend=true;rea_p[0]=bx;rea_p[1]=by;rea_p[2]=bl;}
@@ -621,8 +675,11 @@ public:
                 if(jn>=0&&nn>=LIGA&&!duvida){const auto& c=cands[size_t(jn)];const double cxx=c.x*q,cyy=(c.ytop+.5*c.wh)*q;
                     outro=std::hypot(cxx-est[0],cyy-est[1])>(std::max)(est[2],1.0);
                     double fx,fy,fw;
-                    if(outro&&++adq_outro_n>=P.liga_n&&mede_fino(g,c,fx,fy,fw)&&fw/(std::max)(c.wh*q,1.0)>=.6&&fw/(std::max)(c.wh*q,1.0)<=1.7){
-                        tem_meas=true;g_rosto=false;tem_pred=false;mx=fx;mytop=fy;mwh=fw;md=c.d;lado=1.25*mwh;cx=mx;cy=mytop+.5*lado;tem_caixa=true;salto=1.0;
+
+                    const bool tam_ok=!P.pv(16u)||(1.25*c.wh*q>=.75*est[2]&&1.25*c.wh*q<=est[2]/.75);
+                    if(!tam_ok&&outro)++tamanho_n;
+                    if(outro&&tam_ok&&++adq_outro_n>=P.liga_n&&mede_fino(g,c,fx,fy,fw)&&fw/(std::max)(c.wh*q,1.0)>=.6&&fw/(std::max)(c.wh*q,1.0)<=1.7){
+                        via|=16u;tem_meas=true;g_rosto=false;tem_pred=false;mx=fx;mytop=fy;mwh=fw;md=c.d;lado=1.25*mwh;cx=mx;cy=mytop+.5*lado;tem_caixa=true;salto=1.0;
                         conf=(std::max)(conf,nn);adq_sem=false;adq_outro_n=0;}}
                 if(!outro)adq_outro_n=0;}
         }
@@ -630,20 +687,27 @@ public:
         if((P.adquire&16)&&adq_lista_nova&&!tem_meas&&tem_pred&&giro_desde<=P.giro_rosto_jobs&&adq_el_n==1){
             const double l=adq_el[0][2],d=std::hypot(adq_el[0][0]-pred[0],adq_el[0][1]-pred[1])/(std::max)(pred[2],1.0),r=l/(std::max)(pred[2],1.0);
             if(d<=P.giro_rosto_dist&&r>=.6&&r<=1.6){cx=adq_el[0][0];cy=adq_el[0][1];lado=l;g_rosto=true;tem_meas=true;tem_caixa=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;
-                salto=d;conf=(std::max)(conf,double(LIGA));++giro_rosto_n;R.giro_rosto=true;}}
+                salto=d;conf=(std::max)(conf,double(LIGA));++giro_rosto_n;R.giro_rosto=true;via|=32u;}}
 
         if(P.rosto_ancora>0&&tem_meas&&!g_rosto&&!adq&&anc_t_rosto>=0&&g.t>=0&&g.t-anc_t_rosto<=.5){tem_meas=false;tem_caixa=false;++anc_prof_ignorada;}
 
-        if(P.rosto_ancora>0&&P.npc2&&!modo_rosto&&!trk_npc&&g.rostos&&g.rostos_versao!=anc_versao){
+        if(P.rosto_ancora>0&&P.npc2&&g.rostos&&g.rostos_versao!=anc_versao){
             anc_versao=g.rostos_versao;
             const double esc=(std::max)(double(g.esc),1e-3),idade=std::clamp(double(g.rostos_idade),0.0,30.0);
             const double e4a=g.esc*(2160.0/(std::max)(1.f,g.saida_h));
             int ib2=-1;double bh=0,ax=0,ay=0,al=0;
+
+            const bool usa_lugar=P.predicao_s>0.f&&lugar_t>=0&&g.t>=0&&g.t-lugar_t<=double(P.predicao_s)&&lugar_wh>0;
+            double bd=1e30;const double ll=1.25*lugar_wh*q,lx=lugar_hx*double(g.w),ly=lugar_hy*double(g.h);
             for(int i=0;i<g.n_rostos;++i){const auto& f=g.rostos[i];if(!(f.h>0.f))continue;
                 double fx=(f.x+.5*f.w)/esc,fy=(f.y+.5*f.h)/esc;const double fh=f.h/esc;
                 if(!(f.nota>=P.nota_para(P.ancora_nota,double(P.rosto_cab)*fh*e4a)))continue;
                 if(std::fabs(fx/(std::max)(double(g.w),1.0)-.5)>P.ancora_centro)continue;
-                double vx,vy;mv_em(g,q,fx,fy,vx,vy);fx-=vx*idade;fy-=vy*idade;
+                double vx,vy;mv_dela(g,fx,fy,double(P.rosto_cab)*fh,idade,vx,vy);fx-=vx*idade;fy-=vy*idade;
+                if(usa_lugar){const double hy=fy-double(P.rosto_dy)*fh,hl=double(P.rosto_cab)*fh,rr=hl/(std::max)(ll,1.0),dl=std::hypot(fx-lx,hy-ly)/(std::max)(ll,1.0);
+                    if(rr>=.6&&rr<=1.6&&dl<=1.2&&dl<bd){bd=dl;bh=fh;ib2=i;ax=fx;ay=hy;al=hl;}continue;}
+
+                if(P.pv(32u)&&tem_est&&est[2]>0){const double rr=double(P.rosto_cab)*fh/est[2];if(rr<.6||rr>1.6){++lugar_rec_n;continue;}}
                 if(fh>bh){bh=fh;ib2=i;ax=fx;ay=fy-double(P.rosto_dy)*fh;al=double(P.rosto_cab)*fh;}}
             if(ib2>=0){
                 const double* ref=tem_caixa?nullptr:(tem_est?est:nullptr);double rc[3]{cx,cy,lado};if(tem_caixa)ref=rc;
@@ -652,42 +716,147 @@ public:
                 if(!dentro&&ref&&on){double mp=1e30;
                     for(int i=0;i<g.n_rostos;++i){const auto& f=g.rostos[i];if(!(f.h>0.f))continue;
                         if(!(f.nota>=P.nota_para(P.rosto_nota,double(P.rosto_cab)*(f.h/esc)*e4a)))continue;
-                        double fx=(f.x+.5*f.w)/esc,fy=(f.y+.5*f.h)/esc;const double fh=f.h/esc;double vx,vy;mv_em(g,q,fx,fy,vx,vy);fx-=vx*idade;fy-=vy*idade;
+                        double fx=(f.x+.5*f.w)/esc,fy=(f.y+.5*f.h)/esc;const double fh=f.h/esc;double vx,vy;mv_dela(g,fx,fy,double(P.rosto_cab)*fh,idade,vx,vy);fx-=vx*idade;fy-=vy*idade;
                         const double y=fy-double(P.rosto_dy)*fh,l=double(P.rosto_cab)*fh,d=std::hypot(fx-ref[0],y-ref[1]);
                         if(d<=.6*(std::max)(ref[2],1.0)&&l>=.4*ref[2]&&l<=2.5*ref[2]&&d<mp){mp=d;ax=fx;ay=y;al=l;}}
                     if(mp<1e29){dentro=true;++anc_proprio_n;}}
                 anc_miss=dentro?0:anc_miss+1;
 
-                if(dentro){cx=ax;cy=ay;lado=al;tem_meas=true;tem_caixa=true;g_rosto=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;anc_t_rosto=g.t;
+                if(dentro){via|=64u;cx=ax;cy=ay;lado=al;tem_meas=true;tem_caixa=true;g_rosto=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;anc_t_rosto=g.t;
                     salto=tem_pred?std::hypot(cx-pred[0],cy-pred[1])/(std::max)(pred[2],1.0):1.0;conf=(std::max)(conf,double(LIGA));}
                 else if(anc_miss>=P.rosto_ancora||!on){
                     cx=ax;cy=ay;lado=al;tem_meas=true;tem_caixa=true;g_rosto=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;salto=1.0;
-                    conf=(std::max)(conf,double(LIGA));tem_prev=false;perto_seg=false;anc_miss=0;++ancorou_n;R.reancorou=true;anc_t_rosto=g.t;}
+                    conf=(std::max)(conf,double(LIGA));tem_prev=false;perto_seg=false;anc_miss=0;++ancorou_n;via|=128u;R.reancorou=true;anc_t_rosto=g.t;}
             }else anc_miss=0;
         }
+
+        const bool id_ok=id_fresco(g);id_ok_ult=id_ok;id_dbg[6]=(id_t>=0&&g.t>=0)?g.t-id_t:-1;id_dbg[7]=(t_corte>=0&&g.t>=0)?g.t-t_corte:-1;
+
+        if(tem_meas&&ela_cont&&salto>=.6&&!(via&256u)&&(id_ok?id_dist(cx,cy)>(conf<double(LIGA)?.6:1.2):(est0_tem&&conf<.95&&std::hypot(cx-est0[0],cy-est0[1])>1.2*(std::max)(est0[2],1.0)))){tem_meas=false;tem_caixa=false;g_rosto=false;rej_nova=false;++id_veto_n;R.veto|=128u;}
+
+        else if(tem_meas&&id_ok&&ela_cont&&est0_tem&&est0[2]>0&&!(via&256u)&&id_z>0&&(lado/est0[2]>1.3||(id_lmed>0&&lado>1.35*id_lmed))&&prox_rosto(g,cx,cy,lado)>((lado/est0[2]>1.3)?1.25:1.15)*id_z){
+            tem_meas=false;tem_caixa=false;g_rosto=false;rej_nova=false;++id_veto_n;R.veto|=32u;}
+        else if(P.id_bits&1u&&tem_meas&&id_ok&&ela_cont&&est0_tem&&!(via&256u)&&double(mv_g)*double(P.q)*(std::max)(double(g.k),1.0)<=.1*est0[2]&&std::hypot(cx-est0[0],cy-est0[1])>.35*est0[2]&&id_dist(cx,cy)>.6&&id_visto_t>=0&&g.t-id_visto_t<=.5&&std::hypot(cx-id_visto[0],cy-id_visto[1])>.6*(std::max)(id_visto[2],1.0)){tem_meas=false;tem_caixa=false;g_rosto=false;rej_nova=false;++id_veto_n;R.veto|=64u;}
+
+        if(P.id_s>0.f&&g.rostos&&g.rostos_versao!=id_versao){
+            id_versao=g.rostos_versao;
+            const double idade_s=(g.t>=0&&g.rostos_t>=0)?g.t-g.rostos_t:double(g.rostos_idade)/60.0;
+            const bool lvelha=t_corte>=0&&g.rostos_t>=0&&g.rostos_t<=t_corte;
+            for(int z=0;z<5;++z)id_dbg[z]=0;id_dbg[5]=(corte||lvelha)?2:idade_s>P.rosto_idade_max?3:0;
+            if(!corte&&!lvelha&&idade_s<=P.rosto_idade_max){
+                const double esc=(std::max)(double(g.esc),1e-3),idade=std::clamp(double(g.rostos_idade),0.0,30.0),e4=g.esc*(2160.0/(std::max)(1.f,g.saida_h));
+                const bool cx_tem=tem_meas||tem_est;const double bx=tem_meas?cx:est[0],by=tem_meas?cy:est[1],bl=(std::max)(tem_meas?lado:est[2],1.0);
+                double bi=1e30,ix=0,iy=0,il=0,be=1e30,ex=0,ey=0,el=0;
+
+                struct Cf {double x,y,l,z;bool rapido,frente,topo,parado;};Cf cf[16];int ncf=0;double lmax=0;
+                const double kk=(std::max)(double(g.k),1.0),mvg=double(mv_g)*double(P.q)*kk;
+                const double zcx=(tem_est&&est[2]>0)?prox_rosto(g,est[0],est[1],est[2]):0.0;
+                for(int i=0;i<g.n_rostos&&ncf<16;++i){const auto& f=g.rostos[i];if(!(f.h>0.f))continue;const double fh=f.h/esc,l=double(P.rosto_cab)*fh;
+                    if(!(f.nota>=P.nota_para(P.rosto_baixa,l*e4)))continue;
+                    ++id_dbg[4];
+                    const double rx=(f.x+.5*f.w)/esc,ry=(f.y+.5*f.h)/esc-double(P.rosto_dy)*fh;
+
+                    const double vbx=(est0_tem&&est_ant_tem)?(est0[0]-est_ant[0])/kk:0.0,vby=(est0_tem&&est_ant_tem)?(est0[1]-est_ant[1])/kk:0.0;
+                    double fx=(f.x+.5*f.w)/esc-vbx*idade,fy=(f.y+.5*f.h)/esc-vby*idade;const double y=fy-double(P.rosto_dy)*fh;
+                    double ux,uy;mv_em(g,P.q,fx,fy,ux,uy);
+
+                    const double pz=prox_rosto(g,rx,ry,l);
+                    const bool rapido=mvg<=.1*l&&std::hypot(ux,uy)*kk>.35*l;if(rapido)++id_dbg[2];
+                    const bool frente=id_ok&&id_z>0&&pz>1.3*id_z;if(frente)++id_dbg[3];
+                    const bool topo=y-.5*l<0;
+                    const bool parado=mvg<=.1*l&&std::hypot(ux,uy)*kk<=.1*l;
+                    cf[ncf++]={fx,y,l,pz,rapido,frente,topo,parado};if(!rapido&&!frente&&!topo)lmax=(std::max)(lmax,l);}
+
+                if(lmax>=lmax_mem||lmax_t<0||g.t-lmax_t>1.5){if(lmax>0){lmax_mem=lmax;lmax_t=g.t;}}
+                const double lj=(std::max)(lmax,lmax_mem);
+                int ie=-1,ii=-1,im=-1;
+                for(int i=0;i<ncf;++i){const auto& c=cf[i];
+                    if(cx_tem){const double d=std::hypot(c.x-bx,c.y-by)/bl,r=c.l/bl;
+
+                        const double dsel=(id_tem&&id_ok&&ela_cont)?id_dist(c.x,c.y):d;if(d<=.6&&r>=.6&&r<=1.6&&dsel<be){be=dsel;ex=c.x;ey=c.y;el=c.l;ie=i;}}
+                    if(id_tem&&id_viva(g)&&!c.rapido&&!c.frente&&!(id_z>0&&c.z>0&&c.z<.75*id_z)){const double d=id_dist(c.x,c.y),r=c.l/(std::max)(id_l,1.0);if(d<=.6&&r>=.7&&r<=1.0/.7&&d<bi){bi=d;ix=c.x;iy=c.y;il=c.l;ii=i;}}
+                    if(!c.rapido&&!c.frente&&!c.topo&&(im<0||c.l>cf[im].l))im=i;}
+                id_dbg[0]=be<1e29?1:0;id_dbg[1]=bi<1e29?1:0;if(bi<1e29&&id_ok&&cf[ii].parado){id_visto_t=g.t;id_visto[0]=ix;id_visto[1]=iy;id_visto[2]=il;}
+                auto zid=[&](int i,double x,double y,double l){const double z=i>=0?cf[i].z:prox_rosto(g,x,y,l);return (std::max)(z,zcx);};
+                if(be<1e29&&on&&(ela_cont&&id_ok)&&el>=.75*id_l&&el<=id_l/.75){id_x=ex;id_y=ey;id_l=el;id_t=g.t;id_tem=true;id_z=zid(ie,ex,ey,el);++id_conf_n;if(cf[ie].parado){id_visto_t=g.t;id_visto[0]=ex;id_visto[1]=ey;id_visto[2]=el;}}
+                else if(be<1e29&&on&&!id_ok&&el>=.8*lj&&(!id_viva(g)||id_dist(ex,ey)<=1.5)){id_x=ex;id_y=ey;id_l=el;id_t=g.t;id_tem=true;ela_cont=true;id_z=zid(ie,ex,ey,el);++id_conf_n;}
+                else if(bi<1e29&&id_viva(g)){id_x+=.5*(ix-id_x);id_y+=.5*(iy-id_y);id_l+=.5*(il-id_l);id_t=g.t;{const double z=cf[ii].z;if(z>0)id_z=id_z>0?.5*(id_z+z):z;}++id_conf_n;
+                    if(!ela_cont&&il>=.8*lj&&!(id_z>0&&cf[ii].z>0&&cf[ii].z<.75*id_z)){
+                        cx=ix;cy=iy;lado=il;tem_meas=true;tem_caixa=true;g_rosto=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;salto=1.0;rej_nova=false;
+                        conf=(std::max)(conf,double(LIGA));tem_prev=false;perto_seg=false;ela_cont=true;via|=256u;R.reancorou=true;++id_volta_n;}}
+
+                if((P.id_bits&2u)&&!id_ok&&im>=0&&cx_tem&&tem_est){const auto& c=cf[im];
+                    const bool na_caixa=std::hypot(c.x-bx,c.y-by)<=.6*bl;
+                    if(na_caixa)vc_n=0;
+                    else{if(vc_n>0&&std::hypot(c.x-vc[0],c.y-vc[1])<=.6*c.l&&c.l>=.75*vc[2]&&c.l<=vc[2]/.75)++vc_n;else vc_n=1;vc[0]=c.x;vc[1]=c.y;vc[2]=c.l;
+                        if(vc_n>=3&&!(via&256u)){cx=c.x;cy=c.y;lado=c.l;tem_meas=true;tem_caixa=true;g_rosto=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;salto=1.0;rej_nova=false;
+                            conf=(std::max)(conf,double(LIGA));tem_prev=false;perto_seg=false;ela_cont=true;via|=512u;R.reancorou=true;
+                            id_x=c.x;id_y=c.y;id_l=c.l;id_t=g.t;id_tem=true;id_z=(std::max)(c.z,0.0);vc_n=0;++id_maior_n;}}}
+            }
+        }
+
+        bool prof_med=false,prof_adq=false;
+        if((P.cabeca_prof&1)&&!tem_meas&&cps.tem&&!corte&&!g.ext_tem&&!R.veto){
+            if(tem_pred){const double d=std::hypot(cps.x-pred[0],cps.y-pred[1])/(std::max)(pred[2],1.0),t=cps.lado/(std::max)(pred[2],1.0);
+                prof_med=d<=P.cp_salto&&t>=.6&&t<=1.6&&cps.nota>=P.cp_nota;}
+            else if(!tem_est&&cps.n_seg>=P.cp_liga_n&&cps.nota>=P.cp_liga&&seg_corte==0){
+                if(P.id_s>0.f&&id_fresco(g)&&id_dist(cps.x,cps.y)>1.5)++prof_id_veto;
+                else prof_adq=true;}
+            if(prof_med||prof_adq){
+                cx=cps.x;cy=cps.y;lado=cps.lado;
+                {det::Cand c{};c.x=cps.cx_g;c.ytop=cps.ytop_g;c.wh=cps.wh_g;c.d=cps.d;double fx,fy,fw;
+                 if(mede_fino(g,c,fx,fy,fw)){const double r=fw/(std::max)(cps.wh_g*q,1.0);const double fl=1.25*fw;if(r>=.6&&r<=1.7&&std::hypot(fx-cps.x,fy+.5*fl-cps.y)<.35*cps.lado){lado=fl;cx=fx;cy=fy+.5*lado;}}}
+                tem_meas=true;tem_caixa=true;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;md=cps.d;rej_nova=false;
+                conf=(std::max)(conf,double(LIGA));via|=2048u;
+                if(prof_med){salto=std::hypot(cx-pred[0],cy-pred[1])/(std::max)(pred[2],1.0);++prof_med_n;}
+                else{salto=1.0;tem_prev=false;++prof_liga_n;if(P.corte_modo&2)seg_corte=0;}}
+        }
+        ext_med_tem=tem_meas;ext_med[0]=cx;ext_med[1]=cy;ext_med[2]=lado;
+        if(g.ext_tem){cx=g.ext[0];cy=g.ext[1];lado=g.ext[2];tem_meas=true;tem_caixa=true;g_rosto=false;mwh=lado/1.25;mx=cx;mytop=cy-.5*lado;salto=1.0;rej_nova=false;
+            conf=(std::max)(conf,.99);tem_prev=false;perto_seg=false;ela_cont=true;via|=1024u;++ext_n;
+            if(P.id_s>0.f){id_x=cx;id_y=cy;id_l=lado;id_t=g.t;id_tem=true;const double z=prox_rosto(g,cx,cy,lado);if(z>0)id_z=z;}}
+        rej_tem=rej_nova;
         R.cd_dbg[5]=float(salto);R.cd_dbg[7]=tem_meas?1.f:0.f;
+
+        if(P.id_s>0.f&&tem_meas&&ela_cont&&id_tem&&tem_pred&&salto<.3&&!g_rosto&&!adq&&est0_tem&&id_t>t_corte&&est0[2]>0&&lado/est0[2]<=1.2&&lado/est0[2]>=1.0/1.2){
+            const double dx=cx-est0[0],dy=cy-est0[1];id_x+=dx;id_y+=dy;id_t=g.t;}
+        if(P.id_s>0.f&&tem_meas&&ela_cont&&!(via&(256u|512u))){id_lmed=id_lmed>0?id_lmed+.03*(lado-id_lmed):lado;}
         if(tem_meas){
             tem_prev=true;prev_x=mx/q;prev_ytop=mytop/q;prev_wh=mwh/q;perdido=0;
+
+            const bool cont=P.pv(64u)&&tem_pred&&salto<.3&&conf>=LIGA;
+            if(P.lugar_rosto_s>0.f&&g.t>=0&&(g_rosto||R.adquiriu||R.reancorou||cont)&&g.W>0&&g.H>0&&!(P.id_s>0.f&&!ela_cont)){
+                lugar_hx=prev_x/double(g.W);lugar_hy=(prev_ytop+.6*prev_wh)/double(g.H);lugar_wh=prev_wh;lugar_t=g.t;lugar_z=prox_rosto(g,cx,cy,lado);}
 
             if(tem_pred&&salto<.6){const double a=P.alfa_pos,at=(P.rosto_ancora>0&&g_rosto)?(std::max)(double(P.alfa_tam),.7):double(P.alfa_tam);
                 est[0]=pred[0]+a*(cx-pred[0]);est[1]=pred[1]+a*(cy-pred[1]);est[2]=pred[2]+at*(lado-pred[2]);}
             else{est[0]=cx;est[1]=cy;est[2]=lado;}
             tem_est=true;
-            if(P.caminha_dela>=1){cd_z=prox_rosto(g,est[0],est[1],est[2]);cd_tem=cd_z>0&&!trk_npc;}
+            if(P.caminha_dela>=1&&!(P.id_s>0.f&&g_rosto&&cd_tem)){cd_z=prox_rosto(g,est[0],est[1],est[2]);cd_tem=cd_z>0;}
+            if(P.id_s>0.f&&salto>=.6&&!(via&(256u|1024u))&&(!id_ok||id_dist(cx,cy)>1.2))ela_cont=false;
             cd_dela_ant=cd_dela;
         }else{
             cd_dela_ant=false;
             ++perdido;
-            if(tem_pred&&(perdido<=P.perde_n||perto_hold)){
+
+            bool presente=false;
+            if(P.id_s>0.f&&ela_cont&&id_tem&&cd_tem&&cd_z>0&&tem_pred&&id_t>t_corte){const double hl=.5*pred[2];int nt=0,nd=0;
+                const int x0=(std::max)(0,int((pred[0]-hl)/q)),x1=(std::min)(g.W-1,int((pred[0]+hl)/q)),y0=(std::max)(0,int((pred[1]-hl)/q)),y1=(std::min)(g.H-1,int((pred[1]+hl)/q));
+                for(int yy=y0;yy<=y1;++yy)for(int xx=x0;xx<=x1;++xx){++nt;const double z=g.dq[size_t(yy)*g.W+xx];if(z>=cd_z*.8&&z<=cd_z*1.2)++nd;}
+                presente=nt>0&&nd>=.35*nt;if(presente)id_t=g.t;}
+            const bool id_segura=P.id_s>0.f&&ela_cont&&id_tem&&g.t>=0&&id_t>t_corte&&g.t-id_t<=.5;
+            if(presente&&perdido>P.perde_n)perdido=P.perde_n;
+
+            if(tem_pred&&(perdido<=P.perde_n||perto_hold||id_segura)){
                 est[0]=pred[0];est[1]=pred[1];est[2]=pred[2];tem_est=true;
                 if(tem_prev){prev_x=pred[0]/q;prev_ytop=(pred[1]-.5*pred[2])/q;}
-            }else{tem_est=false;tem_prev=false;tem_escala=false;}
+            }else{tem_est=false;tem_prev=false;tem_escala=false;ela_cont=false;}
         }
         const double esc4k=g.esc*(2160.0/(std::max)(1.f,g.saida_h));
         const double cab4k=tem_est?est[2]*esc4k:0.0;
         const bool grande=!P.persistente&&cab4k>P.cab_max_4k;
         double esc_m=0;bool tem_esc_m=false;
-        if(tem_meas&&!g_rosto&&!adq){esc_m=mwh/(std::max)(md,1e-6)/sh;tem_esc_m=true;
+        if(tem_meas&&!g_rosto&&!adq&&!(via&2048u)){esc_m=mwh/(std::max)(md,1e-6)/sh;tem_esc_m=true;
             if(tem_escala)escala=.8*escala+.2*esc_m;else{escala=esc_m;tem_escala=true;}}
 
         const double fcin=P.generico?((P.corte_modo&8)?(std::max)(1.0,kf/P.k_face):kf/P.k_face):1.0;
@@ -695,19 +864,21 @@ public:
         if(seg_corte>0)--seg_corte;
         const bool fora_img=P.generico&&tem_est&&(est[0]<0||est[1]<0||est[0]>=g.w||est[1]>=g.h);
 
-        const bool bloqueio=corte||grande||(cinema&&!P.cinema_livre)||seg_corte>0||!tem_est||(fora_img&&!(P.persistente&&on))||(P.generico&&sinal_votos>0&&!perto_hold&&!modo_rosto&&!(P.caminha_dela>=2&&cd_dela&&tem_meas));
+        const bool bloqueio=corte||grande||(cinema&&!P.cinema_livre)||seg_corte>0||!tem_est||(fora_img&&!(P.persistente&&on))||(P.generico&&sinal_votos>0&&!perto_hold&&!(P.caminha_dela>=2&&cd_dela&&tem_meas));
         if(bloqueio){on=false;cont_on=0;}
         else if(on&&perto_hold)cont_off=0;
-        else if(on){cont_off=(!tem_meas||conf<P.desliga)?cont_off+1:0;if(cont_off>=(P.persistente?P.desliga_n_pers:P.desliga_n)){on=false;cont_on=0;}}
-        else{cont_on=(tem_meas&&conf>=LIGA2&&(!duvida||modo_rosto))?cont_on+1:0;
+        else if(on){cont_off=(!tem_meas||conf<P.desliga)?cont_off+1:0;if(P.id_s>0.f&&ela_cont&&id_tem&&g.t>=0&&id_t>t_corte&&g.t-id_t<=.5)cont_off=0;if(cont_off>=(P.persistente?P.desliga_n_pers:P.desliga_n)){on=false;cont_on=0;}}
+        else{cont_on=(tem_meas&&conf>=LIGA2&&(!duvida||prof_med))?cont_on+1:0;
             const bool volta=P.persistente&&tem_meas&&ib>=0&&ref_idade>=0&&ref_idade<=P.corte_ref_jobs&&no_ref(cands[size_t(ib)],g);
             if(cont_on>=((volta||(P.liga_forte>0.f&&tem_meas&&conf>=P.liga_forte&&!duvida))?1:P.liga_n)){on=true;cont_off=0;}}
-        if((g_rosto||adq)&&!bloqueio&&!on){on=true;cont_off=0;}
-        if(P.perto||modo_rosto){
+        if((g_rosto||adq||prof_adq)&&!bloqueio&&!on){on=true;cont_off=0;}
+
+        if(P.cabeca_prof&&cps.tem&&on&&tem_meas&&((via&2048u)||(std::hypot(cps.x-cx,cps.y-cy)<.3*(std::max)(lado,1.0)&&cps.lado>=.8*lado&&cps.lado<=1.25*lado)))cprof.aceita(cps);
+        if(P.perto){
             if(perto_expirou&&!tem_meas){on=false;cont_on=0;}
             const bool seg=perto_hold&&on;
             if(seg){if(!perto_seg){perto_seg=true;perto_seg_t=0;perto_jobs=0;perto_motivo=0;R.perto_inicio=true;}
-                perto_seg_t+=perto_dt;++perto_jobs;perto_motivo|=(perto_corte?1u:0u)|(tem_meas?0u:2u)|(sinal_votos>0?4u:0u);}
+                perto_seg_t=perto_relogio(perto_seg_t,perto_dt,tem_meas);++perto_jobs;perto_motivo|=(perto_corte?1u:0u)|(tem_meas?0u:2u)|(sinal_votos>0?4u:0u);}
             else if(perto_seg){perto_seg=false;R.perto_fim=true;}
             R.perto=seg;R.perto_jobs=perto_jobs;R.perto_motivo=perto_motivo;
         }
@@ -760,20 +931,26 @@ public:
                 if(saiu||std::fabs(est[0]-recorte[0])>dz||std::fabs(est[1]-recorte[1])>dz){recorte[0]=det::arred(est[0]);recorte[1]=det::arred(est[1]);rec_mov=true;}}
         }else{tem_recorte=false;rec_lado=0;}
 
-        {static const double* cx_ini=[]{static double v[3]{};char b[64]{};size_t n=0;
-            if(getenv_s(&n,b,sizeof b,"NR_RJ_CAIXA")==0&&n>1&&sscanf_s(b,"%lf,%lf,%lf",&v[0],&v[1],&v[2])==3&&v[2]>=128)return (const double*)v;return (const double*)nullptr;}();
-         if(cx_ini){on=true;corte=false;tem_est=true;est[0]=cx_ini[0]/esc4k;est[1]=cx_ini[1]/esc4k;est[2]=cx_ini[2]/1.5/esc4k;
-             rec_lado=int(cx_ini[2]);if(!tem_recorte)rec_mov=true;recorte[0]=det::arred(est[0]);recorte[1]=det::arred(est[1]);tem_recorte=true;}}
+        if(g.ext_fora){on=false;tem_est=false;tem_prev=false;tem_recorte=false;rec_lado=0;cont_on=0;ela_cont=false;++ext_fora_n;}
         R.on=on;R.corte=corte;R.ok=float(ok);R.grande=grande;R.cinema=cinema;R.conf=float(conf);
         if(P.reancora)rea_off=on?0:(std::min)(rea_off+1,1000000);
         R.tem_est=tem_est;if(tem_est){R.est[0]=float(est[0]);R.est[1]=float(est[1]);R.est[2]=float(est[2]);}
         R.tem_recorte=tem_recorte;if(tem_recorte){R.recorte[0]=recorte[0];R.recorte[1]=recorte[1];R.recorte[2]=int(std::lround(rec_lado*((std::max)(1.f,g.saida_h)/2160.0)));}
-        if(tem_est){ref_cab[0]=est[0];ref_cab[1]=est[1];ref_cab[2]=est[2];ref_idade=0;}else if(ref_idade>=0)++ref_idade;
+        if(tem_est){
+            if(P.predicao_s>0.f){if(ref_idade==0){pred_v[0]=.5*pred_v[0]+.5*(est[0]-ref_cab[0]);pred_v[1]=.5*pred_v[1]+.5*(est[1]-ref_cab[1]);}else{pred_v[0]=pred_v[1]=0;}
+                pred_z=prox_rosto(g,est[0],est[1],est[2]);pred_t=g.t;}
+            ref_cab[0]=est[0];ref_cab[1]=est[1];ref_cab[2]=est[2];ref_idade=0;}
+        else if(ref_idade>=0){++ref_idade;
+            if(P.predicao_s>0.f&&pred_valida(g)){
+                auto& vx=tb.va;auto& vy=tb.vb;celulas_z(g,ref_cab[0],ref_cab[1],ref_cab[2],pred_z,vx,vy);
+                if(vx.size()>=3){const double pmx=double(det::mediana_em(vx))*q*g.k,pmy=double(det::mediana_em(vy))*q*g.k;ref_cab[0]-=pmx;ref_cab[1]-=pmy;pred_v[0]=-pmx;pred_v[1]=-pmy;}
+                else{ref_cab[0]+=pred_v[0];ref_cab[1]+=pred_v[1];pred_v[0]*=.85;pred_v[1]*=.85;}
+                ref_cab[0]=std::clamp(ref_cab[0],0.0,double(g.w));ref_cab[1]=std::clamp(ref_cab[1],0.0,double(g.h));}}
+        est_ant[0]=est0[0];est_ant[1]=est0[1];est_ant[2]=est0[2];est_ant_tem=est0_tem&&tem_est;
+        if(tem_meas&&(salto>=.6||(via&(256u|512u))||R.reancorou)){est_ant[0]=est[0];est_ant[1]=est[1];est_ant[2]=est[2];}
         R.rec_mov=rec_mov;R.cab4k=float(cab4k);R.escala=tem_esc_m?float(esc_m):0.f;R.perdido=perdido;R.ncand=int(cands.size());
         if(!on){unsigned m=0;if(corte)m|=1u;if(grande)m|=2u;if(cinema)m|=4u;if(!tem_est)m|=8u;if(seg_corte>0&&!corte)m|=16u;if(P.generico&&sinal_votos>0)m|=128u;if(duvida)m|=256u;if(fora_img)m|=512u;if(!m)m=32u;R.motivo_off=m;}
         R.kface=float(kf);R.sinal=sinal;R.votos=sinal_votos;if(!R.busca)R.hip=kf_idx;R.direita=P.usa_direita;
-        if(P.npc&&P.npc_modo==2)npc_passo(g,cands,nb,ib,corte,esc4k,R);
-        else if(P.npc&&P.npc_modo==1)npc_rostos(g,cands,ib,corte,esc4k,R);
         if(P.npc2)npc2_passo(g,cands,ib,corte,esc4k);
         (void)tem_caixa;
         return R;
@@ -789,12 +966,20 @@ public:
         const double rd=(P.corte_modo&16)?(std::max)(P.corte_ref_dist,P.corte_ref_dist_forte):P.corte_ref_dist;
         return (P.persistente||cab4k_v<=P.cab_max_4k)&&dist<=rd&&tam<=rt&&tam>=1.0/rt;
     }
+
+    bool id_fresco(const Grades& g) const {return P.id_s>0.f&&id_tem&&id_l>0&&g.t>=0&&id_t>=0&&id_t>t_corte&&g.t-id_t<=double(P.id_s);}
+
+    bool id_viva(const Grades& g) const {return P.id_s>0.f&&id_tem&&id_l>0&&g.t>=0&&id_t>=0&&id_t>t_corte&&g.t-id_t<=(std::max)(30.0,4.0*double(P.id_s));}
+    double id_dist(double x,double y) const {return std::hypot(x-id_x,y-id_y)/(std::max)(id_l,1.0);}
+
+    bool pred_valida(const Grades& g) const {
+        if(!(P.predicao_s>0.f)||ref_idade<0)return false;
+        return (g.t>=0&&pred_t>=0)?(g.t-pred_t)<=double(P.predicao_s):ref_idade<=int(P.predicao_s*10.f);}
     void reset_corte(){
-        cd_tem=false;
+        cd_tem=false;rej_tem=false;cprof.reset();
+        ela_cont=false;est_ant_tem=false;
 
         tem_prev=false;tem_est=false;seg_corte=(P.corte_modo&2)?0:P.corte_seg;tem_recorte=false;tem_escala=false;on=false;cont_on=0;lq_ant.clear();ref_idade=-1;
-        npc_tem=false;npc_tem_rec=false;npc_alvo_ant=false;npc_perdido=0;npc_troca_c=0;
-        rf_g_tem=false;rf_g_tem_rec=false;rf_vis=false;rf_vis_n=0;rf_alvo_npc=false;
         n2c_tem=false;n2c_n=0;g_hist_n=0;
         corte_t_pend=true;adq_pend=false;adq_el_n=0;adq_sem=false;adq_outro_n=0;
         vida_mem_n=0;for(auto& n:n2s){const bool tinha=n.tem,era=n.vida_pub;n.tem=false;n.tem_rec=false;n.lado=0;n.yu_tem=false;n.prof=0;n.ocl_t=0;n.vida_pub=false;n.vida_oculto=false;n.vida_hits=0;n.saida=Resultado{};n.saida.vida_era_pub=era;n.saida.troca_alvo=tinha;n.saida.rf_motivo=tinha?3:0;n.solto_corte=n.solto_corte||tinha;}
@@ -812,6 +997,33 @@ private:
         return std::clamp(std::pow((std::max)(.5,1.0+s/n),double(g.k)),.7,1.4);
     }
 
+    bool presa_calc(const Grades& g) const {
+        if(!(P.predicao_s>0.f)||ref_idade<0||!(ref_cab[2]>0)||lugar_t<0||g.t<0||g.t-lugar_t>double(P.predicao_s)||!(lugar_wh>0)||g.W<=0||g.H<=0)return false;
+        const double lx=lugar_hx*double(g.w),ly=lugar_hy*double(g.h),ll=1.25*lugar_wh*P.q;
+        if(std::hypot(ref_cab[0]-lx,ref_cab[1]-ly)>.35*ref_cab[2])return false;
+        return vel_dela(g,lx,ly,ll)<=.15*ref_cab[2];
+    }
+
+    void celulas_z(const Grades& g,double x,double y,double l,double z,std::vector<float>& va,std::vector<float>& vb) const {
+        va.clear();vb.clear();if(!(z>0))return;
+        const int q=P.q;const double hl=.5*l;
+        const int x0=(std::max)(0,int((x-hl)/q)),x1=(std::min)(g.W-1,int((x+hl)/q)),y0=(std::max)(0,int((y-hl)/q)),y1=(std::min)(g.H-1,int((y+hl)/q));
+        for(int yy=y0;yy<=y1;++yy)for(int xx=x0;xx<=x1;++xx){const size_t i=size_t(yy)*g.W+xx;if(std::fabs(g.dq[i]-z)<=.2*z){va.push_back(g.mvq[2*i]);vb.push_back(g.mvq[2*i+1]);}}
+    }
+    double vel_dela(const Grades& g,double x,double y,double l) const {
+        const int q=P.q;if(!(pred_z>0)||!(l>0))return 0.0;
+        auto& vx=tb.va;auto& vy=tb.vb;celulas_z(g,x,y,l,pred_z,vx,vy);
+        if(vx.size()<3)return 0.0;
+        return std::hypot(double(det::mediana_em(vx)),double(det::mediana_em(vy)))*q*(std::max)(double(g.k),1.0);
+    }
+    void mv_dela(const Grades& g,double x,double y,double l,double idade,double& mx,double& my) const {
+        const int q=P.q;mv_em(g,q,x,y,mx,my);
+        if(!P.pv(8u)||!presa||!(pred_z>0)||!(l>0))return;
+        auto& vx=tb.va;auto& vy=tb.vb;celulas_z(g,x,y,l,pred_z,vx,vy);
+        if(vx.size()>=3){mx=double(det::mediana_em(vx))*q;my=double(det::mediana_em(vy))*q;return;}
+        const double d=std::hypot(mx,my)*idade,dm=.3*l;if(d>dm&&d>0){mx*=dm/d;my*=dm/d;}
+    }
+
     static void mv_em(const Grades& g,int q,double x,double y,double& mx,double& my){
         const int gx=std::clamp(int(x)/q,0,g.W-1),gy=std::clamp(int(y)/q,0,g.H-1);double sx=0,sy=0;int m=0;
         for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx){const int xx=gx+dx,yy=gy+dy;if(xx<0||yy<0||xx>=g.W||yy>=g.H)continue;const size_t i=size_t(yy)*g.W+xx;sx+=g.mvq[2*i];sy+=g.mvq[2*i+1];++m;}
@@ -820,140 +1032,13 @@ private:
 
     double prox_rosto(const Grades& g,double x,double y,double l) const {const int q=P.q;const double r=.25*l,yc=y+.1*l;
         const int x0=(std::max)(0,int((x-r)/q)),x1=(std::min)(g.W-1,int((x+r)/q)),y0=(std::max)(0,int((yc-r)/q)),y1=(std::min)(g.H-1,int((yc+r)/q));
-        std::vector<float> v;for(int yy=y0;yy<=y1;++yy)for(int xx=x0;xx<=x1;++xx)v.push_back(g.dq[size_t(yy)*g.W+xx]);
-        return v.empty()?0.0:double(det::mediana(v));
+        auto& v=tb.pr;v.clear();for(int yy=y0;yy<=y1;++yy)for(int xx=x0;xx<=x1;++xx)v.push_back(g.dq[size_t(yy)*g.W+xx]);
+        return v.empty()?0.0:double(det::mediana_em(v));
     }
     bool corpo_abaixo(const Grades& g,double x,double y,double l,double pr) const {const int q=P.q;
         const int x0=(std::max)(0,int((x-.5*l)/q)),x1=(std::min)(g.W-1,int((x+.5*l)/q)),y0=(std::max)(0,int((y+.5*l)/q));
         int n=0,ok=0;for(int yy=y0;yy<g.H;++yy)for(int xx=x0;xx<=x1;++xx){++n;if(g.dq[size_t(yy)*g.W+xx]>=P.adq_corpo*pr)++ok;}
         return n==0||ok>=P.adq_corpo_frac*n;
-    }
-
-    void salvar(EstadoAlvo& s) const {
-        s.tem_prev=tem_prev;s.prev_x=prev_x;s.prev_ytop=prev_ytop;s.prev_wh=prev_wh;s.tem_est=tem_est;for(int i=0;i<3;++i){s.est[i]=est[i];s.ref_cab[i]=ref_cab[i];}
-        s.on=on;s.cont_on=cont_on;s.cont_off=cont_off;s.seg_corte=seg_corte;s.perdido=perdido;s.ref_idade=ref_idade;s.tem_recorte=tem_recorte;
-        s.recorte[0]=recorte[0];s.recorte[1]=recorte[1];s.rec_lado=rec_lado;s.tem_escala=tem_escala;s.escala=escala;s.perto_seg=perto_seg;s.perto_seg_t=perto_seg_t;}
-    void restaurar(const EstadoAlvo& s){
-        tem_prev=s.tem_prev;prev_x=s.prev_x;prev_ytop=s.prev_ytop;prev_wh=s.prev_wh;tem_est=s.tem_est;for(int i=0;i<3;++i){est[i]=s.est[i];ref_cab[i]=s.ref_cab[i];}
-        on=s.on;cont_on=s.cont_on;cont_off=s.cont_off;seg_corte=s.seg_corte;perdido=s.perdido;ref_idade=s.ref_idade;tem_recorte=s.tem_recorte;
-        recorte[0]=s.recorte[0];recorte[1]=s.recorte[1];rec_lado=s.rec_lado;tem_escala=s.tem_escala;escala=s.escala;perto_seg=s.perto_seg;perto_seg_t=s.perto_seg_t;
-        if(tem_est&&tem_prev){prev_x=est[0]/P.q;prev_ytop=(est[1]-.5*est[2])/P.q;}}
-
-    void rostos_aplica(const Grades& g,const std::vector<det::Cand>& cands,bool corte,Resultado& R){
-        if(!troca_pend)return;
-        if(corte){troca_pend=0;return;}
-        const int q=P.q;
-        if(troca_pend==1){
-            if(!trk_npc)salvar(grace_salva);
-            double mx,my;mv_em(g,q,pend_est[0],pend_est[1],mx,my);double e[3]{pend_est[0]-mx*g.k,pend_est[1]-my*g.k,pend_est[2]};
-            int jc=-1;double dc=1e30;
-            for(int i=0;i<int(cands.size());++i){const auto& c=cands[size_t(i)];const double lado=1.25*c.wh*q,x=c.x*q,y=c.ytop*q+.5*lado,r=lado/(std::max)(e[2],1.0),d=std::hypot(x-e[0],y-e[1]);
-                if(d<=.5*e[2]&&r>=.5&&r<=2.0&&d<dc){dc=d;jc=i;}}
-            if(jc>=0){const auto& c=cands[size_t(jc)];prev_x=c.x;prev_ytop=c.ytop;prev_wh=c.wh;est[2]=1.25*c.wh*q;est[0]=c.x*q;est[1]=c.ytop*q+.5*est[2];}
-            else{est[0]=e[0];est[1]=e[1];est[2]=e[2];prev_wh=e[2]/1.25/q;prev_x=e[0]/q;prev_ytop=(e[1]-.5*e[2])/q;}
-            tem_prev=true;tem_est=true;on=true;cont_on=0;cont_off=0;perdido=0;seg_corte=0;for(int i=0;i<3;++i)ref_cab[i]=est[i];ref_idade=0;
-            tem_recorte=false;rec_lado=0;tem_escala=false;perto_seg=false;trk_npc=true;++npc_id;cand_tem=false;cand_n=0;
-        }else{restaurar(grace_salva);trk_npc=false;}
-        R.troca_alvo=true;R.rf_motivo=troca_motivo;R.rf_npc_nota=troca_pend==1?pend_nota:0.f;rf_desde=0;troca_pend=0;npc_ausente_t=0;npc_perd_t=0;rf_vis_n=0;
-    }
-
-    void npc_rostos(const Grades& g,const std::vector<det::Cand>& cands,int ib,bool corte,double esc4k,Resultado& R){
-        (void)cands;(void)ib;
-        const int q=P.q;
-        const double dt=(g.t>=0&&rf_t_ant>=0)?std::clamp(g.t-rf_t_ant,0.0,.5):double(g.k)/60.0;rf_t_ant=g.t;
-        rf_sem_t+=dt;rf_baixo_t+=dt;rf_desde+=dt;
-        auto anda=[&](double* e){double mx,my;mv_em(g,q,e[0],e[1],mx,my);e[0]-=mx*g.k;e[1]-=my*g.k;};
-        if(corte){
-
-            if(trk_npc){trk_npc=false;R.troca_alvo=true;R.rf_motivo=5;rf_desde=0;}
-            troca_pend=0;cand_tem=false;cand_n=0;rf_g_tem=rf_g_tem_rec=false;rf_vis=false;rf_vis_n=0;
-        }else{
-            if(trk_npc&&grace_salva.tem_est)anda(grace_salva.est);
-            if(cand_tem)anda(cand_est);
-            if(rf_g_tem)anda(rf_g_est);
-
-            if(trk_npc){npc_ausente_t+=dt;const bool fora_tela=est[0]<0||est[1]<0||est[0]>=g.w||est[1]>=g.h;npc_perd_t=(tem_est&&on&&perdido==0&&!fora_tela)?0.0:npc_perd_t+dt;
-                if(fora_tela){npc_perd_t=(std::max)(npc_perd_t,double(P.npc_perde_s));npc_ausente_t=(std::max)(npc_ausente_t,double(P.npc_perde_s));}}
-            const bool tem_g=trk_npc?grace_salva.tem_est:tem_est;const double* ge=trk_npc?grace_salva.est:est;
-            const double idade_s=(g.t>=0&&g.rostos_t>=0)?g.t-g.rostos_t:double(g.rostos_idade)/60.0;
-            if(g.rostos&&g.rostos_versao!=rf_versao&&idade_s<=P.rosto_idade_max){
-                rf_versao=g.rostos_versao;R.rf_novo=true;rf_idade_ult=float(idade_s);
-                struct Cab {double x,y,l;float nota;};std::vector<Cab> cs;
-                const double idade=std::clamp(double(g.rostos_idade),0.0,30.0),esc=(std::max)(double(g.esc),1e-3);
-                for(int i=0;i<g.n_rostos;++i){const auto& f=g.rostos[i];if(!(f.nota>=P.npc_nota_seg)||!(f.h>0.f))continue;
-                    double fx=(f.x+.5*f.w)/esc,fy=(f.y+.5*f.h)/esc;const double fh=f.h/esc;
-                    double mx,my;mv_em(g,q,fx,fy,mx,my);fx-=mx*idade;fy-=my*idade;
-                    cs.push_back({fx,fy-double(P.rosto_dy)*fh,double(P.rosto_cab)*fh,f.nota});}
-                rf_n=int(cs.size());
-                auto no_centro=[&](const Cab& c,const double* e,double fr){return std::fabs(c.x-e[0])<=fr*e[2]&&std::fabs(c.y-e[1])<=fr*e[2];};
-                int gi=-1;
-                for(int i=0;i<int(cs.size());++i){const auto& c=cs[size_t(i)];bool dela=false;
-                    if(tem_g)dela=no_centro(c,ge,P.rosto_dela);
-                    else if(!trk_npc&&c.l*esc4k>=P.rosto_g_min){
-                        auto perto_de=[&](const double* e){const double r=c.l/(std::max)(e[2],1.0);return std::hypot(c.x-e[0],c.y-e[1])<=e[2]&&r>=.5&&r<=2.0;};
-                        const double hx=c.x/g.w,hy=c.y/g.h;
-                        const bool zona=std::fabs(hy-P.pos_y)<=2*P.sig_y&&(std::fabs(hx-P.pos_x)<=P.sig_x||(P.usa_centro&&std::fabs(hx-P.pos_centro)<=P.sig_x)||(P.usa_direita&&std::fabs(hx-P.pos_direita)<=P.sig_x));
-                        dela=(rf_g_tem&&perto_de(rf_g_est))||(ref_idade>=0&&ref_idade<=P.rosto_ref_jobs&&perto_de(ref_cab))||zona;}
-                    if(dela&&(gi<0||c.nota>cs[size_t(gi)].nota))gi=i;}
-
-                const float nd=gi>=0?cs[size_t(gi)].nota:0.f;rf_nota=nd;
-                if(nd>=P.rosto_baixa)rf_baixo_t=0;
-                rf_vis_n=nd>=P.rosto_nota?rf_vis_n+1:0;
-                rf_vis=rf_baixo_t<P.rosto_sem_s;if(nd>=P.rosto_nota)rf_sem_t=0;
-
-                if(trk_npc&&tem_est){for(const auto& c:cs)if(no_centro(c,est,.5)){npc_ausente_t=0;break;}}
-
-                int im=-1;
-                for(int i=0;i<int(cs.size());++i){if(i==gi)continue;const auto& c=cs[size_t(i)];
-                    if(c.nota<P.rosto_conf||c.l*esc4k<P.npc_min)continue;
-                    if(tem_g&&no_centro(c,ge,P.rosto_dela))continue;
-                    if(trk_npc&&tem_est&&no_centro(c,est,.5))continue;
-                    if(im<0||c.l>cs[size_t(im)].l)im=i;}
-                if(cand_tem){
-                    int ic=-1;for(int i=0;i<int(cs.size());++i){const auto& c=cs[size_t(i)];if(i==gi||c.nota<P.rosto_conf||c.l*esc4k<P.npc_min)continue;
-                        const double r=c.l/(std::max)(cand_est[2],1.0);if(std::hypot(c.x-cand_est[0],c.y-cand_est[1])<=cand_est[2]&&r>=.5&&r<=2.0&&(ic<0||c.l>cs[size_t(ic)].l))ic=i;}
-                    if(ic>=0&&(im<0||cs[size_t(im)].l<1.5*cs[size_t(ic)].l))im=ic;
-                    if(im>=0&&im==ic){const auto& c=cs[size_t(im)];cand_est[0]=c.x;cand_est[1]=c.y;cand_est[2]=c.l;cand_nota=c.nota;++cand_n;}
-                    else if(im>=0){const auto& c=cs[size_t(im)];cand_est[0]=c.x;cand_est[1]=c.y;cand_est[2]=c.l;cand_nota=c.nota;cand_n=1;}
-                    else{cand_tem=false;cand_n=0;}}
-                else if(im>=0){const auto& c=cs[size_t(im)];cand_est[0]=c.x;cand_est[1]=c.y;cand_est[2]=c.l;cand_nota=c.nota;cand_n=1;cand_tem=true;}
-                R.npc_cab4k=cand_tem?float(cand_est[2]*esc4k):0.f;
-
-                if(!trk_npc&&gi>=0&&nd>=P.rosto_nota&&!tem_est){const auto& c=cs[size_t(gi)];
-                    if(!rf_g_tem||std::hypot(c.x-rf_g_est[0],c.y-rf_g_est[1])>rf_g_est[2]){rf_g_est[0]=c.x;rf_g_est[1]=c.y;rf_g_est[2]=c.l;rf_g_tem_rec=false;}
-                    else{const double a=P.alfa_pos,at=P.alfa_tam;rf_g_est[0]+=a*(c.x-rf_g_est[0]);rf_g_est[1]+=a*(c.y-rf_g_est[1]);rf_g_est[2]+=at*(c.l-rf_g_est[2]);}
-                    rf_g_tem=true;}
-                else if(tem_est)rf_g_tem=false;
-            }
-            if(rf_g_tem&&(trk_npc||tem_est||rf_baixo_t>=P.rosto_sem_s||rf_g_est[0]<0||rf_g_est[1]<0||rf_g_est[0]>=g.w||rf_g_est[1]>=g.h)){rf_g_tem=false;rf_g_tem_rec=false;}
-
-            if(!troca_pend){
-                auto para_npc=[&](int m){troca_pend=1;troca_motivo=m;pend_est[0]=cand_est[0];pend_est[1]=cand_est[1];pend_est[2]=cand_est[2];pend_nota=cand_nota;};
-                const bool cand_ok=cand_tem&&cand_n>=P.rosto_conf_n&&rf_desde>=P.npc_espera_s;
-                if(!trk_npc){if(rf_baixo_t>=P.rosto_sem_npc&&cand_ok)para_npc(1);}
-                else if(rf_vis_n>=P.rosto_volta_n){troca_pend=2;troca_motivo=2;}
-                else if(npc_ausente_t>=P.npc_perde_s&&npc_perd_t>=P.npc_perde_s){if(cand_ok)para_npc(6);else{troca_pend=2;troca_motivo=4;}}
-            }
-        }
-
-        auto recorte_zm=[&](const double* e,int* rec,bool& tem_rec,int lado4k){bool mov=false;const double lr=lado4k/esc4k;
-            if(!tem_rec){rec[0]=det::arred(e[0]);rec[1]=det::arred(e[1]);tem_rec=true;mov=true;}
-            else{const double dz=P.zona_morta*lr;const bool saiu=(std::fabs(e[0]-rec[0])+e[2]/2>lr/2)||(std::fabs(e[1]-rec[1])+e[2]/2>lr/2);
-                if(saiu||std::fabs(e[0]-rec[0])>dz||std::fabs(e[1]-rec[1])>dz){rec[0]=det::arred(e[0]);rec[1]=det::arred(e[1]);mov=true;}}
-            return mov;};
-        auto saida=[&](const double* e,const int* rec,int lado4k,bool mov){
-            R.est[0]=float(e[0]);R.est[1]=float(e[1]);R.est[2]=float(e[2]);R.tem_est=true;
-            R.recorte[0]=rec[0];R.recorte[1]=rec[1];R.recorte[2]=int(std::lround(lado4k*((std::max)(1.f,g.saida_h)/2160.0)));R.tem_recorte=true;
-            R.on=true;R.corte=false;R.cab4k=float(e[2]*esc4k);R.rec_mov=mov;R.motivo_off=0;};
-
-        R.alvo_npc=trk_npc;if(!R.troca_alvo)R.rf_npc_nota=cand_tem?cand_nota:0.f;R.rf_idade_s=rf_idade_ult;
-        if(!trk_npc&&rf_g_tem&&!corte){
-
-            const double c4=rf_g_est[2]*esc4k;int lado=int(std::ceil(1.5*c4/128.0))*128;lado=std::clamp(lado,P.recorte_min,P.recorte_max);
-            if(P.recorte_fixo>0){const double cm=P.recorte_fixo_margem*c4;const int t3[3]{P.recorte_fixo,P.recorte_fixo*3/2,P.recorte_fixo*2};int k=0;while(k<2&&cm>t3[k])++k;lado=(std::min)(t3[k],P.recorte_max);}
-            if(lado!=rf_g_lado){rf_g_lado=lado;rf_g_tem_rec=false;}
-            const bool mov=recorte_zm(rf_g_est,rf_g_rec,rf_g_tem_rec,lado);saida(rf_g_est,rf_g_rec,lado,mov);R.rf_g=true;}
-        R.rf_vis=rf_vis;R.rf_n=rf_n;R.rf_nota=rf_nota;R.rf_sem=float((std::min)(rf_sem_t,999.0));
     }
 
     void canon_medir(Npc2Slot& n,const RostoDet& f,double esc,double sx,double sy,double pf){
@@ -972,32 +1057,30 @@ private:
             for(int i=0;i<vida_mem_n;++i){auto* e=vida_mem[i];if(vida_relogio-e[3]>double(P.vida_re_s))continue;double mx,my;mv_em(g,q,e[0],e[1],mx,my);
                 e[0]-=mx*g.k;e[1]-=my*g.k;if(w!=i)for(int c=0;c<5;++c)vida_mem[w][c]=e[c];++w;}vida_mem_n=w;}
 
-        auto sobre_ela=[&](double x,double y){if(!tem_est)return false;const double hz=.5*P.npc2_zona*est[2];
-            return std::fabs(x-est[0])<=hz&&std::fabs(y-est[1])<=hz;};
+        const double* ela_c=tem_est?est:(pred_valida(g)?ref_cab:nullptr);
+        auto sobre_ela=[&](double x,double y){if(!ela_c)return false;const double hz=.5*P.npc2_zona*ela_c[2];
+            return std::fabs(x-ela_c[0])<=hz&&std::fabs(y-ela_c[1])<=hz;};
 
         if(tem_est){g_hist[g_hist_i][0]=est[0];g_hist[g_hist_i][1]=est[1];g_hist[g_hist_i][2]=est[2];g_hist_i=(g_hist_i+1)%8;g_hist_n=(std::min)(g_hist_n+1,8);}
-        auto onde_ela_esteve=[&](double x,double y){for(int i=0;i<g_hist_n;++i){const double hz=.5*P.npc2_zona*g_hist[i][2];
+        auto onde_ela_esteve=[&](double x,double y){if(!tem_est&&ela_c&&sobre_ela(x,y))return true;for(int i=0;i<g_hist_n;++i){const double hz=.5*P.npc2_zona*g_hist[i][2];
             if(std::fabs(x-g_hist[i][0])<=hz&&std::fabs(y-g_hist[i][1])<=hz)return true;}return false;};
 
         auto mv_pessoa=[&](const double* e,double prof,double& mx,double& my){
             const int gx0=(std::max)(0,int((e[0]-.5*e[2])/q)),gx1=(std::min)(g.W-1,int((e[0]+.5*e[2])/q)),gy0=(std::max)(0,int((e[1]-.5*e[2])/q)),gy1=(std::min)(g.H-1,int((e[1]+.5*e[2])/q));
             float dmed=float(prof);
-            if(!(prof>0)){std::vector<float> dz;for(int y=gy0;y<=gy1;++y)for(int x=gx0;x<=gx1;++x)dz.push_back(g.dq[size_t(y)*g.W+x]);
+            if(!(prof>0)){auto& dz=tb.pz;dz.clear();for(int y=gy0;y<=gy1;++y)for(int x=gx0;x<=gx1;++x)dz.push_back(g.dq[size_t(y)*g.W+x]);
                 if(dz.size()<4){mv_em(g,q,e[0],e[1],mx,my);return;}
-                dmed=det::mediana(dz);}
-            std::vector<float> vx,vy;
+                dmed=det::mediana_em(dz);}
+            auto& vx=tb.pa;auto& vy=tb.pb;vx.clear();vy.clear();
             for(int y=gy0;y<=gy1;++y)for(int x=gx0;x<=gx1;++x){const size_t i=size_t(y)*g.W+x;if(std::fabs(g.dq[i]-dmed)<=P.npc2_faixa*dmed){vx.push_back(g.mvq[2*i]);vy.push_back(g.mvq[2*i+1]);}}
-            if(vx.size()>=3){mx=double(det::mediana(vx))*q;my=double(det::mediana(vy))*q;return;}
+            if(vx.size()>=3){mx=double(det::mediana_em(vx))*q;my=double(det::mediana_em(vy))*q;return;}
             if(!(prof>0)){mv_em(g,q,e[0],e[1],mx,my);return;}
             const int r2=(std::max)(1,int(2.0*e[2]/q)),cx=int(e[0]/q),cy=int(e[1]/q);
             for(int y=(std::max)(0,cy-r2);y<=(std::min)(g.H-1,cy+r2);y+=2)for(int x=(std::max)(0,cx-r2);x<=(std::min)(g.W-1,cx+r2);x+=2){
                 const size_t i=size_t(y)*g.W+x;if(g.dq[i]<=dmed*(1.f+P.npc2_faixa)){vx.push_back(g.mvq[2*i]);vy.push_back(g.mvq[2*i+1]);}}
-            if(vx.size()>=8){mx=double(det::mediana(vx))*q;my=double(det::mediana(vy))*q;}else{mx=0;my=0;}};
+            if(vx.size()>=8){mx=double(det::mediana_em(vx))*q;my=double(det::mediana_em(vy))*q;}else{mx=0;my=0;}};
 
-        auto prof_em=[&](double x,double y,double l)->double{const double r=.25*l,yc=y+.1*l;
-            const int x0=(std::max)(0,int((x-r)/q)),x1=(std::min)(g.W-1,int((x+r)/q)),y0=(std::max)(0,int((yc-r)/q)),y1=(std::min)(g.H-1,int((yc+r)/q));
-            std::vector<float> v;for(int yy=y0;yy<=y1;++yy)for(int xx=x0;xx<=x1;++xx)v.push_back(g.dq[size_t(yy)*g.W+xx]);
-            return v.empty()?0.0:double(det::mediana(v));};
+        auto prof_em=[&](double x,double y,double l)->double{return prox_rosto(g,x,y,l);};
         auto na_frente=[&](const Npc2Slot& n,double pf){return n.prof>0&&pf>n.prof*(1.0+P.npc2_ocl_faixa);};
 
         const double pg_ela=(P.npc_atras&&tem_est)?prof_em(est[0],est[1],est[2]):0.0;
@@ -1019,12 +1102,12 @@ private:
         auto vel=[&](const double* e){double mx,my;mv_em(g,q,e[0],e[1],mx,my);
             const int gx=int(e[0])/q,gy=int(e[1])/q,r1=(std::max)(1,int(e[2]/q)),r3=3*r1;
             const int ic=std::clamp(gy,0,g.H-1)*g.W+std::clamp(gx,0,g.W-1);const float pc=g.dq[size_t(ic)];
-            std::vector<float> vx,vy;
+            auto& vx=tb.qa;auto& vy=tb.qb;vx.clear();vy.clear();
             for(int y=(std::max)(0,gy-r3);y<=(std::min)(g.H-1,gy+r3);y+=2)for(int x=(std::max)(0,gx-r3);x<=(std::min)(g.W-1,gx+r3);x+=2){
                 if(std::abs(x-gx)<=r1&&std::abs(y-gy)<=r1)continue;const size_t i=size_t(y)*g.W+x;if(!(g.dq[i]<.8f*pc))continue;
                 vx.push_back(g.mvq[2*i]);vy.push_back(g.mvq[2*i+1]);}
             if(vx.size()<8)return 0.0;
-            return std::hypot(mx-double(det::mediana(vx))*q,my-double(det::mediana(vy))*q)*fps/(std::max)(e[2],1.0);};
+            return std::hypot(mx-double(det::mediana_em(vx))*q,my-double(det::mediana_em(vy))*q)*fps/(std::max)(e[2],1.0);};
         (void)corte;(void)cands;(void)ib;
         unsigned id_ant[npc_det_max]{};bool tinha[npc_det_max]{},coberto[npc_det_max]{};int motivo[npc_det_max]{};
         bool vida_sai[npc_det_max]{},era_pub[npc_det_max]{},oc_novo[npc_det_max]{},oc_volta[npc_det_max]{},camq[npc_det_max]{};double sai_est[npc_det_max][3]{};int sai_rec[npc_det_max][2]{},sai_lado[npc_det_max]{};
@@ -1140,8 +1223,6 @@ private:
         if(n2c_tem&&dt>0&&lim_vel)n2c_vel=n2c_n<=1?vel(n2c_est):n2c_vel+P.npc2_alfa*(vel(n2c_est)-n2c_vel);
         if(!n2c_tem)n2c_vel=0;
 
-        auto segura_de=[&](const Npc2Slot& n){if(P.npc2_segura_peq>0.f&&n.est[2]*esc4k<P.npc2_peq_cab&&n.prof>0){const double pf=prof_em(n.est[0],n.est[1],n.est[2]);
-            if(pf>0&&!outra_prof(n,pf))return (std::max)(double(P.npc2_segura_s),double(P.npc2_segura_peq));}return double(P.npc2_segura_s);};
         for(int k=0;k<K;++k){auto& n=n2s[k];if(!n.tem)continue;
             if(dt>0&&lim_vel)n.vel+=P.npc2_alfa*(vel(n.est)-n.vel);
             n.rapido_t=(lim_vel&&n.vel>P.npc2_vel_max)?n.rapido_t+dt:0.0;
@@ -1198,7 +1279,7 @@ private:
             bool oculta=false;
             if(sep&&vis2==-1&&na_zona&&!n.cam_tem&&!corpo_n){oculta=true;if(!n.vida_oculto){n.vida_oculto=true;oc_novo[k]=true;++n.vida_ocultos;}}
             else if(n.vida_oculto&&!corpo_n&&(!na_zona||n.cam_tem)){n.vida_oculto=false;oc_volta[k]=true;}
-            if(!oculta&&((na_zona&&!n.cam_tem)||corpo_n)){m=5;{const double v[9]{est[0],est[1],est[2],n.est[0],n.est[1],n.est[2],double(P.npc2_zona),na_zona?1.0:0.0,corpo_n?1.0:0.0};for(int z=0;z<9;++z)sz_ult[z]=v[z];++sz_n;}if((P.adquire&2)&&adq_job&&std::hypot(n.est[0]-est[0],n.est[1]-est[1])<=.5*est[2]){m=7;++promovido_n;}}else if(n.conf_t>=segura_de(n)||(!n.visto&&n.roi_falta>=n.roi_falta0+3))m=1;
+            if(!oculta&&((na_zona&&!n.cam_tem)||corpo_n)){m=5;{const double v[9]{est[0],est[1],est[2],n.est[0],n.est[1],n.est[2],double(P.npc2_zona),na_zona?1.0:0.0,corpo_n?1.0:0.0};for(int z=0;z<9;++z)sz_ult[z]=v[z];++sz_n;}if((P.adquire&2)&&adq_job&&std::hypot(n.est[0]-est[0],n.est[1]-est[1])<=.5*est[2]){m=7;++promovido_n;}}else if(n.conf_t>=double(P.npc2_segura_s)||(!n.visto&&n.roi_falta>=n.roi_falta0+3))m=1;
             else if(P.npc_roi_conf>0&&n.roi_ok==n.roi_ok0&&n.roi_falta>=n.roi_falta0+unsigned(P.npc_roi_conf)){m=1;++roi_conf_soltou_n;
                 if(P.npc_roi_veto_s>0.f){int iv=veto_roi_n<8?veto_roi_n++:0;if(veto_roi_n>=8){double vt=1e30;for(int i=0;i<8;++i)if(veto_roi[i][3]<vt){vt=veto_roi[i][3];iv=i;}}
                     veto_roi[iv][0]=n.est[0];veto_roi[iv][1]=n.est[1];veto_roi[iv][2]=n.est[2];veto_roi[iv][3]=n2_relogio;veto_roi[iv][4]=veto_roi[iv][5]=0;veto_roi[iv][6]=n2_relogio;}}else if(fora_tela)m=2;else if(n.rapido_t>=P.npc2_rapido_s)m=4;
@@ -1288,17 +1369,14 @@ private:
                    n.est[0]>=mb&&n.est[1]>=mb&&n.est[0]<g.w-mb&&n.est[1]<g.h-mb){n.vida_pub=true;S.vida_pub_novo=true;}
                 S.vida_pend=P.npc_vida&&(!n.vida_pub||n.vida_oculto||n.esmaece);S.vida_re=n.vida_re;S.vida_oculto=n.vida_oculto||n.esmaece;S.vida_oculto_novo=oc_novo[k];S.vida_volta=oc_volta[k];S.vida_camq=camq[k]||n.vida_oculto;
                 int alvo=int(std::ceil(1.5*n.est[2]*esc4k/128.0))*128;alvo=std::clamp(alvo,(std::min)(P.npc2_recorte_min,P.recorte_max),P.recorte_max);
-                if(P.npc_fracao>0.f)n.lado=det::npc_lado_fracao(n.lado,n.est[2]*esc4k,P.npc_fracao,(std::min)(P.npc_frac_teto,P.recorte_max),P.recorte_max,P.npc_amplia);
-                else if(P.npc_degraus){
-                    const int rmin=(std::min)(P.npc2_recorte_min,P.recorte_max),st[3]{rmin,(std::max)(rmin,1024),(std::max)(rmin,1536)};
-                    const double pede=1.5*n.est[2]*esc4k;auto degrau=[&](double v){for(int s:st)if(s>=v)return (std::min)(s,P.recorte_max);return (std::min)(st[2],P.recorte_max);};
-                    if(!n.lado||pede>n.lado)n.lado=degrau(pede);else{const int d=degrau(1.15*pede);if(d<n.lado)n.lado=d;}}
+                const int frac_teto=((P.npc_todos&16)&&k<P.todos_perto&&P.todos_perto_teto>P.npc_frac_teto)?P.todos_perto_teto:P.npc_frac_teto;
+                if(P.npc_fracao>0.f)n.lado=det::npc_lado_fracao(n.lado,n.est[2]*esc4k,P.npc_fracao,(std::min)(frac_teto,P.recorte_max),P.recorte_max,P.npc_amplia);
                 else if(!n.lado||alvo>n.lado||alvo<=n.lado-256)n.lado=alvo;
                 if(P.npc2_recorte_forcado>0)n.lado=(std::min)(P.npc2_recorte_forcado,P.recorte_max);
                 if(P.npc_canon){
                     if(n.cn.tem&&std::hypot(n.cn.cx-n.est[0],n.cn.cy-n.est[1])>n.est[2]){n.cn.zera();++n.cn_sem;}
                     const bool tr=n.cn.tem;const double cx=tr?n.cn.cx:n.est[0],cy=tr?n.cn.cy:n.est[1],s=tr?n.cn.s:n.est[2]/(std::max)(double(P.canon.razao),.1);
-                    const int lmin=(std::max)(256,P.canon.rede/2),lmax=(std::min)(P.npc_frac_teto,P.recorte_max);
+                    const int lmin=(std::max)(256,P.canon.rede/2),lmax=(std::min)(frac_teto,P.recorte_max);
                     const int L=nrcanon::lado(s,esc4k,P.canon,lmin,lmax);
                     if(!n.cn_lado||std::abs(L-n.cn_lado)>=(std::max)(8,int(.015*n.cn_lado)))n.cn_lado=L;
                     n.lado=n.cn_lado;const double lr=n.lado/esc4k;
@@ -1331,106 +1409,32 @@ private:
             S.npc_cab4k=n2c_tem?float(n2c_est[2]*esc4k):0.f;S.rf_n=n2c_n;S.rf_motivo=m;S.vida_era_pub=era_pub[k];S.mig_de=mig_de[k];S.mig_para=mig_para[k];
             n.saida=S;}
     }
-
-    void npc_passo(const Grades& g,const std::vector<det::Cand>& cands,const std::vector<double>& nb,int ib,bool corte,double esc4k,Resultado& R){
-        const int W=g.W,H=g.H,q=P.q;
-        const double ccx=.5*(W-1),ccy=.5*(H-1),rmin=.05*H;
-
-        const float med=mediana_amostra(g.dq,size_t(W)*size_t(H));
-        const float pj=ib>=0?float(cands[size_t(ib)].d):0.f,teto_f=pj>0.f?(std::min)(med,.5f*pj):med;
-        int bx0=W,bx1=-1,by0=H;
-        if(tem_est){const double l=est[2]/q;bx0=int(std::floor(est[0]/q-1.5*l));bx1=int(std::ceil(est[0]/q+1.5*l));by0=int(std::floor(est[1]/q-l));}
-        double s=0;int n=0;
-        for(int y=0;y<H;++y)for(int x=0;x<W;++x){
-            if(x>=bx0&&x<=bx1&&y>=by0)continue;
-            const size_t i=size_t(y)*W+x;if(!(g.dq[i]<=teto_f))continue;
-            const double dx=x-ccx,dy=y-ccy,r=std::hypot(dx,dy);if(r<rmin)continue;
-            const double v=-(double(g.mvq[2*i])*dx+double(g.mvq[2*i+1])*dy)/r;if(!std::isfinite(v))continue;
-            s+=v;++n;}
-        const double bruto=n>=64?s/n:0.0;
-
-        const double dt=(g.t>=0&&npc_t_ant>=0)?std::clamp(g.t-npc_t_ant,0.0,.5):double(g.k)/60.0;npc_t_ant=g.t;
-        npc_desde+=dt;
-        if(corte){npc_ema=0;npc_ativo=false;npc_liga_t=npc_desl_t=0;}
-        else if(n>=64)npc_ema+=double(P.npc_alfa)*(bruto-npc_ema);
-        const double thr=P.npc_expande;
-        if(!npc_ativo){npc_liga_t=npc_ema>thr?npc_liga_t+dt:0.0;
-            if(npc_liga_t>=P.npc_liga_s&&npc_desde>=P.npc_fica_s){npc_ativo=true;npc_desl_t=0;}}
-        else{npc_desl_t=npc_ema<.5*thr?npc_desl_t+dt:0.0;
-            const bool ja=n>=64&&bruto<-.5*thr;
-            if(ja||(npc_desl_t>=P.npc_desliga_s&&npc_desde>=P.npc_fica_s)){npc_ativo=false;npc_liga_t=0;}}
-        R.npc_ativo=npc_ativo;R.npc_expande=float(npc_ema);R.npc_bruto=float(bruto);R.npc_celulas=n;
-        bool mov=false;
-        if(!(npc_ativo&&tem_est&&!corte)){npc_tem=false;npc_tem_rec=false;npc_perdido=0;npc_troca_c=0;}
-        else{
-
-            double px=0,py=0;
-            if(npc_tem){const int gx=std::clamp(int(npc_est[0])/q,0,W-1),gy=std::clamp(int(npc_est[1])/q,0,H-1);double sx=0,sy=0;int m=0;
-                for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx){const int xx=gx+dx,yy=gy+dy;if(xx<0||yy<0||xx>=W||yy>=H)continue;const size_t i=size_t(yy)*W+xx;sx+=g.mvq[2*i];sy+=g.mvq[2*i+1];++m;}
-                px=npc_est[0]-(m?sx/m*q*g.k:0.0);py=npc_est[1]-(m?sy/m*q*g.k:0.0);}
-            int im=-1,ip=-1;double cm=0,dp=1e30;
-            for(size_t i=0;i<cands.size();++i){if(int(i)==ib)continue;const auto& c=cands[i];
-                const double lado=1.25*c.wh*q,cx=c.x*q,cy=c.ytop*q+.5*lado;
-                if(std::hypot(cx-est[0],cy-est[1])<=est[2])continue;
-                const double cab=lado*esc4k;
-                if(cab<P.npc_min||cab>P.npc_recorte||nb[i]<P.npc_nota)continue;
-                if(cab>cm){cm=cab;im=int(i);}
-                if(npc_tem){const double ref=(std::max)(npc_est[2],1.0),d=std::hypot(cx-px,cy-py)/ref,t=lado/ref;
-                    if(d<=1.0&&t<=P.npc_troca_fator&&t*P.npc_troca_fator>=1.0&&d<dp){dp=d;ip=int(i);}}
-            }
-            R.npc_cab4k=float(cm);
-            auto adota=[&](int i,bool novo){const auto& c=cands[size_t(i)];const double lado=1.25*c.wh*q,cx=c.x*q,cy=c.ytop*q+.5*lado;
-                if(novo){npc_est[0]=cx;npc_est[1]=cy;npc_est[2]=lado;npc_tem_rec=false;++npc_id;}
-                else{const double a=P.alfa_pos,at=P.alfa_tam;npc_est[0]=px+a*(cx-px);npc_est[1]=py+a*(cy-py);npc_est[2]+=at*(lado-npc_est[2]);}
-                npc_tem=true;npc_perdido=0;};
-            if(ip>=0){
-                const double cp=1.25*cands[size_t(ip)].wh*q*esc4k;
-                npc_troca_c=(im>=0&&im!=ip&&cm>=P.npc_troca_fator*cp)?npc_troca_c+1:0;
-                if(npc_troca_c>=P.npc_troca_n&&npc_desde>=P.npc_fica_s){adota(im,true);npc_troca_c=0;}else adota(ip,false);
-            }else if(npc_tem&&++npc_perdido<=P.npc_segura){npc_est[0]=px;npc_est[1]=py;npc_troca_c=0;}
-            else if(im>=0){adota(im,true);npc_troca_c=0;}
-            else{npc_tem=false;npc_tem_rec=false;npc_troca_c=0;}
-            if(npc_tem&&(npc_est[0]<0||npc_est[1]<0||npc_est[0]>=g.w||npc_est[1]>=g.h)){npc_tem=false;npc_tem_rec=false;}
-
-            if(npc_tem){const double lr=P.npc_recorte/esc4k;
-                if(!npc_tem_rec){npc_rec[0]=det::arred(npc_est[0]);npc_rec[1]=det::arred(npc_est[1]);npc_tem_rec=true;mov=true;}
-                else{const double dz=P.zona_morta*lr;
-                    const bool saiu=(std::fabs(npc_est[0]-npc_rec[0])+npc_est[2]/2>lr/2)||(std::fabs(npc_est[1]-npc_rec[1])+npc_est[2]/2>lr/2);
-                    if(saiu||std::fabs(npc_est[0]-npc_rec[0])>dz||std::fabs(npc_est[1]-npc_rec[1])>dz){npc_rec[0]=det::arred(npc_est[0]);npc_rec[1]=det::arred(npc_est[1]);mov=true;}}}
-        }
-        const bool alvo=npc_tem;
-        R.alvo_npc=alvo;R.troca_alvo=alvo!=npc_alvo_ant||(alvo&&npc_id!=npc_id_ant);npc_alvo_ant=alvo;npc_id_ant=npc_id;
-        if(R.troca_alvo)npc_desde=0;
-        if(alvo){R.est[0]=float(npc_est[0]);R.est[1]=float(npc_est[1]);R.est[2]=float(npc_est[2]);R.tem_est=true;
-            R.recorte[0]=npc_rec[0];R.recorte[1]=npc_rec[1];R.recorte[2]=int(std::lround(P.npc_recorte*((std::max)(1.f,g.saida_h)/2160.0)));R.tem_recorte=true;
-            R.on=true;R.corte=false;R.cab4k=float(npc_est[2]*esc4k);R.rec_mov=mov;R.motivo_off=0;}
-    }
     void candidatos(const Grades& g,const std::vector<float>& lq,double kface,float dmin,std::vector<det::Cand>& cands) const {
         cands.clear();
         const int W=g.W,H=g.H,q=P.q;const float T=P.borda_ln;
 
-        std::vector<unsigned char> e(size_t(W)*H,0);
+        auto& e=tb.e;e.assign(size_t(W)*H,0);
         for(int y=0;y<H;++y)for(int x=0;x+1<W;++x){const float dx=lq[size_t(y)*W+x+1]-lq[size_t(y)*W+x];if(dx>T)e[size_t(y)*W+x]=1;if(-dx>T)e[size_t(y)*W+x+1]=1;}
         for(int y=0;y+1<H;++y)for(int x=0;x<W;++x){const float dy=lq[size_t(y+1)*W+x]-lq[size_t(y)*W+x];if(dy>T)e[size_t(y)*W+x]=1;if(-dy>T)e[size_t(y+1)*W+x]=1;}
-        std::vector<unsigned char> ne(e.size());for(size_t i=0;i<e.size();++i)ne[i]=e[i]?0:1;
-        std::vector<int> lab;std::vector<det::Comp> comps;det::rotular(ne.data(),W,H,false,lab,comps);
-        std::vector<int> ordem(comps.size());for(size_t i=0;i<ordem.size();++i)ordem[i]=int(i)+1;
+        auto& ne=tb.ne;ne.resize(e.size());for(size_t i=0;i<e.size();++i)ne[i]=e[i]?0:1;
+        auto& lab=tb.lab;auto& comps=tb.comps;det::rotular(ne.data(),W,H,false,lab,comps,tb.pilha);
+        auto& ordem=tb.ordem;ordem.resize(comps.size());for(size_t i=0;i<ordem.size();++i)ordem[i]=int(i)+1;
         std::stable_sort(ordem.begin(),ordem.end(),[&](int a,int b){return comps[size_t(a-1)].area>comps[size_t(b-1)].area;});
-        std::vector<unsigned char> m,tampa;std::vector<int> labt;std::vector<det::Comp> compt;std::vector<float> larg,cent,vals;
+        auto& m=tb.m;auto& tampa=tb.tampa;auto& labt=tb.labt;auto& compt=tb.compt;auto& larg=tb.larg;auto& cent=tb.cent;auto& vals=tb.vals;
         for(size_t oi=0;oi<ordem.size()&&oi<12;++oi){
             const int c=ordem[oi];const auto& cc=comps[size_t(c-1)];
             const int area=cc.area;if(area<P.area_min)break;
             const int x=cc.x0,y=cc.y0,w=cc.x1-cc.x0+1,h=cc.y1-cc.y0+1;
             m.assign(size_t(w)*h,0);vals.clear();
             for(int r=0;r<h;++r)for(int s=0;s<w;++s)if(lab[size_t(y+r)*W+x+s]==c){m[size_t(r)*w+s]=1;vals.push_back(lq[size_t(y+r)*W+x+s]);}
-            const double dmed=std::exp(double(det::mediana(vals)));
+            const double dmed=std::exp(double(det::mediana_em(vals)));
             if(dmed<dmin)continue;
             if(w>.9*W&&h>.6*H)continue;
             const double wexp0=kface*dmed/q;
             tampa.assign(m.size(),0);
             for(int r=0;r<h;++r)for(int s=0;s<w;++s){const size_t i=size_t(r)*w+s;tampa[i]=m[i]&&(r==0||!m[i-size_t(w)]);}
             if(y==0)for(int s=0;s<w;++s)tampa[size_t(s)]=0;
-            det::rotular(tampa.data(),w,h,true,labt,compt);
+            det::rotular(tampa.data(),w,h,true,labt,compt,tb.pilha);
             for(size_t ti=0;ti<compt.size();++ti){
                 const auto& t=compt[ti];const int tt=int(ti)+1;
                 const int tw=t.x1-t.x0+1,ta=t.area;
@@ -1451,25 +1455,25 @@ private:
                 vals.clear();
                 for(int r=y+yy;r<(std::min)(H,y+yy+7);++r)for(int s=gx0;s<(std::min)(W,gx1);++s)if(lab[size_t(r)*W+s]==c)vals.push_back(g.dq[size_t(r)*W+s]);
                 if(vals.size()<3)continue;
-                double dcab=det::mediana(vals);
+                double dcab=det::mediana_em(vals);
                 double wexp=kface*dcab/q;
                 det::runs_cabeca(m.data(),w,h,xm,yy,int(4.5*wexp)+4,larg,cent);
                 if(larg.size()<4)continue;
                 const int a0=int(.15*wexp*1.3),a1=(std::max)(a0+2,int(.7*wexp*1.3));
                 if(a0>=int(larg.size()))continue;
-                std::vector<float> fa(larg.begin()+a0,larg.begin()+(std::min<size_t>)(size_t(a1),larg.size()));
-                const double wh=det::mediana(fa);
+                auto& fa=tb.fa;fa.assign(larg.begin()+a0,larg.begin()+(std::min<size_t>)(size_t(a1),larg.size()));
+                const double wh=det::mediana_em(fa);
                 if(!std::isfinite(wh)||wh<2)continue;
                 const int b0=int(1.4*wh),b1=int(3.2*wh)+1;
                 const double ombro=b0<int(larg.size())?double(det::maxv(larg,size_t(b0),size_t(b1))):0.0;
                 const double razao_omb=ombro/wh;
                 double alt=double(larg.size())/wh;
                 for(size_t i=0;i<larg.size();++i)if(larg[i]>1.6*wh){alt=double(i)/wh;break;}
-                std::vector<float> fc(cent.begin()+(std::min<size_t>)(size_t(a0),cent.size()),cent.begin()+(std::min<size_t>)(size_t((std::max)(a1,a0+1)),cent.size()));
-                const double xcab=det::mediana(fc)+x,ycab=yy+y;
+                auto& fc=tb.fc;fc.assign(cent.begin()+(std::min<size_t>)(size_t(a0),cent.size()),cent.begin()+(std::min<size_t>)(size_t((std::max)(a1,a0+1)),cent.size()));
+                const double xcab=det::mediana_em(fc)+x,ycab=yy+y;
                 {const int ry0=int(ycab),ry1=int(ycab+wh)+1,rx0=int((std::max)(0.0,xcab-wh/2)),rx1=int(xcab+wh/2)+1;vals.clear();
                  for(int r=ry0;r<(std::min)(H,ry1);++r)for(int s=rx0;s<(std::min)(W,rx1);++s)if(lab[size_t(r)*W+s]==c)vals.push_back(g.dq[size_t(r)*W+s]);
-                 if(vals.size()>=3)dcab=det::mediana(vals);}
+                 if(vals.size()>=3)dcab=det::mediana_em(vals);}
                 det::Cand k{};k.x=xcab;k.ytop=ycab;k.wh=wh;k.topo_oc=topo_oc;k.alt=alt;k.wexp=kface*dcab/q;k.d=dcab;k.omb=razao_omb;
                 k.area=area;k.bx=x;k.by=y;k.bw=w;k.bh=h;k.fundo=y+h>=H-2;
                 cands.push_back(k);
@@ -1486,11 +1490,15 @@ private:
         const double hx=c.x/W,hy=(c.ytop+.6*c.wh)/H;
         const double ax=(hx-P.pos_x)/P.sig_x,ay=(hy-P.pos_y)/P.sig_y;double f_pos=std::exp(-.5*(ax*ax+ay*ay));
         if(P.generico){
-            if(P.usa_centro){const double bx=(hx-P.pos_centro)/P.sig_x;f_pos=(std::max)(f_pos,std::exp(-.5*(bx*bx+ay*ay)));}
-            if(P.usa_direita){const double bx=(hx-P.pos_direita)/P.sig_x;f_pos=(std::max)(f_pos,std::exp(-.5*(bx*bx+ay*ay)));}
+            const bool idp=P.id_s>0.f&&id_tem;
+            if(P.usa_centro&&!idp){const double bx=(hx-P.pos_centro)/P.sig_x;f_pos=(std::max)(f_pos,std::exp(-.5*(bx*bx+ay*ay)));}
+            if(P.usa_direita&&!idp){const double bx=(hx-P.pos_direita)/P.sig_x;f_pos=(std::max)(f_pos,std::exp(-.5*(bx*bx+ay*ay)));}
+            if(idp&&g.w>0&&g.h>0){const double bx=(hx-id_x/double(g.w))/P.sig_x,by=(hy-(id_y+.1*id_l)/double(g.h))/P.sig_y;f_pos=(std::max)(f_pos,std::exp(-.5*(bx*bx+by*by)));}
             if(plano)f_pos=1.0;
-            if(trk_npc)f_pos=1.0;
         }
+        if(P.lugar_rosto_s>0.f&&lugar_t>=0&&g.t>=0&&g.t-lugar_t<=double(P.lugar_rosto_s)){
+            const double r=c.wh/(std::max)(lugar_wh,1e-6);
+            if(r>=1/1.35&&r<=1.35){const double bx=(hx-lugar_hx)/P.sig_x,by=(hy-lugar_hy)/P.sig_y;f_pos=(std::max)(f_pos,std::exp(-.5*(bx*bx+by*by)));}}
         const int yy=int((std::min<double>)(H-1,c.ytop+.5*c.wh)),xx=int((std::min<double>)(W-1,(std::max)(0.0,c.x)));
         const size_t ic=size_t(yy)*W+xx;
         const double mv_c=std::hypot(g.mvq[2*ic],g.mvq[2*ic+1]);
@@ -1520,34 +1528,35 @@ private:
         const int x0=int((std::max)(0.0,c.x*q-1.6*wr)),x1=int((std::min<double>)(w,c.x*q+1.6*wr));
         const int y0=int((std::max)(0.0,c.ytop*q-.6*wr)),y1=int((std::min<double>)(h,c.ytop*q+1.6*wr));
         if(x1-x0<8||y1-y0<8)return false;
+        if(g.linhas&&!g.linhas(g.linhas_ctx,y0,y1))return false;
         const int rw=x1-x0,rh=y1-y0;const double lc=std::log(c.d);
-        std::vector<unsigned char> m(size_t(rw)*rh),er(size_t(rw)*rh),mo(size_t(rw)*rh);
+        auto& m=tb.mf_m;auto& er=tb.mf_er;auto& mo=tb.mf_mo;m.resize(size_t(rw)*rh);er.resize(size_t(rw)*rh);mo.resize(size_t(rw)*rh);
         for(int y=0;y<rh;++y)for(int x=0;x<rw;++x){const float v=g.d[size_t(y0+y)*w+x0+x];m[size_t(y)*rw+x]=std::fabs(std::log((std::max)(v,1e-6f))-lc)<.12?1:0;}
 
         for(int y=0;y<rh;++y)for(int x=0;x<rw;++x){unsigned char v=1;for(int dy=-1;dy<=1&&v;++dy)for(int dx=-1;dx<=1;++dx){const int yy=y+dy,xx=x+dx;if(yy<0||xx<0||yy>=rh||xx>=rw)continue;if(!m[size_t(yy)*rw+xx]){v=0;break;}}er[size_t(y)*rw+x]=v;}
         for(int y=0;y<rh;++y)for(int x=0;x<rw;++x){unsigned char v=0;for(int dy=-1;dy<=1&&!v;++dy)for(int dx=-1;dx<=1;++dx){const int yy=y+dy,xx=x+dx;if(yy<0||xx<0||yy>=rh||xx>=rw)continue;if(er[size_t(yy)*rw+xx]){v=1;break;}}mo[size_t(y)*rw+x]=v;}
-        std::vector<int> lab;std::vector<det::Comp> comps;det::rotular(mo.data(),rw,rh,true,lab,comps);
+        auto& lab=tb.mf_lab;auto& comps=tb.mf_comps;det::rotular(mo.data(),rw,rh,true,lab,comps,tb.pilha);
         const int cx=int((std::min<double>)(rw-1,(std::max)(0.0,c.x*q-x0))),cy=int((std::min<double>)(rh-1,(std::max)(0.0,c.ytop*q-y0+.5*wr)));
         int l=lab[size_t(cy)*rw+cx];
         if(l==0){
-            std::vector<int> cnt(comps.size()+1,0);bool tem=false;
+            auto& cnt=tb.mf_cnt;cnt.assign(comps.size()+1,0);bool tem=false;
             for(int y=(std::max)(0,cy-6);y<(std::min)(rh,cy+7);++y)for(int x=(std::max)(0,cx-6);x<(std::min)(rw,cx+7);++x){const int v=lab[size_t(y)*rw+x];if(v>0){++cnt[size_t(v)];tem=true;}}
             if(!tem)return false;
             l=int(std::max_element(cnt.begin(),cnt.end())-cnt.begin());
         }
-        std::vector<unsigned char> mm(size_t(rw)*rh);for(size_t i=0;i<mm.size();++i)mm[i]=lab[i]==l?1:0;
+        auto& mm=tb.mf_mm;mm.resize(size_t(rw)*rh);for(size_t i=0;i<mm.size();++i)mm[i]=lab[i]==l?1:0;
         const int xc=det::arred(c.x*q-x0);const int r=(std::max)(3,int(.35*wr));
-        std::vector<int> tops;
+        auto& tops=tb.mf_tops;tops.clear();
         for(int x=(std::max)(0,xc-r);x<(std::min)(rw,xc+r+1);++x){for(int y=0;y<rh;++y)if(mm[size_t(y)*rw+x]){tops.push_back(y);break;}}
         if(tops.empty())return false;
         std::sort(tops.begin(),tops.end());
         const double ytop=tops[(std::min)(tops.size()-1,(std::max<size_t>)(0,tops.size()/5))];
-        std::vector<float> larg,cent;det::runs_cabeca(mm.data(),rw,rh,xc,int(ytop),int(1.3*wr)+2,larg,cent);
+        auto& larg=tb.mf_larg;auto& cent=tb.mf_cent;det::runs_cabeca(mm.data(),rw,rh,xc,int(ytop),int(1.3*wr)+2,larg,cent);
         const int a0=int(.2*wr),a1=(std::max)(int(.2*wr)+2,int(.8*wr));
-        std::vector<float> seg,cs;
+        auto& seg=tb.mf_seg;auto& cs=tb.mf_cs;seg.clear();cs.clear();
         for(int i=a0;i<(std::min<int>)(a1,int(larg.size()));++i){if(larg[size_t(i)]>0)seg.push_back(larg[size_t(i)]);cs.push_back(cent[size_t(i)]);}
         if(seg.empty())return false;
-        owh=det::mediana(seg);ox=det::mediana(cs)+x0;oy=ytop+y0;
+        owh=det::mediana_em(seg);ox=det::mediana_em(cs)+x0;oy=ytop+y0;
         return true;
     }
 };

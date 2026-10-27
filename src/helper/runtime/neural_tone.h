@@ -2,6 +2,8 @@
 #include "nr_publico.h"
 #include <atomic>
 #include "native_ini_path.h"
+#include "pasta_helper.h"
+#include "modulos_pin.h"
 #include "neural_tone_state.h"
 #include "../source/implementation/live-transition-image/live_image.h"
 #include "../../v033-port/kernels/reg_swin32_contract.h"
@@ -9,7 +11,9 @@
 #include "../../v040-port/kernels/reg_swin_mh_contract.h"
 #include "rede1080_policy.h"
 #include <windows.h>
+#include "log_fila.h"
 #include <hip/hip_runtime_api.h>
+#include "hip_api.h"
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -36,23 +40,17 @@ inline void log(const char* s)noexcept{
 (void)s;
 }
 template<class T>inline T get(const void* p,size_t offset){T v{};std::memcpy(&v,static_cast<const char*>(p)+offset,sizeof v);return v;}
+
 inline bool read_module(const std::filesystem::path& p,size_t size,const unsigned char* hash,std::vector<unsigned char>& b,const unsigned char* alt=nullptr){
- std::ifstream f(p,std::ios::binary|std::ios::ate);if(!f||f.tellg()!=std::streamoff(size))return false;
- b.resize(size);f.seekg(0);if(!f.read(reinterpret_cast<char*>(b.data()),size))return false;
- return nrliveimage::detail::sha256_matches(b.data(),b.size(),hash)||(alt&&nrliveimage::detail::sha256_matches(b.data(),b.size(),alt));
+ return nrmodpin::ler_conferido(p,size,hash,b,alt);
 }
-inline unsigned teste_job=0,teste_ms=0;inline std::atomic<unsigned> teste_imports{0};
-inline int teste_sem_reproj=0,teste_reproj_bx=0;inline std::atomic<unsigned> teste_reproj_log{0};
 inline bool install(char* base)noexcept{
  static std::mutex installation;
  std::lock_guard<std::mutex> lock(installation);
  if(image)return image==base;
- try {image=base;HMODULE self{};wchar_t path[32768]{};
-  if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&install),&self)||!GetModuleFileNameW(self,path,32768))return false;
-  folder=std::filesystem::path(path).parent_path();const auto ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&install));
-
-  teste_sem_reproj=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralTesteSemReproject",0,ini.c_str()));{const int v=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralTesteReprojBx",0,ini.c_str()));teste_reproj_bx=(v==32||v==64||v==128||v==256||v==512||v==1024)?v:0;}
-  teste_job=NRCFG_INT(L"DlssNrOnAmd",L"NeuralTesteAtrasoJob",0,ini.c_str());teste_ms=NRCFG_INT(L"DlssNrOnAmd",L"NeuralTesteAtrasoMs",0,ini.c_str());
+ try {image=base;
+  if(nrpasta::helper().empty())return false;
+  folder=nrpasta::helper();const auto ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&install));
   wchar_t selected[32]{},number[32]{};NRCFG_STR(L"DlssNrOnAmd",L"ToneCurve",L"legacy",selected,32,ini.c_str());
   if(!_wcsicmp(selected,L"legacy"))return true;
   if(_wcsicmp(selected,L"reinhard")&&_wcsicmp(selected,L"aces")){log("FALLBACK invalid ToneCurve");return true;}
@@ -73,15 +71,15 @@ inline bool install(char* base)noexcept{
  }catch(...){requested=false;return false;}
 }
 inline void initialize()noexcept{
- try {auto hip=GetModuleHandleW(L"amdhip64_7.dll");
-  const auto load=reinterpret_cast<int(*)(void**,const void*)>(GetProcAddress(hip,"hipModuleLoadData"));
-  const auto function=reinterpret_cast<int(*)(void**,void*,const char*)>(GetProcAddress(hip,"hipModuleGetFunction"));
-  const auto global=reinterpret_cast<int(*)(void**,size_t*,void*,const char*)>(GetProcAddress(hip,"hipModuleGetGlobal"));
-  const auto copy=reinterpret_cast<int(*)(void*,const void*,size_t,int)>(GetProcAddress(hip,"hipMemcpy"));
-  const auto props=reinterpret_cast<int(*)(hipDeviceProp_t*,int)>(GetProcAddress(hip,"hipGetDevicePropertiesR0600"));
-  get_device=reinterpret_cast<decltype(get_device)>(GetProcAddress(hip,"hipGetDevice"));launch=reinterpret_cast<ModuleLaunch>(GetProcAddress(hip,"hipModuleLaunchKernel"));
+ try {
+  const auto load=nrhip::api().module_load_data;
+  const auto function=nrhip::api().module_get_function;
+  const auto global=reinterpret_cast<int(*)(void**,size_t*,void*,const char*)>(nrhip::api().module_get_global);
+  const auto copy=reinterpret_cast<int(*)(void*,const void*,size_t,int)>(nrhip::api().memcpy_);
+  const auto props=nrhip::api().get_device_properties;
+  get_device=reinterpret_cast<decltype(get_device)>(nrhip::api().get_device);launch=nrhip::api().module_launch_kernel;
   if(!load||!function||!global||!copy||!launch||!get_device||!props)return;
-  hipDeviceProp_t p{};if(get_device(&device)||props(&p,device)||std::strncmp(p.gcnArchName,"gfx1201",7)||(p.gcnArchName[7]&&p.gcnArchName[7]!=':')||p.warpSize!=32)return;
+  if(!nrhip::dispositivo_ok(get_device,props,device))return;
   if(load(&module,module_bytes.data())||load(&export_module,export_bytes.data()))return;
   if(export_fast&&(load(&cauda_module,cauda_bytes.data())||!cauda_module||function(&export_r0_kernel,cauda_module,nr1080::contract::export_r0)||!export_r0_kernel)){export_r0_kernel=nullptr;log("EXPORT_R0 FALLBACK nr_cauda.hsaco recusado; nr_tone_export");}
   else if(export_r0_kernel)log("EXPORT_R0 READY nr_tone_export_r0 (reinhard lift 0) no lugar do nr_tone_export");
@@ -96,7 +94,6 @@ inline void initialize()noexcept{
 inline bool try_launch(const void* f,unsigned gx,unsigned gy,unsigned gz,unsigned bx,unsigned by,unsigned bz,
  void** args,size_t shared,void* stream,int& result){
  if(!requested||!image||(f!=image+0x62228&&f!=image+0x62230&&f!=image+0x62238))return false;
- if(teste_job&&teste_ms&&f==image+0x62228&&teste_imports.fetch_add(1)+1==teste_job)Sleep(teste_ms);
  std::call_once(init,[]{initialize();if(!ready){requested=false;log("FALLBACK tone initialization failed before import");}});
  if(!ready)return false;
  int current{};if(failed||!args||!args[0]||get_device(&current)||current!=device){result=1;failed=true;return true;}
@@ -109,11 +106,6 @@ inline bool try_launch(const void* f,unsigned gx,unsigned gy,unsigned gz,unsigne
   if(export_r0_kernel&&curve==0&&lift==0.f&&!(reinterpret_cast<std::uintptr_t>(graph)&15u)&&!(reinterpret_cast<std::uintptr_t>(destination)&7u)&&!(pitch&7u))
    result=launch(export_r0_kernel,(width+255u)/256u,height,1,256,1,1,0,stream,a,nullptr);
   else result=launch(export_kernel,(width*height+255u)/256u,1,1,256,1,1,0,stream,a,nullptr);
- }else if(f==image+0x62238&&(teste_sem_reproj||teste_reproj_bx)){
-
-  if(teste_reproj_log.fetch_add(1)<4){char l[160]{};NRLOGF(l,sizeof l,"TESTE REPROJ grade %ux%ux%u bloco %ux%ux%u sem=%d bx=%d",gx,gy,gz,bx,by,bz,teste_sem_reproj,teste_reproj_bx);log(l);}
-  if(teste_sem_reproj)result=0;
-  else{const unsigned nb=unsigned(teste_reproj_bx),ngx=(gx*bx+nb-1u)/nb;result=launch(reproject_kernel,ngx,gy,gz,nb,by,bz,unsigned(shared),stream,args,nullptr);}
  }else result=launch(f==image+0x62228?import_kernel:f==image+0x62238?reproject_kernel:full_export_kernel,gx,gy,gz,bx,by,bz,unsigned(shared),stream,args,nullptr);
  if(result){failed=true;log("FAILED tone kernel; propagated, no mixed-domain fallback");}return true;
 }

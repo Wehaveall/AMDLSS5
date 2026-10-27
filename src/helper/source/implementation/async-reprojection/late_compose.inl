@@ -15,6 +15,7 @@ LateFlags* late_flags_for(ID3D12Device* d){
  void* map{};
  if(FAILED(d->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_GENERIC_READ,nullptr,IID_PPV_ARGS(&f->upload)))||
     FAILED(f->upload->Map(0,nullptr,&map))||!map){delete f;return nullptr;}
+ nrd3d::nomear(f->upload.Get(),L"nr_tardia_envio");
  std::memset(map,0,std::size_t(bd.Width));_mm_sfence();
  f->map=static_cast<std::uint64_t*>(map);f->device=d;todas.push_back(f);return f;
 }
@@ -22,10 +23,10 @@ struct LateLogico {
  bool composed_frame;unsigned est_cur;bool est_valido;unsigned ganho_cur;bool ganho_valido,ganho_dividido;std::uint64_t ganho_quadro,ganho_limitados;
  unsigned luz_cur;bool luz_valido;std::uint64_t luz_quadro,luz_quadros,luz_filtrados;
 
- bool post,bil;
+ bool post;
  bool operator==(const LateLogico& o)const{return composed_frame==o.composed_frame&&est_cur==o.est_cur&&est_valido==o.est_valido&&ganho_cur==o.ganho_cur&&ganho_valido==o.ganho_valido&&
   ganho_dividido==o.ganho_dividido&&ganho_quadro==o.ganho_quadro&&ganho_limitados==o.ganho_limitados&&luz_cur==o.luz_cur&&luz_valido==o.luz_valido&&luz_quadro==o.luz_quadro&&
-  luz_quadros==o.luz_quadros&&luz_filtrados==o.luz_filtrados&&post==o.post&&bil==o.bil;}
+  luz_quadros==o.luz_quadros&&luz_filtrados==o.luz_filtrados&&post==o.post;}
 };
 
 void late_desligar(LateState& L,const char* motivo,std::uint64_t quadro){
@@ -99,14 +100,13 @@ Result Backend::compose_late(void* command,void* destination,std::uint32_t d3d_s
   if(!lote.objetos.empty())p.retired.push_back(std::move(lote));
   L.tex.Reset();L.heap.Reset();L.reduzir_heap.Reset();
   D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;D3D12_RESOURCE_DESC td=rd;td.Flags=D3D12_RESOURCE_FLAG_NONE;td.Alignment=0;
-  D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,12,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
   if(FAILED(p.device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&td,read_state,nullptr,IID_PPV_ARGS(&L.tex)))||
-     FAILED(p.device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&L.heap)))){L.tex.Reset();L.heap.Reset();L.falhou=true;return hoje(6);}
+     !p.criar_heap(12,L.heap)){L.tex.Reset();L.heap.Reset();L.falhou=true;return hoje(6);}
+  nrd3d::nomear(L.tex.Get(),L"nr_tardia_tex");
   L.w=unsigned(rd.Width);L.h=rd.Height;L.format=rd.Format;
  }
  if(reduzido&&!L.reduzir_heap){
-  D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,12,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
-  if(FAILED(p.device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&L.reduzir_heap)))){L.reduzir_heap.Reset();L.falhou=true;return hoje(6);}
+  if(!p.criar_heap(12,L.reduzir_heap)){L.reduzir_heap.Reset();L.falhou=true;return hoje(6);}
 
   const DXGI_FORMAT fs[]{DXGI_FORMAT_R16G16B16A16_FLOAT,DXGI_FORMAT_R16G16_FLOAT,DXGI_FORMAT_R32_FLOAT};
   ID3D12DescriptorHeap* h=L.reduzir_heap.Get();
@@ -124,6 +124,7 @@ Result Backend::compose_late(void* command,void* destination,std::uint32_t d3d_s
   if(FAILED(p.device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bd,D3D12_RESOURCE_STATE_COMMON,nullptr,IID_PPV_ARGS(&L.snapshot)))||
      FAILED(p.device->CreateCommittedResource(&rp,D3D12_HEAP_FLAG_NONE,&rb,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&L.readback)))||
      FAILED(L.readback->Map(0,nullptr,&map))||!map){L.snapshot.Reset();L.readback.Reset();L.falhou=true;return hoje(6);}
+  nrd3d::nomear(L.snapshot.Get(),L"nr_tardia_snapshot");nrd3d::nomear(L.readback.Get(),L"nr_tardia_leitura");
   L.readback_map=static_cast<const volatile std::uint64_t*>(map);
  }
 
@@ -143,7 +144,7 @@ Result Backend::compose_late(void* command,void* destination,std::uint32_t d3d_s
  transition(c,snap,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_PREDICATION);
  auto logico=[&]{return LateLogico{p.composed_frame,p.est_cur,p.est_valido,p.ganho_cur,p.ganho_valido,p.ganho_dividido,p.ganho_quadro,p.ganho_limitados,
                                     p.luz_cur,p.luz_valido,p.luz_quadro,p.luz_quadros,p.luz_filtrados,
-                                    p.modo_post(),p.bilateral.forca>0&&p.bil_apply};};
+                                    p.modo_post()};};
  auto restaurar=[&](const LateLogico& v){p.composed_frame=v.composed_frame;p.est_cur=v.est_cur;p.est_valido=v.est_valido;p.ganho_cur=v.ganho_cur;p.ganho_valido=v.ganho_valido;
   p.ganho_dividido=v.ganho_dividido;p.ganho_quadro=v.ganho_quadro;p.ganho_limitados=v.ganho_limitados;p.luz_cur=v.luz_cur;p.luz_valido=v.luz_valido;p.luz_quadro=v.luz_quadro;
   p.luz_quadros=v.luz_quadros;p.luz_filtrados=v.luz_filtrados;};
@@ -160,27 +161,25 @@ Result Backend::compose_late(void* command,void* destination,std::uint32_t d3d_s
  const auto antes=logico();const auto halo_antes=p.halo_quadros;
 
  struct Guarda{Impl& p;LateState& L;ID3D12GraphicsCommandList* c;bool predicado{};const int excecoes{std::uncaught_exceptions()};
-  ~Guarda(){p.warp_heap_override=nullptr;p.bil_heap_override=nullptr;p.reduzir_heap_override=nullptr;p.suprimir_despejo=false;
-   if(std::uncaught_exceptions()>excecoes){L.falhou=true;p.bil_job=-1;if(predicado)c->SetPredication(nullptr,0,D3D12_PREDICATION_OP_EQUAL_ZERO);}}
+  ~Guarda(){p.warp_heap_override=nullptr;p.reduzir_heap_override=nullptr;p.suprimir_despejo=false;
+   if(std::uncaught_exceptions()>excecoes){L.falhou=true;if(predicado)c->SetPredication(nullptr,0,D3D12_PREDICATION_OP_EQUAL_ZERO);}}
  } guarda{p,L,c};
 
- const bool bil_ligada=antes.bil;
- if(bil_ligada&&p.bil_duplo_late==q.job_late&&p.bil_duplo_prev==q.job_prev&&p.bil_duplo_quadro+1==p.policy.frame)p.bil_job=q.job_prev;
- p.bil_duplo_late=-1;
+ if(reduzido)rj_limpa_preparar(c,static_cast<ID3D12Resource*>(destination),d3d_state,p.policy.frame^(std::uint64_t(nrrj::epoca_backend.load(std::memory_order_relaxed))<<44));
  p.suprimir_despejo=true;guarda.predicado=true;
  c->SetPredication(snap,off,D3D12_PREDICATION_OP_NOT_EQUAL_ZERO);
  const Result a=compose(command,destination,d3d_state,q.residual_prev,q.job_prev,q.exposure_prev,tone);
  if(a!=Result::Composed){
 
   c->SetPredication(nullptr,0,D3D12_PREDICATION_OP_EQUAL_ZERO);transition(c,snap,D3D12_RESOURCE_STATE_PREDICATION,D3D12_RESOURCE_STATE_COPY_DEST);
-  p.suprimir_despejo=false;if(bil_ligada)p.bil_job=-1;++L.refused;++L.refused_reason[7];return a;
+  p.suprimir_despejo=false;++L.refused;++L.refused_reason[7];return a;
  }
  const auto depois_a=logico();const auto composed_a=p.composed;const int idade_a=nrreproject::idade_composta.load();
  const auto halo_a=p.halo_quadros;
 
- if(depois_a.post!=antes.post||depois_a.bil!=antes.bil){
+ if(depois_a.post!=antes.post){
   c->SetPredication(nullptr,0,D3D12_PREDICATION_OP_EQUAL_ZERO);transition(c,snap,D3D12_RESOURCE_STATE_PREDICATION,D3D12_RESOURCE_STATE_COPY_DEST);
-  p.suprimir_despejo=false;p.ganho_valido=false;p.luz_valido=false;p.est_valido=false;p.bil_job=-1;invalidar_filtros();
+  p.suprimir_despejo=false;p.ganho_valido=false;p.luz_valido=false;p.est_valido=false;invalidar_filtros();
   late_desligar(L,"modo_mudou_em_A",p.policy.frame);return Result::Composed;
  }
  const auto filtros_a=filtros();
@@ -192,14 +191,10 @@ Result Backend::compose_late(void* command,void* destination,std::uint32_t d3d_s
  transition(c,L.tex.Get(),D3D12_RESOURCE_STATE_COPY_DEST,read_state);
  p.warp_heap_override=L.heap.Get();
  if(reduzido)p.reduzir_heap_override=L.reduzir_heap.Get();
-
- if(bil_ligada){p.bil_heap_override=p.bil_heap_tardia.Get();p.bil_job=-1;}
  const Result b=compose(command,destination,d3d_state,L.tex.Get(),q.job_late,q.exposure_late,tone);
- p.warp_heap_override=nullptr;p.bil_heap_override=nullptr;p.reduzir_heap_override=nullptr;
+ p.warp_heap_override=nullptr;p.reduzir_heap_override=nullptr;
 
  if(reduzido)p.est_ultimo_job=q.job_prev;
-
- if(bil_ligada){p.bil_job=-1;if(b==Result::Composed){p.bil_duplo_prev=q.job_prev;p.bil_duplo_late=q.job_late;p.bil_duplo_quadro=p.policy.frame;}}
  c->SetPredication(nullptr,0,D3D12_PREDICATION_OP_EQUAL_ZERO);guarda.predicado=false;
  p.suprimir_despejo=false;
 
@@ -210,7 +205,7 @@ Result Backend::compose_late(void* command,void* destination,std::uint32_t d3d_s
  if(b!=Result::Composed){
 
   ++L.b_failed;restaurar(depois_a);restaurar_filtros(filtros_a);p.ganho_valido=false;p.luz_valido=false;p.est_valido=false;invalidar_filtros();
- }else if(!(depois_b==depois_a)){p.ganho_valido=false;p.luz_valido=false;p.est_valido=false;invalidar_filtros();p.bil_job=-1;late_desligar(L,"estado_divergente",p.policy.frame);}
+ }else if(!(depois_b==depois_a)){p.ganho_valido=false;p.luz_valido=false;p.est_valido=false;invalidar_filtros();late_desligar(L,"estado_divergente",p.policy.frame);}
  else if(!filtros().mesmo_pingue(filtros_a))invalidar_filtros();
 
  p.composed=composed_a;nrreproject::idade_composta.store(idade_a);p.halo_quadros=halo_a>halo_antes?halo_antes+1:halo_antes;

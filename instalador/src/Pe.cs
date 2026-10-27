@@ -1,6 +1,6 @@
 // Leitura minima de PE (Portable Executable): maquina, se e DLL, DLLs importadas e nomes exportados.
-// Le so os cabecalhos e as tabelas por seek (exes de jogo passam de 200 MB). Mesma logica do
-// mod/Install-Game.ps1 (Get-PEHeader / Get-PEImportedDlls), em C#.
+// Le so os cabecalhos e as tabelas por seek (exes de jogo passam de 200 MB). Veio do mod/Install-Game.ps1
+// (Get-PEHeader / Get-PEImportedDlls; o script saiu em 22/10, review M-12: este e o unico leitor).
 using System;
 using System.Collections.Generic;
 using System.IO;

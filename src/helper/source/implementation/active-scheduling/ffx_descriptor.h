@@ -14,6 +14,8 @@ struct Descriptor {
   float jitter_x{},jitter_y{};
 
   float camera_near{},camera_far{},camera_fov{};
+
+  std::uint32_t ffx_flags{};
 };
 struct ScaledFields {
   void *input{},*output{},*motion{},*depth{};
@@ -31,6 +33,9 @@ bool decode_raw(const void* head,RawDescriptor& out) noexcept;
 struct AdaptedFields {
   void *input{},*motion{},*depth{};
   std::uint32_t input_state{},motion_state{},depth_state{};
+
+  void *output{};std::uint32_t output_state{};
+  void *exposure{};std::uint32_t exposure_state{};
 };
 bool encode_adapted_copy(const void* source,std::size_t source_size,
   const AdaptedFields& fields,std::byte* destination,std::size_t destination_size) noexcept;
@@ -38,6 +43,9 @@ bool encode_adapted_copy(const void* source,std::size_t source_size,
 const char* refusal(const void* head,char* detalhe,std::size_t n,char* campo,std::size_t m) noexcept;
 
 void set_use_game_exposure(bool enabled) noexcept;
+
+using FonteTamanhoSaida=bool(*)(void* output,std::uint32_t& w,std::uint32_t& h) noexcept;
+void set_fonte_tamanho_saida(FonteTamanhoSaida fonte) noexcept;
 
 bool host_reset(const void* head) noexcept;
 bool encode_scaled_copy(const void* source,std::size_t source_size,

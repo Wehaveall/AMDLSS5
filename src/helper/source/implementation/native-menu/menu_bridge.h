@@ -33,10 +33,6 @@ void initialise_rows(NativeRow (&rows)[2], MenuCallbacks callbacks) noexcept;
 
 void replace_mode_control(NativeRow& row, MenuCallbacks callbacks) noexcept;
 
-const char* localized_label(const char* label) noexcept;
-const char* localized_value(const char* value) noexcept;
-const char* localized_help(const char* label, const char* original_help) noexcept;
-
 void move_row(NativeRow& destination, NativeRow& source) noexcept;
 void destroy_row(NativeRow& row) noexcept;
 

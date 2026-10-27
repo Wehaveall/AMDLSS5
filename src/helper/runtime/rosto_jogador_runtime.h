@@ -3,8 +3,10 @@
 #include <array>
 #include "rosto_jogador_state.h"
 #include "rosto_jogador_detecta.h"
+#include "rosto_jogador_ini.h"
+#include "jogador_externo.h"
+#include "rosto_cor_luz.h"
 static_assert(nrrj::npc_slots==nrrj::npc_det_max,"npc-n: NPCs do estado = do detector");
-#include "yunet.h"
 #include "scrfd.h"
 namespace nrrj_runtime {
 struct ExternalDesc {int type{};union Handle {int fd;struct {void* handle;const void* name;} win32;const void* nvSci;Handle():win32{}{}} handle;
@@ -13,7 +15,8 @@ struct BufferDesc {unsigned long long offset{},size{};unsigned flags{},reserved[
 static_assert(sizeof(ExternalDesc)==104&&sizeof(BufferDesc)==88);
 struct ElipseK {float hx,hy,hl,ex,ey,r0,r1,m0,m1;};
 static_assert(sizeof(ElipseK)==36);
-struct DetSet {void* dq{};void* mvq{};void* d{};size_t cap{};std::atomic<bool> ocupado{false};};
+struct DetSet {void* dq{};void* mvq{};void* d{};size_t cap{};std::atomic<bool> ocupado{false};size_t gcap{};void* amostra{};bool amostra_tentada{};nrrj::DetAlocPausa pausa{};};
+inline constexpr size_t det_amostra_max=8192;
 struct DetTarefa {int set{-1};int gw{},gh{},dw{},dh{};int job{};std::uint64_t quadro{};int device{-1};int fonte{};};
 #pragma warning(push)
 #pragma warning(disable:4324)
@@ -24,10 +27,15 @@ struct Estado {
     void* k_meia4{};void* k_bandas{};
     void* k_mini{};void* k_sat{};
     void* k_lumin{};void* k_bandas2{};void* lin{};bool lin_tentado{};
+    void* k_ema{};void* ema{};bool ema_tentado{};nrrj::EntradaMediaReg ema_reg{};unsigned long long ema_usos{},ema_novos{};
+    void* k_f4meia{};void* esg{};size_t esg_px{};bool esg_falhou{};unsigned long long esg_n{};
+    void* k_delta_el{};void* k_guarda_el{};unsigned long long di_n{};
     void* k_camada{};void* k_baixa_m{};void* k_blur4w{};void* k_delta_m{};int det_dinv{};unsigned long long camada_n{},camada_sem{};
+    void* k_rpeso{};void* k_rmedia{};void* k_rbanda{};void* rw{};void* rsoma{};bool r_tentado{};unsigned long long r_cortes{},r_sem_peso{};
+    void* k_lgrad{};void* k_lpeso{};void* k_limpa{};void* lsoma{};bool l_tentado{};unsigned long long l_n{},l_rt_desligado{};
+    void* k_cl_cena{};void* k_cl_baixa{};void* k_cl_aplica{};unsigned long long cl_n{};
 
-    void* mini{};std::array<float,1024> mini_ref{};bool mini_tem{};float mini_hl{};std::uint64_t mini_ger{};int mini_job{};
-    unsigned pulos_seguidos{};unsigned long long pulados{},portoes{};int pula_job{};
+    void* mini{};
 
     void* in2{};void* out2{};bool buf2_tentado{};unsigned long long passos2{},passos2_pulados{};double p1_min{},p1_ema{};unsigned p1_n{};unsigned long long p2_k{};
     alignas(64) std::array<unsigned char,0x400> ctx{};bool construido{},carregado{};
@@ -41,7 +49,7 @@ struct Estado {
 
     struct Fora {int job{};char* base{};void* primary{};void* dest{};int rw{},rh{},pitch{},formato{};};Fora fora_pend{};
     unsigned long long jobs{},avaliados{};double ms_soma{},ms_max{};unsigned ms_n{};double ultimo_ms{-1.0};
-    std::filesystem::path pasta;
+    std::vector<unsigned char> modulo_bytes;
 };
 #pragma warning(pop)
 inline Estado& estado(){static Estado* e=new Estado[nrrj::n_inst];return e[nrrj::inst_atual()];}
@@ -58,17 +66,16 @@ inline void compartilhar(Estado& e,const Estado& e0) noexcept {
     e.k_lumin=e0.k_lumin;e.k_bandas2=e0.k_bandas2;e.k_camada=e0.k_camada;e.k_baixa_m=e0.k_baixa_m;e.k_blur4w=e0.k_blur4w;e.k_delta_m=e0.k_delta_m;
     e.dc=e0.dc;e.d0=e0.d0;e.D=e0.D;e.lo=e0.lo;e.lo2=e0.lo2;e.luma=e0.luma;e.gl=e0.gl;e.tmp1=e0.tmp1;e.soma=e0.soma;e.grades=e0.grades;
     e.lin=e0.lin;e.lin_tentado=true;e.in2=e0.in2;e.out2=e0.out2;e.buf2_tentado=true;
+    e.k_rpeso=e0.k_rpeso;e.k_rmedia=e0.k_rmedia;e.k_rbanda=e0.k_rbanda;
+    e.k_lgrad=e0.k_lgrad;e.k_lpeso=e0.k_lpeso;e.k_limpa=e0.k_limpa;
+    e.k_cl_cena=e0.k_cl_cena;e.k_cl_baixa=e0.k_cl_baixa;e.k_cl_aplica=e0.k_cl_aplica;
+    e.k_f4meia=e0.k_f4meia;
+    e.k_delta_el=e0.k_delta_el;e.k_guarda_el=e0.k_guarda_el;
     e.k_etiqueta=e0.k_etiqueta;}
-inline std::atomic<bool> det_thread{false};
+using nrrj::det_thread;
 
-inline std::atomic<float> passo2_folga{0.f};
-inline std::filesystem::path pasta_helper(){
-    auto& e=estado();if(!e.pasta.empty())return e.pasta;
-    HMODULE self{};wchar_t path[32768]{};
-    if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&estado),&self)&&GetModuleFileNameW(self,path,32768))
-        e.pasta=std::filesystem::path(path).parent_path();
-    return e.pasta;
-}
+using nrrj::passo2_folga;
+inline std::filesystem::path pasta_helper(){return nrpasta::helper();}
 
 inline void ler_ini(char* base) noexcept {
     if(nrrj::ini_lido.load(std::memory_order_acquire))return;
@@ -77,215 +84,61 @@ inline void ler_ini(char* base) noexcept {
         const std::wstring ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&estado));
         if(ini.empty())return;
         nrrj::ini_lido.store(true,std::memory_order_release);
-        wchar_t t[16]{};NRCFG_STR(L"DlssNrOnAmd",L"NeuralRostoJogador",L"0",t,16,ini.c_str());
-        if(!nrrj::menu_escreveu.load())nrrj::ligado.store(nrrj::valor_de(t));
-        nrrj::teto.store(nrrj::teto_de(t));
+        nrrj::IniGanchos g{};g.ctx=base;
+        g.orcamento=[](void* b,int om,unsigned folga,unsigned outros){nrorc_vram::configurar(om,folga,outros);if(nrorc::modo()){nrregswin::orc_contar(static_cast<char*>(b));nrorc_vram::hip_inicio();}};
+        g.rede_sync=[](void*,bool v){nrregswin::rjsync::ligado.store(v);};
+        nrrj::ler_ini_rosto(ini,g);
+        nrrjcl::ler(ini.c_str());
 
-        nrrj::cada.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorCada",1,ini.c_str())),1,4)));
-        nrrj::fora.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorFora",0,ini.c_str())==1);
-
-        nrrj::cada_quadros.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorCadaQuadros",-1,ini.c_str())),-1,64));
-        nrrj::corte_modo.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorCorte",0,ini.c_str())),0,31));
-        {wchar_t b[32]{};NRCFG_STR(L"DlssNrOnAmd",L"NeuralRostoJogadorCorteOk",L"",b,32,ini.c_str());
-         if(*b){const double v=std::wcstod(b,nullptr);if(std::isfinite(v)&&v>=0.&&v<=1.)nrrj::corte_ok.store(float(v));}
-         nrrj::sinal_n.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorSinalN",6,ini.c_str())),0,64));
-         nrrj::rosto_calibra.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorRostoCalibra",0,ini.c_str())==1?1:0);
-         nrrj::rosto_manda.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorRostoManda",0,ini.c_str())==1?1:0);
-         auto fl=[&](const wchar_t* k,float padrao){wchar_t b2[32]{};NRCFG_STR(L"DlssNrOnAmd",k,L"",b2,32,ini.c_str());if(!*b2)return padrao;
-             const double v=std::wcstod(b2,nullptr);return std::isfinite(v)&&v>.02&&v<=1.?float(v):padrao;};
-         nrrj::alfa_pos.store(fl(L"NeuralRostoJogadorAlfaPos",.6f));nrrj::alfa_tam.store(fl(L"NeuralRostoJogadorAlfaTam",.25f));
-         nrrj::rosto_ancora.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorRostoAncora",0,ini.c_str())),0,30));
-         nrrj::ancora_nota.store(fl(L"NeuralRostoJogadorAncoraNota",.75f));
-         nrrj::nota_grande.store(fl(L"NeuralRostoJogadorNotaGrande",0.f));
-         nrrj::soma_cena.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorSomaCena",0,ini.c_str())==1);
-         nrrj::npc_borda_camada.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcBordaCamada",0,ini.c_str())==1);
-         nrrj::nota_grande_px.store(float((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNotaGrandePx",900,ini.c_str())),200,4000)));
-         {wchar_t b3[32]{};NRCFG_STR(L"DlssNrOnAmd",L"NeuralRostoJogadorEscalaSalto",L"",b3,32,ini.c_str());
-          const double v=*b3?std::wcstod(b3,nullptr):0.;nrrj::escala_salto.store(std::isfinite(v)&&v>1.01&&v<4.?float(v):0.f);}
-         nrrj::rede_fixa.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorRedeFixa",0,ini.c_str())),0,4)));}
-        nrrj::recorte_fixo_ini.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorRecorteFixo",0,ini.c_str())),0,2048)&~127);
-        nrrj::recorte_forcado.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorRecorteForcado",0,ini.c_str())),0,2048));
-        nrrj::zoom.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorZoom",0,ini.c_str())),0,63)));
-        det_thread.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorDetThread",0,ini.c_str())==1);
-
-        {auto flt=[&](const wchar_t* k,float padrao,float lo,float hi){wchar_t b[32]{};NRCFG_STR(L"DlssNrOnAmd",k,L"",b,32,ini.c_str());
-            if(!b[0])return padrao;const float v=float(std::wcstod(b,nullptr));return std::isfinite(v)?(std::clamp)(v,lo,hi):padrao;};
-         nrrj::acumula.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorAcumula",0,ini.c_str())==1);
-         nrrj::acum_baixa.store(flt(L"NeuralRostoJogadorAcumBaixa",.15f,.02f,1.f));nrrj::acum_alta.store(flt(L"NeuralRostoJogadorAcumAlta",.4f,.02f,1.f));
-         nrrj::acum_gama.store(flt(L"NeuralRostoJogadorAcumGama",1.f,0.f,8.f));
-
-         nrrj::pula_limiar.store(flt(L"NeuralRostoJogadorPula",0.f,-1.f,1.f));
-         nrrj::pula_max.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorPulaMax",2,ini.c_str())),1,3)));
-         nrrj::passos.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorPassos",1,ini.c_str())),1,2)));
-         nrrj::passo2_forca.store(flt(L"NeuralRostoJogadorPasso2Forca",.5f,.05f,2.f));
-         passo2_folga.store(flt(L"NeuralRostoJogadorPasso2Folga",0.f,0.f,4.f));
-         nrrj::frescor.store(flt(L"NeuralRostoJogadorFrescor",0.f,0.f,1.f));
-
-         nrrj::passo2_cada.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorPasso2Cada",1,ini.c_str())),1,4)));
-         nrrj::rede_alvo.store(flt(L"NeuralRostoJogadorRedeAlvo",0.f,0.f,1024.f));
-         nrrj::compor_elipse.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorComporElipse",0,ini.c_str())==1);
-         nrrj::passo1_forca.store(flt(L"NeuralRostoJogadorPasso1Forca",1.f,.25f,4.f));
-
-         nrrj::npc_modo.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpc",0,ini.c_str())),0,2));
-         nrrj::npc.store(nrrj::npc_modo.load()!=0);
-         nrrj::rosto_hz.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorRostoHz",10,ini.c_str())),0,30)));
-         nrrj::rosto_hz_busca.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorRostoHzBusca",30,ini.c_str())),0,60)));
-         nrrj::rosto_nota.store(flt(L"NeuralRostoJogadorRostoNota",.7f,.3f,.99f));
-         nrrj::npc_min.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcMin",160,ini.c_str())),32,2048));
-         nrrj::npc_recorte.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcRecorte",512,ini.c_str())),256,1024)&~127);
-         nrrj::npc_forca.store(flt(L"NeuralRostoJogadorNpcForca",2.f,.25f,4.f));
-         nrrj::npc_segura_s.store(flt(L"NeuralRostoJogadorNpcSegura",1.5f,0.f,10.f));
-
-         nrrj::npc2.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpc2",0,ini.c_str())==1);
-         nrrj::npc2_segura_s.store(flt(L"NeuralRostoJogadorNpc2Segura",1.f,.3f,30.f));
-         nrrj::npc2_acumula.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpc2Acumula",1,ini.c_str())==1);
-         nrrj::npc2_vel_max.store(flt(L"NeuralRostoJogadorNpc2VelMax",0.f,0.f,50.f));
-         nrrj::npc2_frescor.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpc2Frescor",0,ini.c_str())==1);
-         nrrj::npc2_teto.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpc2Teto",1024,ini.c_str())),256,int(nrrj::n_max)))&~127u);
-         nrrj::npc_max.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcMax",nrrj::npc_slots,ini.c_str())),1,nrrj::npc_slots));
-         nrrj::adquire.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorAdquire",0,ini.c_str())),0,63));
-         nrrj::caminha_dela.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorCaminhaDela",0,ini.c_str())),0,3));
-         nrrj::reancora.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorReancora",0,ini.c_str())),0,1));
-         {const int f=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorYunetFaixa",0,ini.c_str()));
-          nrrj::yunet_faixa.store(f>=1024&&f<=int(nrrj::faixa_w_max)&&f%64==0?unsigned(f):0u);}
-         {const int f=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorYunetInteira",0,ini.c_str()));
-          nrrj::yunet_inteira.store(f>640&&f<=int(nrrj::inteira_w_max)&&f%64==0?unsigned(f):0u);}
-         nrrj::npc_degraus.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcDegraus",0,ini.c_str())==1?1:0);
-         {const int r=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcRecorteMin",0,ini.c_str()));nrrj::npc_recorte_min2.store(r==384||r==512?r:0);}
-         {const int r=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcRecorteForcado",0,ini.c_str()));nrrj::npc_recorte_forcado.store(r>=256&&r<=1024&&r%128==0?r:0);}
-         nrrj::npc_segura_peq.store(flt(L"NeuralRostoJogadorNpcSeguraPeq",0.f,0.f,10.f));
-         {const float f=flt(L"NeuralRostoJogadorNpcFracao",0.f,0.f,.6f);nrrj::npc_fracao.store(f>=.25f?f:0.f);}
-         nrrj::npc_amplia.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcAmplia",0,ini.c_str())==1?1:0);
-         {const int v=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcLeve",0,ini.c_str()));nrrj::npc_leve.store(v>=1&&v<=3?v:0);
-          nrrj::npc_leve_fracao.store(flt(L"NeuralRostoJogadorNpcLeveFracao",.33f,.2f,.6f));nrrj::npc_leve_salto.store(flt(L"NeuralRostoJogadorNpcLeveSalto",.6f,.3f,2.f));
-          {const int r=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcLeveRecorte",1024,ini.c_str()));nrrj::npc_leve_recorte.store(r>=384&&r<=1024&&r%128==0?unsigned(r):1024u);}
-          {const int r=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcLeveJanela",1024,ini.c_str()));nrrj::npc_leve_jan.store(r>=768&&r<=1536&&r%128==0?unsigned(r):1024u);}
-          {const int r=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcLeveRede",512,ini.c_str()));nrrj::npc_leve_rede.store(r==384||r==512||r==640?unsigned(r):512u);}
-          if(v&1){nrrj::npc_fracao.store(nrrj::npc_leve_fracao.load());nrrj::npc_amplia.store(1);}}
-         {const int v=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcCanonico",0,ini.c_str()));nrrj::npc_canon.store(v==1||v==2?v:0);
-          {const int pp=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcCanonPerto",2,ini.c_str()));nrrj::npc_canon_perto.store(std::clamp(pp,0,2));}
-          {const int jq=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcCanonJanelaPeq",768,ini.c_str()));nrrj::npc_canon_jan_peq.store(jq>=512&&jq<=1024&&jq%128==0?unsigned(jq):768u);}
-          nrrj::npc_canon_fracao.store(flt(L"NeuralRostoJogadorNpcCanonFracao",.36f,.2f,.6f));nrrj::npc_canon_razao.store(flt(L"NeuralRostoJogadorNpcCanonRazao",2.35f,1.f,5.f));
-          nrrj::npc_canon_corte.store(flt(L"NeuralRostoJogadorNpcCanonCorte",.6f,.05f,10.f));nrrj::npc_canon_beta.store(flt(L"NeuralRostoJogadorNpcCanonBeta",4.f,0.f,100.f));
-          {const int r=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcCanonRede",384,ini.c_str()));nrrj::npc_canon_rede.store(r==512?512u:384u);}}
-         {const int v=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcTodos",0,ini.c_str()));nrrj::npc_todos.store(v>0&&v<=127?v:0);
-          nrrj::npc_todos_nota.store(flt(L"NeuralRostoJogadorNpcTodosNota",.7f,.5f,.95f));
-          nrrj::npc_todos_grandes.store(std::clamp(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcTodosGrandes",2,ini.c_str())),1,7));
-          if(v>0&&v<=127){char lt[160]{};NRLOGF(lt,sizeof lt,"ROSTO_NPC2_TODOS bits=%d nota=%.2f (npc-max)",v,double(nrrj::npc_todos_nota.load()));nrrj::log(lt);}}
-         nrrj::npc_limiar.store(flt(L"NeuralRostoJogadorNpcLimiar",0.f,0.f,1.f));
-         nrrj::npc_peito.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcPeito",0,ini.c_str())==1?1:0);
-         nrrj::yunet_rapido.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorYunetRapido",0,ini.c_str())==1?1:0);
-         {const int v=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorYunetAvx",0,ini.c_str()));nrrj::yunet_simd.store(v==1||v==2?v:0);}
-         nrrj::detector.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorDetector",0,ini.c_str())==2?2:0);
-         nrrj::detector_threads.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorDetectorThreads",2,ini.c_str())),1,8));
-         nrrj::scrfd_b_inteira.store(flt(L"NeuralRostoJogadorDetectorInteira",.6f,.35f,.9f));nrrj::scrfd_b_faixa.store(flt(L"NeuralRostoJogadorDetectorFaixa",.5f,.35f,.9f));
-         if(nrrj::detector.load()){char ld[200]{};NRLOGF(ld,sizeof ld,"ROSTO_NPC2_DETECTOR scrfd threads=%d nota_0.7=%.2f/%.2f (inteira/faixa; ROI do NPC segue no YuNet)",nrrj::detector_threads.load(),double(nrrj::scrfd_b_inteira.load()),double(nrrj::scrfd_b_faixa.load()));nrrj::log(ld);}
-         if(nrrj::npc2.load()){char l2[260]{};NRLOGF(l2,sizeof l2,"ROSTO_NPC2_CONFIG ligado npcs=%d teto=%u acumula=%d vel_max=%.2f segura=%.1f faixa=%u degraus=%d recmin=%d segura_peq=%.1f peito=%d rapido=%d avx=%d (pipeline do rosto para cada NPC)",nrrj::npc_max.load(),nrrj::npc2_teto.load(),
-             nrrj::npc2_acumula.load()?1:0,double(nrrj::npc2_vel_max.load()),double(nrrj::npc2_segura_s.load()),nrrj::yunet_faixa.load(),nrrj::npc_degraus.load(),nrrj::npc_recorte_min2.load(),double(nrrj::npc_segura_peq.load()),nrrj::npc_peito.load(),nrrj::yunet_rapido.load(),nrrj::yunet_simd.load());nrrj::log(l2);}
-         nrrj::npc_frente.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcFrente",0,ini.c_str())==1?1:0);
-         nrrj::npc_conf_s.store(flt(L"NeuralRostoJogadorNpcConfS",0.f,0.f,1.f));
-         {const int v=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcRoiConf",0,ini.c_str()));nrrj::npc_roi_conf.store(v>0&&v<=16?v:0);}
-         {const int v=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcVelImg",0,ini.c_str()));nrrj::npc_vel_img.store(v==1||v==2?v:0);}
-         {const int v=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcAtras",0,ini.c_str()));nrrj::npc_atras.store(v>=1&&v<=3?v:0);}
-         nrrj::npc_camada.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcCamada",0,ini.c_str())==1?1:0);
-         nrrj::npc_corpo.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcCorpo",0,ini.c_str())==1?1:0);
-         {const int v=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcVida",0,ini.c_str()));nrrj::npc_vida.store(v==1||v==2?v:0);}
-         nrrj::npc_vida_in.store(flt(L"NeuralRostoJogadorNpcVidaEntrada",.35f,0.f,2.f));
-         if(nrrj::npc2.load()&&nrrj::npc_vida.load()){char lv[160]{};NRLOGF(lv,sizeof lv,"ROSTO_NPC2_VIDA modo=%d entrada_s=%.2f (pendente ate confirmar; saida pela rampa; na frente dela fica%s)",nrrj::npc_vida.load(),double(nrrj::npc_vida_in.load()),nrrj::npc_vida.load()>=2?"; oculto atras/na frente dela com a camada no quadro atual":"");nrrj::log(lv);}
-         {const int v=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcCabMin",96,ini.c_str()));nrrj::npc_cab_min.store(v>=32&&v<=512?float(v):96.f);}
-
-         {const int om=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorOrcamento",0,ini.c_str()));
-          nrorc_vram::configurar(om==1||om==2?om:0,unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorOrcamentoFolgaMb",256,ini.c_str())),0,8192)),
-              unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorOrcamentoOutrosMb",0,ini.c_str())),0,262144)));
-          if(nrorc::modo()){nrregswin::orc_contar(base);nrorc_vram::hip_inicio();}}
-         if(nrrj::npc2.load()){char l3[240]{};NRLOGF(l3,sizeof l3,"ROSTO_NPC2_CONFIG2 rosto_hz=%u frente=%d conf_s=%.3f inteira=%u adquire=%d roi_conf=%d vel_img=%d atras=%d cab_min=%.0f corpo=%d camada=%d",nrrj::rosto_hz.load(),nrrj::npc_frente.load(),double(nrrj::npc_conf_s.load()),nrrj::yunet_inteira.load(),nrrj::adquire.load(),nrrj::npc_roi_conf.load(),nrrj::npc_vel_img.load(),nrrj::npc_atras.load(),double(nrrj::npc_cab_min.load()),nrrj::npc_corpo.load(),nrrj::npc_camada.load());nrrj::log(l3);}
-         if(nrrj::caminha_dela.load()){char l5[96]{};NRLOGF(l5,sizeof l5,"ROSTO_JOGADOR_CAMINHA_DELA_CONFIG caminha_dela=%d",nrrj::caminha_dela.load());nrrj::log(l5);}
-         if(nrrj::reancora.load()){char l4[96]{};NRLOGF(l4,sizeof l4,"ROSTO_JOGADOR_REANCORA_CONFIG reancora=%d",nrrj::reancora.load());nrrj::log(l4);}
-         if(nrrj::npc2.load()&&(nrrj::npc_fracao.load()>0.f||nrrj::npc_recorte_forcado.load()||nrrj::npc_limiar.load()>0.f)){char l4[160]{};NRLOGF(l4,sizeof l4,"ROSTO_NPC2_FRACAO f0=%.2f faixa=%.2f-%.2f teto=%u amplia=%d limiar=%.3f forcado=%d (npc-luz)",double(nrrj::npc_fracao.load()),.8*nrrj::npc_fracao.load(),1.3*nrrj::npc_fracao.load(),nrrj::npc2_teto.load(),nrrj::npc_amplia.load(),double(nrrj::npc_limiar.load()),nrrj::npc_recorte_forcado.load());nrrj::log(l4);}
-         if(nrrj::npc2.load()&&nrrj::npc_canon.load()){char l6[200]{};NRLOGF(l6,sizeof l6,"ROSTO_NPC2_CANON_CONFIG fracao=%.2f razao=%.2f rede=%u corte=%.2f beta=%.2f (npc-canon)",double(nrrj::npc_canon_fracao.load()),double(nrrj::npc_canon_razao.load()),nrrj::npc_canon_rede.load(),double(nrrj::npc_canon_corte.load()),double(nrrj::npc_canon_beta.load()));nrrj::log(l6);}
-         if(nrrj::npc2.load()&&nrrj::npc_leve.load()){char l5[200]{};NRLOGF(l5,sizeof l5,"ROSTO_NPC2_LEVE bits=%d fracao=%.2f rede=%u recorte=%u janela=%u salto=%.2f (npc-leve)",nrrj::npc_leve.load(),double(nrrj::npc_leve_fracao.load()),nrrj::npc_leve_rede.load(),nrrj::npc_leve_recorte.load(),nrrj::npc_leve_jan.load(),double(nrrj::npc_leve_salto.load()));nrrj::log(l5);}
-         nrrj::npc_expande.store(flt(L"NeuralRostoJogadorNpcExpande",.8f,.0001f,16.f));
-         if(nrrj::npc.load()){char ln[240]{};NRLOGF(ln,sizeof ln,"ROSTO_JOGADOR_NPC_CONFIG modo=%d min=%d recorte=%d forca=%.2f expande=%.4f rosto_hz=%u rosto_nota=%.2f",nrrj::npc_modo.load(),nrrj::npc_min.load(),nrrj::npc_recorte.load(),double(nrrj::npc_forca.load()),double(nrrj::npc_expande.load()),nrrj::rosto_hz.load(),double(nrrj::rosto_nota.load()));nrrj::log(ln);}
-         nrrj::segura.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorSegura",0,ini.c_str())),0,64)));
-         nrrj::segura_pixel.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorSeguraPixel",0,ini.c_str())==1);
-         nrrj::compor_rapido.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorComporRapido",0,ini.c_str())==1);
-
-         nrrj::baixa_forca.store(flt(L"NeuralRostoJogadorBaixaForca",1.f,0.f,2.f));
-         nrrj::banda_sigma.store(flt(L"NeuralRostoJogadorBandaSigma",16.f,4.f,2048.f));
-         nrrj::corte_ok_ini.store(flt(L"NeuralRostoJogadorCorteOk",.07f,0.f,1.f));
-         nrrj::desliga_jobs.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorDesligaJobs",12,ini.c_str())),1,6000));
-         nrrj::npc_todos_rede.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcTodosRede",768,ini.c_str())),384,1536))&~127u);
-         nrrj::npc_todos_jan.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorNpcTodosJanela",768,ini.c_str())),384,2304))&~127u);
-         nrrj::npc_todos_cab_max.store(flt(L"NeuralRostoJogadorNpcTodosCabMax",700.f,100.f,4000.f));
-         nrrj::busca_sempre.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorBuscaSempre",0,ini.c_str())==1);
-         nrrj::ceu_fora.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorCeuFora",0,ini.c_str())==1);
-         nrrj::npc_zona.store(flt(L"NeuralRostoJogadorNpcZona",1.15f,.3f,3.f));
-         nrrj::diag_hist.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorDiagHist",0,ini.c_str())==1);
-         nrrj::liga_forte.store(flt(L"NeuralRostoJogadorLigaForte",.75f,0.f,1.f));
-         nrrj::adq_nota1.store(flt(L"NeuralRostoJogadorAdqNota1",.60f,0.f,1.f));
-         nrrj::camada.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoCamada",0,ini.c_str())==1);
-         nrrj::camada_segura.store((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoCamadaSegura",90,ini.c_str())),0,1200));
-         nrrj::camada_meia.store(flt(L"NeuralRostoCamadaMeiaVida",20.f,1.f,600.f));
-         nrrj::camada_margem.store(flt(L"NeuralRostoCamadaMargem",48.f,0.f,1024.f));
-         nrrj::camada_forca.store(flt(L"NeuralRostoCamadaForca",1.f,0.f,2.f));nrrj::camada_normaliza.store(flt(L"NeuralRostoCamadaNormaliza",0.f,0.f,1.f)>.5f);nrrj::camada_fresco.store(flt(L"NeuralRostoCamadaFresco",0.f,0.f,1.f)>.5f);
-         nrrj::teste_falha_ini.store(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoTesteFalhaIni",0,ini.c_str())));
-         nrrj::teste_falha_fim.store(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoTesteFalhaFim",0,ini.c_str())));
-         if(nrrj::camada.load()){char lc[200]{};NRLOGF(lc,sizeof lc,"ROSTO_CAMADA_CONFIG segura=%d meia_vida=%.1f margem=%.1f forca=%.2f",nrrj::camada_segura.load(),double(nrrj::camada_meia.load()),double(nrrj::camada_margem.load()),double(nrrj::camada_forca.load()));nrrj::log(lc);}
-         nrrj::baixa_lenta.store(flt(L"NeuralRostoJogadorBaixaLenta",0.f,0.f,1.f));
-         nrrj::baixa_rapida.store(flt(L"NeuralRostoJogadorBaixaRapida",0.f,0.f,1.f));
-         nrrj::baixa_mov_px.store(flt(L"NeuralRostoJogadorBaixaMovPx",4.f,.25f,64.f));
-         nrrj::acum_limiar.store(flt(L"NeuralRostoJogadorAcumLimiar",0.f,0.f,1.f));
-         nrrj::borda_largura.store(flt(L"NeuralRostoJogadorBordaLargura",0.f,0.f,6.f));
-         nrrj::borda_suave.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorBordaSuave",0,ini.c_str())),0,3)));
-
-         nrrj::borda_camada.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorBordaCamada",0,ini.c_str())),0,2)));
-         nrrj::borda_camada_reg.store(flt(L"NeuralRostoJogadorBordaCamadaReg",.05f,.001f,1.f));
-         nrrj::borda_camada_z0.store(flt(L"NeuralRostoJogadorBordaCamadaZ0",1.15f,1.01f,8.f));
-         nrrj::borda_camada_z1.store((std::max)(nrrj::borda_camada_z0.load()+.01f,flt(L"NeuralRostoJogadorBordaCamadaZ1",1.45f,1.02f,16.f)));
-         nrrj::borda_teto.store(flt(L"NeuralRostoJogadorBordaTeto",0.f,0.f,8.f));
-         if(nrrj::borda_teto.load()>0.f){char l6[100]{};NRLOGF(l6,sizeof l6,"ROSTO_JOGADOR_R5 borda_teto=%.2f",double(nrrj::borda_teto.load()));nrrj::log(l6);}
-         nrrj::borda_camada_perto.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorBordaCamadaPerto",0,ini.c_str())==1);
-         if(nrrj::borda_camada.load()){char l5[160]{};NRLOGF(l5,sizeof l5,"ROSTO_JOGADOR_R5 borda_camada=%u reg=%.3f perto=%d z=%.2f..%.2f",nrrj::borda_camada.load(),double(nrrj::borda_camada_reg.load()),nrrj::borda_camada_perto.load()?1:0,double(nrrj::borda_camada_z0.load()),double(nrrj::borda_camada_z1.load()));nrrj::log(l5);}
-         if(nrrj::baixa_forca.load()!=1.f||nrrj::baixa_lenta.load()>0.f||nrrj::acum_limiar.load()>0.f||nrrj::borda_suave.load()!=0){char l4[220]{};NRLOGF(l4,sizeof l4,"ROSTO_JOGADOR_R4 baixa_forca=%.3f baixa_lenta=%.3f baixa_rapida=%.3f mov_px=%.2f limiar=%.4f borda_suave=%u largura=%.2f",double(nrrj::baixa_forca.load()),double(nrrj::baixa_lenta.load()),double(nrrj::baixa_rapida.load()),double(nrrj::baixa_mov_px.load()),double(nrrj::acum_limiar.load()),nrrj::borda_suave.load(),double(nrrj::borda_largura.load()));nrrj::log(l4);}
-         if(nrrj::passo2_cada.load()>1||nrrj::rede_alvo.load()>0.f||nrrj::compor_elipse.load()||nrrj::compor_rapido.load()||nrrj::ablacao.load()||nrrj::passo1_forca.load()!=1.f||nrrj::segura.load()){char lr[220]{};NRLOGF(lr,sizeof lr,"ROSTO_JOGADOR_R3 passo2_cada=%u rede_alvo=%.0f compor_elipse=%d compor_rapido=%d ablacao=%u forca1=%.2f segura=%u segura_pixel=%d",nrrj::passo2_cada.load(),double(nrrj::rede_alvo.load()),nrrj::compor_elipse.load()?1:0,nrrj::compor_rapido.load()?1:0,nrrj::ablacao.load(),double(nrrj::passo1_forca.load()),nrrj::segura.load(),nrrj::segura_pixel.load()?1:0);nrrj::log(lr);}
-         if(nrrj::frescor.load()>0.f){char lf[120]{};NRLOGF(lf,sizeof lf,"ROSTO_JOGADOR_FRESCOR limiar=%.3f",double(nrrj::frescor.load()));nrrj::log(lf);}
-         if(nrrj::pula_limiar.load()!=0.f||nrrj::passos.load()>1){char lp[200]{};NRLOGF(lp,sizeof lp,"ROSTO_JOGADOR_R2 pula=%.4f pula_max=%u passos=%u forca2=%.2f folga2=%.2f",double(nrrj::pula_limiar.load()),nrrj::pula_max.load(),nrrj::passos.load(),double(nrrj::passo2_forca.load()),double(passo2_folga.load()));nrrj::log(lp);}
-
-         nrrj::grade_rede.store(unsigned((std::clamp)(int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorGrade",0,ini.c_str())),0,256)));
-         nrrj::recorte_fator.store(flt(L"NeuralRostoJogadorRecorteFator",0.f,0.f,1.5f));
-         {const float ev=flt(L"NeuralRostoJogadorEspera",0.f,-2.f,12.f);nrrj::espera_us.store(ev<=-1.5f?nrrj::espera_present:ev<0.f?nrrj::espera_auto:unsigned(std::lround(ev*1000.f)));}
-         nrrj::espera_job.store(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorEsperaJob",0,ini.c_str())==1);
-         nrrj::thread_rede.store(nrrj::fora.load()&&NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorThreadRede",0,ini.c_str())==1);
-         nrregswin::rjsync::ligado.store(nrrj::thread_rede.load());
-         if(nrrj::thread_rede.load())nrrj::log("ROSTO_JOGADOR_THREAD_REDE rede do recorte numa thread propria (depois do k_flag_set da cena)");
-
-         {const int sj=int(NRCFG_INT(L"DlssNrOnAmd",L"NeuralRostoJogadorSemJob",0,ini.c_str()));
-          nrrj::sem_job_q.store(nrrj::thread_rede.load()?nrrj::sj_q_de(sj,nrrj::cada_quadros.load()):0u);
-          if(sj){char ls[160]{};NRLOGF(ls,sizeof ls,"ROSTO_JOGADOR_SEMJOB_CONFIG pedido=%d q=%u thread_rede=%d",sj,nrrj::sj_q(),nrrj::thread_rede.load()?1:0);nrrj::log(ls);}}
-         if(nrrj::espera_us.load()){char lc[120]{};NRLOGF(lc,sizeof lc,"ROSTO_JOGADOR_ESPERA %u us depois do publish so_job_com_recorte=%d",nrrj::espera_us.load(),nrrj::espera_job.load()?1:0);nrrj::log(lc);}
-         if(nrrj::grade_rede.load()||nrrj::recorte_fator.load()>0.f){char lb[160]{};NRLOGF(lb,sizeof lb,"ROSTO_JOGADOR_RECORTE grade=%u fator=%.3f",nrrj::grade_rede.load(),double(nrrj::recorte_fator.load()));nrrj::log(lb);}nrrj::acum_sigma.store(flt(L"NeuralRostoJogadorAcumSigma",6.f,1.f,32.f));
-         if(nrrj::acumula.load()){char la[200]{};NRLOGF(la,sizeof la,"ROSTO_JOGADOR_ACUMULA baixa=%.3f alta=%.3f gama=%.2f sigma=%.1f",double(nrrj::acum_baixa.load()),double(nrrj::acum_alta.load()),double(nrrj::acum_gama.load()),double(nrrj::acum_sigma.load()));nrrj::log(la);}}
-        char linha[240]{};NRLOGF(linha,sizeof linha,"ROSTO_JOGADOR_CONFIG ligado=%d teto=%u zoom=%u cada=%u fora=%d det_thread=%d menu=%d adquire=%d",nrrj::ligado.load()?1:0,nrrj::teto.load(),nrrj::zoom.load(),nrrj::cada.load(),nrrj::fora.load()?1:0,det_thread.load()?1:0,nrrj::menu_escreveu.load()?1:0,nrrj::adquire.load());
-        nrrj::log(linha);
-        nrorc::estado().ini_ok.store(true,std::memory_order_release);
+        if(!nrrj::detector_cpu_ok(nrdet::cpu_simd()))nrrj::desligar_rostos("CPU sem AVX-512F: o detector de rosto (SCRFD) exige AVX-512F");
     }catch(...){}
 }
 inline void lancar(Hip& hip,void* k,size_t n,void** args){check(hip.launch(k,unsigned((n+255)/256),1,1,256,1,1,0,nullptr,args,nullptr));}
+
+inline int aloca(Hip& hip,void** p,size_t n,const char* onde) noexcept {const int r=hip.allocate(p,n);if(r){(void)nrgpu::hip(r,onde);(void)hip.error();*p=nullptr;}return r;}
+
+inline int aloca_par(Hip& hip,void** a,size_t na,void** b,size_t nb,const char* onde) noexcept {
+    if(const int r=aloca(hip,a,na,onde))return r;
+    if(const int r=aloca(hip,b,nb,onde)){(void)hip.release(*a);*a=nullptr;return r;}
+    return 0;}
+
+inline bool hip_ok(int r,const char* onde) noexcept {if(!r)return true;(void)nrgpu::hip(r,onde);return false;}
+
+inline float expo_do_job(char* base,int job) noexcept {const float v=read<float>(base,nrproxy::rva_expo_job+4*(unsigned(job)&3u));return std::isfinite(v)&&v>0.f?v:1.f;}
+inline unsigned tonemap_do_proxy(char* base) noexcept {return read<unsigned>(base,nrproxy::rva_tom_ef)!=0?1u:0u;}
 inline bool modulo(Estado& e,Hip& hip){
     if(e.k_etiqueta)return true;
     if(nrorc::aplicada()&&nrrj::inst_atual()>=1){Estado& e0=estado_de(0);{nrrj::Inst i0(0);if(!modulo(e0,hip))return false;}compartilhar(e,e0);return true;}
     if(e.modulo_tentado)return false;
     e.modulo_tentado=true;
-    const auto arquivo=pasta_helper()/L"nr_rosto.hsaco";std::error_code ec;
-    if(!std::filesystem::is_regular_file(arquivo,ec)){nrrj::envenenar("nr_rosto.hsaco_ausente");return false;}
-    if(hip.load_module(&e.module,arquivo.string().c_str())||!e.module){(void)hip.error();nrrj::envenenar("nr_rosto.hsaco_recusado");return false;}
+
+    const auto leitura=nrmodpin::ler(pasta_helper()/L"nr_rosto.hsaco",nullptr,nullptr,e.modulo_bytes);
+    if(leitura==nrmodpin::Leitura::ausente){nrrj::envenenar("nr_rosto.hsaco_ausente");return false;}
+    if(leitura!=nrmodpin::Leitura::ok||!hip.load_data||hip.load_data(&e.module,e.modulo_bytes.data())||!e.module){(void)hip.error();e.module=nullptr;nrrj::envenenar("nr_rosto.hsaco_recusado");return false;}
     const char* nomes[]={"rj_reduz_v1","rj_cena_v1","rj_entrada_v1","rj_dif_v1","rj_baixa_v1","rj_blur4_v1","rj_blur1_v1","rj_delta_v1","rj_guarda_v1","rj_mede_v1","rj_etiqueta_v1"};
     void** alvos[]={&e.k_reduz,&e.k_cena,&e.k_entrada,&e.k_dif,&e.k_baixa,&e.k_blur4,&e.k_blur1,&e.k_delta,&e.k_guarda,&e.k_mede,&e.k_etiqueta};
     for(int i=0;i<11;++i)if(hip.get_kernel(alvos[i],e.module,nomes[i])){(void)hip.error();e.k_etiqueta=nullptr;nrrj::envenenar("simbolos_v1_ausentes");return false;}
     if(hip.get_kernel(&e.k_meia4,e.module,"rj_meia4_v1")||hip.get_kernel(&e.k_bandas,e.module,"rj_bandas_v1")){(void)hip.error();e.k_meia4=e.k_bandas=nullptr;}
     if(hip.get_kernel(&e.k_mini,e.module,"rj_mini_v1")||hip.get_kernel(&e.k_sat,e.module,"rj_sat_v1")){(void)hip.error();e.k_mini=e.k_sat=nullptr;}
     if(hip.get_kernel(&e.k_lumin,e.module,"rj_lumin_v1")||hip.get_kernel(&e.k_bandas2,e.module,"rj_bandas2_v1")){(void)hip.error();e.k_lumin=e.k_bandas2=nullptr;}
+    if(hip.get_kernel(&e.k_ema,e.module,"rj_entrada_media_v1")){(void)hip.error();e.k_ema=nullptr;if(nrrj::entrada_media.load()>0.f)nrrj::log("ROSTO_JOGADOR_ENTRADA_MEDIA simbolo ausente no nr_rosto.hsaco: desligada");}
+    if(hip.get_kernel(&e.k_f4meia,e.module,"rj_f4_meia_v1")){(void)hip.error();e.k_f4meia=nullptr;if(nrrj::entrada_sigma.load()>0.f)nrrj::log("ROSTO_JOGADOR_ENTRADA_SIGMA simbolo ausente no nr_rosto.hsaco: desligada");}
+    if(hip.get_kernel(&e.k_delta_el,e.module,"rj_delta_el_v1")||hip.get_kernel(&e.k_guarda_el,e.module,"rj_guarda_el_v1")){(void)hip.error();e.k_delta_el=e.k_guarda_el=nullptr;if(nrrj::delta_inteiro())nrrj::log("ROSTO_JOGADOR_DELTA_INTEIRO simbolos rj_delta_el_v1/rj_guarda_el_v1 ausentes no nr_rosto.hsaco: o rosto de hoje (banda fina)");}
     if(hip.get_kernel(&e.k_camada,e.module,"rj_camada_v1")||hip.get_kernel(&e.k_baixa_m,e.module,"rj_baixa_m_v1")||hip.get_kernel(&e.k_blur4w,e.module,"rj_blur4w_v1")||hip.get_kernel(&e.k_delta_m,e.module,"rj_delta_m_v1")){(void)hip.error();e.k_camada=e.k_baixa_m=e.k_blur4w=e.k_delta_m=nullptr;}
+
+    if(nrrj::blur_rapido.load(std::memory_order_relaxed)){void* r4{};void* r1{};void* r4w{};
+        if(!hip.get_kernel(&r4,e.module,"rj_blur4r_v1")&&!hip.get_kernel(&r1,e.module,"rj_blur1r_v1")&&!hip.get_kernel(&r4w,e.module,"rj_blur4wr_v1")){
+            e.k_blur4=r4;e.k_blur1=r1;if(e.k_blur4w)e.k_blur4w=r4w;nrrj::log("ROSTO_PERF_BLUR rapido ligado (rj_blur4r/blur1r/blur4wr)");}
+        else{(void)hip.error();nrrj::blur_rapido.store(false);nrrj::log("ROSTO_PERF_BLUR simbolos ausentes no nr_rosto.hsaco: blurs de hoje");}}
+
+    if(hip.get_kernel(&e.k_rpeso,e.module,"rj_ruido_peso_v1")||hip.get_kernel(&e.k_rmedia,e.module,"rj_ruido_media_v1")||hip.get_kernel(&e.k_rbanda,e.module,"rj_ruido_banda_v1")){
+        (void)hip.error();e.k_rpeso=e.k_rmedia=e.k_rbanda=nullptr;if(nrrj::ruido_rt.load())nrrj::log("ROSTO_RUIDO simbolos rj_ruido_*_v1 ausentes no nr_rosto.hsaco: corte da banda desligado");}
+
+    if(hip.get_kernel(&e.k_lgrad,e.module,"rj_limpa_grad_v1")||hip.get_kernel(&e.k_lpeso,e.module,"rj_limpa_peso_v1")||hip.get_kernel(&e.k_limpa,e.module,"rj_limpa_v1")){
+        (void)hip.error();e.k_lgrad=e.k_lpeso=e.k_limpa=nullptr;if(nrrj::ruido_limpa.load()>0.f)nrrj::log("ROSTO_RUIDO_LIMPA simbolos rj_limpa_*_v1 ausentes no nr_rosto.hsaco: limpeza desligada");}
+
+    if(hip.get_kernel(&e.k_cl_cena,e.module,"rj_cl_cena_v1")||hip.get_kernel(&e.k_cl_baixa,e.module,"rj_cl_baixa_v1")||hip.get_kernel(&e.k_cl_aplica,e.module,"rj_cl_aplica_v1")){
+        (void)hip.error();e.k_cl_cena=e.k_cl_baixa=e.k_cl_aplica=nullptr;if(nrrjcl::ativo())nrrj::log("ROSTO_COR simbolos rj_cl_*_v1 ausentes no nr_rosto.hsaco: NeuralRostoCor/Luz sem efeito");}
     nrrj::log("ROSTO_JOGADOR_MODULO nr_rosto.hsaco carregado");
     return true;
 }
@@ -295,11 +148,13 @@ inline bool grades(Estado& e,Hip& hip){
     const size_t n2=size_t(nrrj::n_cap())*nrrj::n_cap(),nl2=n2/16;
     void** f4[]={&e.dc,&e.d0,&e.D};void** fl[]={&e.lo,&e.lo2};void** f1[]={&e.luma,&e.gl,&e.tmp1};
     bool ok=true;
-    for(auto p:f4)ok=ok&&!hip.allocate(p,n2*16);
-    for(auto p:fl)ok=ok&&!hip.allocate(p,nl2*16);
-    for(auto p:f1)ok=ok&&!hip.allocate(p,n2*4);
-    ok=ok&&!hip.allocate(&e.soma,16);
-    if(!ok){(void)hip.error();nrrj::envenenar("hipMalloc grades");return false;}
+    for(auto p:f4)ok=ok&&!aloca(hip,p,n2*16,"grades do rosto");
+    for(auto p:fl)ok=ok&&!aloca(hip,p,nl2*16,"grades do rosto");
+    for(auto p:f1)ok=ok&&!aloca(hip,p,n2*4,"grades do rosto");
+    ok=ok&&!aloca(hip,&e.soma,16,"grades do rosto");
+
+    if(!ok){(void)hip.error();for(void** p:{&e.dc,&e.d0,&e.D,&e.lo,&e.lo2,&e.luma,&e.gl,&e.tmp1,&e.soma})if(*p){(void)hip.release(*p);*p=nullptr;}
+        nrrj::passageira(nrrj::Falha::Recorte,"hipMalloc grades");return false;}
     e.grades=true;
     char l[160]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_GRADES %.1f MB",double(n2*(48+12)+nl2*32+16)/1048576.0);nrrj::log(l);
     return true;
@@ -307,14 +162,12 @@ inline bool grades(Estado& e,Hip& hip){
 inline bool importar_buffer(void* h,std::uint64_t bytes,void*& externo,char*& base_hip,const char* nome){
     if(base_hip)return true;
     if(!h)return false;
-    using Import=int(*)(void**,const ExternalDesc*);using Map=int(*)(void**,void*,const BufferDesc*);
-    HMODULE m=GetModuleHandleW(L"amdhip64_7.dll");if(!m)throw std::runtime_error("HIP ausente");
-    auto imp=reinterpret_cast<Import>(GetProcAddress(m,"hipImportExternalMemory"));auto map=reinterpret_cast<Map>(GetProcAddress(m,"hipExternalMemoryGetMappedBuffer"));
-    if(!imp||!map)throw std::runtime_error("hipImportExternalMemory ausente");
+    const auto a=nrhip::api_rosto();if(!a.modulo)throw std::runtime_error("HIP ausente");
+    if(!a.import_external_memory||!a.external_memory_mapped_buffer)throw std::runtime_error("hipImportExternalMemory ausente");
     ExternalDesc d{};d.type=5;d.handle.win32.handle=h;d.size=bytes;d.flags=1;
-    if(const int r=imp(&externo,&d)){char t[96]{};NRLOGF(t,sizeof t,"hipImportExternalMemory=%d",r);throw std::runtime_error(t);}
+    if(const int r=a.import_external_memory(&externo,&d)){char t[96]{};NRLOGF(t,sizeof t,"hipImportExternalMemory=%d",r);throw std::runtime_error(t);}
     BufferDesc b{};b.size=bytes;void* p{};
-    if(const int r=map(&p,externo,&b)){char t[96]{};NRLOGF(t,sizeof t,"hipExternalMemoryGetMappedBuffer=%d",r);throw std::runtime_error(t);}
+    if(const int r=a.external_memory_mapped_buffer(&p,externo,&b)){char t[96]{};NRLOGF(t,sizeof t,"hipExternalMemoryGetMappedBuffer=%d",r);throw std::runtime_error(t);}
     base_hip=static_cast<char*>(p);
     char t[160]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_IMPORTADO %s bytes=%llu",nome,static_cast<unsigned long long>(bytes));nrrj::log(t);
     return true;
@@ -338,100 +191,46 @@ inline bool hibrido_rosto(char* base){
         nrrj::log(h?"ROSTO_HIBRIDO ligado: rostos na rede velha (dlssnr_on_amd_weights_legado.bin + marca +0x3F8), cena na rede do proxy"
                    :"ROSTO_HIBRIDO desligado (sem dlssnr_on_amd_weights_legado.bin)");return h;}();
     return v;}
+
+inline std::string caminho_estreito(const std::filesystem::path& p){
+    std::string s=nrcaminho::estreito(p);
+    if(!s.empty())return s;
+    throw nrrj::FalhaPermanente("pesos do recorte: caminho fora da pagina de codigo");
+}
+
 inline std::string pesos_rosto(char* base){
-    return (pasta_proxy(base)/(hibrido_rosto(base)?L"dlssnr_on_amd_weights_legado.bin":L"dlssnr_on_amd_weights.bin")).string();}
+    return caminho_estreito(pasta_proxy(base)/(hibrido_rosto(base)?L"dlssnr_on_amd_weights_legado.bin":L"dlssnr_on_amd_weights.bin"));}
 inline void marcar_rosto(unsigned char* p,char* base){if(hibrido_rosto(base))write<std::uint64_t>(p,0x3f8,marca_rosto_legado);}
+inline bool carregar_pesos(Hip& hip,char* base,unsigned char* p,bool& construido){
+    if(!construido){native<void*(*)(void*)>(base,0x1ce20)(p);construido=true;}
+    const auto t=std::chrono::steady_clock::now();
+    std::string pesos=pesos_rosto(base);
+    const bool ok=native<bool(*)(void*,const std::string*)>(base,0x1e120)(p,&pesos);
+    hip.completed("rj_pesos");
+    const bool bom=ok&&read<void*>(p,0x10)&&read<void*>(p,0x168)&&read<size_t>(p,0x160);
+    char l[200]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_CONTEXTO pesos %s em %.1f ms",bom?"carregados":"FALHARAM",
+        std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t).count());nrrj::log(l);
+    return bom;}
+
+inline void preparar_contexto(unsigned char* p,const void* primary) noexcept {
+    std::memcpy(p+0x20,static_cast<const char*>(primary)+0x20,20);
+    write<unsigned>(p,0xf0,0);write<unsigned>(p,0x120,0);write<unsigned>(p,0x38,0);write<void*>(p,0x118,nullptr);}
 inline void* contexto(Estado& e0,Hip& hip,char* base,const void* primary){
 
     Estado& e=ctx_unico()?estado_de(0):(nrrj::inst_atual()>=2?estado_de(1):e0);
     auto p=e.ctx.data();
-    if(!e.construido){native<void*(*)(void*)>(base,0x1ce20)(p);e.construido=true;}
     if(!e.carregado){
-        const auto t=std::chrono::steady_clock::now();
-        std::string pesos=pesos_rosto(base);
-        const bool ok=native<bool(*)(void*,const std::string*)>(base,0x1e120)(p,&pesos);
-        hip.completed("rj_pesos");
-        if(!ok||!read<void*>(p,0x10)||!read<void*>(p,0x168)||!read<size_t>(p,0x160))throw std::runtime_error("pesos do recorte indisponiveis");
+        if(!carregar_pesos(hip,base,p,e.construido))throw nrrj::FalhaPermanente("pesos do recorte indisponiveis");
         e.carregado=true;
-        char l[160]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_CONTEXTO pesos carregados em %.1f ms",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t).count());nrrj::log(l);
     }
-    std::memcpy(p+0x20,static_cast<const char*>(primary)+0x20,20);
-
-    write<unsigned>(p,0xf0,0);write<unsigned>(p,0x120,0);write<unsigned>(p,0x38,0);write<void*>(p,0x118,nullptr);
-    marcar_rosto(p,base);
+    preparar_contexto(p,primary);
+    write<std::uint64_t>(p,0x3f8,0);marcar_rosto(p,base);
     return p;
 }
 
 inline unsigned raio_cv(float s) noexcept {const long k=std::lround(double(s)*8.0+1.0)|1L;return unsigned(std::clamp<long>(k/2,1,256));}
-inline void despejar(Hip& hip,const void* dev,size_t bytes,const std::filesystem::path& arquivo){
-    std::vector<char> h(bytes);check(hip.copy(h.data(),dev,bytes,2));
-    std::ofstream f(arquivo,std::ios::binary);f.write(h.data(),std::streamsize(bytes));
-}
 
-inline unsigned despejo_n(){return 0;}
-
-inline unsigned r1_modo(){return 0;}
-
-inline unsigned r3_modo(){return 0;}
-
-inline bool tempos_modo(){return false;}
-struct Tempos {std::chrono::steady_clock::time_point t;double ms[6]{};int i{};
-    void marca(Hip& hip){if(!tempos_modo())return;hip.completed("rj_tempos");const auto a=std::chrono::steady_clock::now();if(i>0&&i<=6)ms[i-1]=std::chrono::duration<double,std::milli>(a-t).count();t=a;++i;}};
-inline float meia(std::uint16_t h) noexcept {
-    const unsigned s=(h>>15)&1u,e=(h>>10)&31u,m=h&1023u;float v;
-    if(e==0)v=std::ldexp(float(m),-24);else if(e==31)v=m?NAN:INFINITY;else v=std::ldexp(float(m|1024u),int(e)-25);
-    return s?-v:v;
-}
-struct R1Medida {double chamada{},total{};};
-inline R1Medida r1_eval(Hip& hip,char* base,void* p,char* ent,char* sai,unsigned n){
-    hip.completed("rj_r1");
-    const auto a0=std::chrono::steady_clock::now();
-    native<Eval>(base,0x2a080)(p,ent,int(n*8),0,int(n),int(n),sai,int(n*8),0,0,nullptr);
-    const auto a1=std::chrono::steady_clock::now();
-    hip.completed("rj_r1");
-    const auto a2=std::chrono::steady_clock::now();
-    return {std::chrono::duration<double,std::milli>(a1-a0).count(),std::chrono::duration<double,std::milli>(a2-a0).count()};
-}
-
-inline void r3_diag(Estado& e,Hip& hip,char* base,const void* primary,char* ent,char* sai,unsigned n){
-    static void* din{};static void* dout{};
-    if(!din){if(hip.allocate(&din,size_t(nrrj::n_max)*nrrj::n_max*8)||hip.allocate(&dout,size_t(nrrj::n_max)*nrrj::n_max*8)){(void)hip.error();din=dout=nullptr;return;}}
-    const size_t N=size_t(n)*n;const int nn=int(n);
-    std::vector<std::uint16_t> hin(N*4),hout(N*4),hb(N*4);
-    check(hip.copy(hin.data(),ent,N*8,2));check(hip.copy(hb.data(),sai,N*8,2));
-    auto residuo=[&](const std::vector<std::uint16_t>& in,const std::vector<std::uint16_t>& out,std::vector<float>& r){
-        r.assign(N,0.f);
-        for(size_t i=0;i<N;++i){float a[3];for(int c=0;c<3;++c){float s=meia(out[i*4+c]);s=s<0.f?0.f:(s>1.f?1.f:s);a[c]=s-meia(in[i*4+c]);}
-            const float l=.2126f*a[0]+.7152f*a[1]+.0722f*a[2];r[i]=std::isfinite(l)?l:0.f;}};
-    auto alta=[&](const std::vector<float>& r){
-        std::vector<double> I;const int W=nn+1;I.assign(size_t(W)*(nn+1),0.0);
-        for(int y=0;y<nn;++y){double row=0;for(int x=0;x<nn;++x){row+=r[size_t(y)*n+x];I[size_t(y+1)*W+x+1]=I[size_t(y)*W+x+1]+row;}}
-        std::vector<float> o(N);
-        for(int y=0;y<nn;++y)for(int x=0;x<nn;++x){const int x0=(std::max)(0,x-8),x1=(std::min)(nn,x+9),y0=(std::max)(0,y-8),y1=(std::min)(nn,y+9);
-            const double s=I[size_t(y1)*W+x1]-I[size_t(y0)*W+x1]-I[size_t(y1)*W+x0]+I[size_t(y0)*W+x0];o[size_t(y)*n+x]=r[size_t(y)*n+x]-float(s/double((x1-x0)*(y1-y0)));}
-        return o;};
-    std::vector<float> rb;residuo(hin,hb,rb);const auto rbh=alta(rb);
-    auto roda=[&](const std::vector<std::uint16_t>& entrada,std::vector<float>& r){
-        check(hip.copy(din,entrada.data(),N*8,1));void* p=contexto(e,hip,base,primary);
-        native<Eval>(base,0x2a080)(p,din,int(n*8),0,nn,nn,dout,int(n*8),0,0,nullptr);hip.completed("rj_r3");
-        check(hip.copy(hout.data(),dout,N*8,2));residuo(entrada,hout,r);};
-    auto compara=[&](const std::vector<float>& r,int sx,int sy,const char* nome){
-        const auto rh=alta(r);double d=0,dh=0,ref=0,refh=0;size_t c=0;
-        for(int y=64;y<nn-64-sy;++y)for(int x=64;x<nn-64-sx;++x){const size_t i=size_t(y)*n+x,j=size_t(y+sy)*n+(x+sx);
-            d+=std::fabs(r[i]-rb[j]);dh+=std::fabs(rh[i]-rbh[j]);ref+=std::fabs(rb[j]);refh+=std::fabs(rbh[j]);++c;}
-        if(!c)return;
-        char t[260]{};NRLOGF(t,sizeof t,"ROSTO_R3 aval=%llu n=%u %s sx=%d sy=%d dif=%.6f dif_alta=%.6f ref=%.6f ref_alta=%.6f rel=%.4f rel_alta=%.4f",
-            e.avaliados+1,n,nome,sx,sy,d/double(c),dh/double(c),ref/double(c),refh/double(c),ref>0?d/ref:0.,refh>0?dh/refh:0.);nrrj::log(t);};
-    std::vector<float> r;
-    roda(hin,r);compara(r,0,0,"mesma");
-    std::vector<std::uint16_t> hs(N*4);
-    for(int s:{1,2,4,8,16,32,64,128})for(int modo=0;modo<2;++modo){
-        const int sx=s,sy=modo==0?s:0;
-        for(int y=0;y<nn;++y)for(int x=0;x<nn;++x){const size_t i=size_t(y)*n+x,j=size_t((std::min)(y+sy,nn-1))*n+size_t((std::min)(x+sx,nn-1));
-            for(int c=0;c<4;++c)hs[i*4+c]=hin[j*4+c];}
-        roda(hs,r);compara(r,sx,sy,modo==0?"diag":"x");
-    }
-}
+inline float meia(std::uint16_t h) noexcept {return nrrj::meia_para_float(h);}
 
 #pragma warning(push)
 #pragma warning(disable:4324)
@@ -439,6 +238,8 @@ struct Det {
     DetSet sets[2];
     std::mutex m;std::condition_variable cv;DetTarefa fila{};bool tem{};bool thread_tentada{},thread_ok{};
     std::vector<float> h_dq,h_mvq,h_d;
+    std::vector<float> h_amostra;std::vector<unsigned char> linhas_ok;unsigned long long sob_demanda{},bytes_d{},bytes_d_cheia{};
+    std::atomic<unsigned long long> fora_cap{0};
     nrrj::Rastreio rastreio;std::uint64_t quadro_ant{};bool tem_ant{};float est_ant[3]{};std::uint64_t ger_vista{};
     struct N2Log {bool tem_ant{};float est_ant[3]{};std::uint64_t log_q{};double t0{-1.0};unsigned long long movs0{},saltos0{};};
     N2Log n2l[nrrj::npc_slots];
@@ -455,26 +256,56 @@ inline constexpr unsigned economia_apos=240,economia_cada=4;
 #pragma warning(pop)
 inline Det& det(){static Det* d=new Det;return *d;}
 
+inline std::wstring caminho_scrfd() noexcept {
+    try{
+        std::wstring p(nrpasta::modulo().wstring());if(p.empty())return {};const size_t barra=p.find_last_of(L"\\/");
+        return (barra==std::wstring::npos?std::wstring():p.substr(0,barra+1))+L"nr_scrfd.bin";
+    }catch(...){return {};}
+}
+
+inline nrsc::Rede* scrfd_carregar(bool reservar_grandes,char* erro,size_t ne) noexcept {
+    std::snprintf(erro,ne,"caminho do helper");
+    const auto p=caminho_scrfd();if(p.empty())return nullptr;
+    nrsc::Rede* r=new(std::nothrow) nrsc::Rede;if(!r){std::snprintf(erro,ne,"sem memoria");return nullptr;}
+    bool ok=false;try{ok=r->carregar(p.c_str(),erro,ne,reservar_grandes);}catch(...){std::snprintf(erro,ne,"excecao");}
+    if(!ok){delete r;return nullptr;}
+    return r;}
+
+inline double detectar_imagem(nrsc::Rede& rede,const std::vector<std::uint16_t>& hb,int w,int h,std::vector<std::uint8_t>& bgr,std::vector<nrdet::Rosto>& rs,float limiar,bool faixa){
+    const auto t0=std::chrono::steady_clock::now();
+    nrdet::tom_bgr_meia(hb.data(),w,h,bgr,meia);
+    rede.detectar(bgr.data(),w,h,w*3,rs,limiar,.4f);
+    for(auto& r:rs)r.nota=nrrj::nota_scrfd(r.nota,faixa);
+    return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();}
+
+inline nrrj::RostoCaixa caixa_saida(const nrdet::Rosto& r,float x0,float y0,float sx,float sy) noexcept {
+    nrrj::RostoCaixa b{x0+r.x*sx,y0+r.y*sy,r.w*sx,r.h*sy,r.nota};b.px=r.h;
+    for(int i=0;i<5;++i){b.lm[2*i]=x0+r.lm[2*i]*sx;b.lm[2*i+1]=y0+r.lm[2*i+1]*sy;}
+    return b;}
+
 inline void laco_rostos() noexcept {
     SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_LOWEST);
-    nryn::Rede rede;std::vector<std::uint16_t> hb;std::vector<float> lin;std::vector<std::uint8_t> bgr;std::vector<nryn::Rosto> rs;std::uint32_t ult=0;
-    nryn::Rede rede_roi;std::uint32_t ult_roi[nrrj::npc_slots]{};double roi_ms_soma=0;unsigned long long roi_n=0;
-    int simd_ant=-1;
-    nrsc::Rede* scrfd=nullptr;bool scrfd_falhou=false;int scrfd_thr=-1;
+    std::vector<std::uint16_t> hb;std::vector<std::uint8_t> bgr;std::vector<nrdet::Rosto> rs;std::uint32_t ult=0;
+    std::uint32_t ult_roi[nrrj::npc_slots]{};double roi_ms_soma=0;unsigned long long roi_n=0;
+    nrrj::CrusT<nrrj::RostoCaixa> crus;
+    nrsc::Rede* scrfd=nullptr;int scrfd_thr=-1;
+    {char erro[160]{};scrfd=scrfd_carregar(true,erro,sizeof erro);
+     if(!scrfd){char t[240]{};NRLOGF(t,sizeof t,"detector de rosto SCRFD indisponivel (%s)",erro);nrrj::desligar_rostos(t);return;}
+     char l[200]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_ROSTOS scrfd carregado (nr_scrfd.bin %s)",erro);nrrj::log(l);}
+
+    std::uint64_t vistas=0;
+    auto pendente=[&]{
+        if(nrrj::rosto_img().base.load(std::memory_order_acquire))
+            for(unsigned i=0;i<nrrj::rosto_aneis;++i)if(nrrj::rosto_img().ent[i].seq.load(std::memory_order_acquire)>ult)return true;
+        for(int k=0;k<nrrj::npc_slots;++k){auto& RR=nrrj::roi_img(k);if(!RR.base.load(std::memory_order_acquire))continue;
+            for(unsigned i=0;i<nrrj::roi_aneis;++i)if(RR.ent[i].seq.load(std::memory_order_acquire)>ult_roi[k])return true;}
+        return false;};
     for(;;){
-        Sleep(nrrj::npc2.load(std::memory_order_relaxed)?3:10);
-        {const int sm=nrrj::yunet_simd.load(std::memory_order_relaxed);if(sm!=simd_ant){simd_ant=sm;rede.usar_simd(sm);rede_roi.usar_simd(sm);
-             char l[160]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_ROSTOS yunet simd=%d (pedido %d; 0 escalar, 1 AVX, 2 AVX-512)",rede.simd(),sm);nrrj::log(l);}}
-        const bool usa_scrfd=nrrj::detector.load(std::memory_order_relaxed)==2;
-        if(usa_scrfd&&!scrfd&&!scrfd_falhou){
-            wchar_t path[32768]{};HMODULE self{};char erro[160]{"caminho do helper"};bool ok=false;
-            if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&laco_rostos),&self)){
-                const DWORD n=GetModuleFileNameW(self,path,32768);
-                if(n&&n<32768){std::wstring p(path,n);const size_t barra=p.find_last_of(L"\\/");p=(barra==std::wstring::npos?std::wstring():p.substr(0,barra+1))+L"nr_scrfd.bin";
-                    try{scrfd=new nrsc::Rede;ok=scrfd->carregar(p.c_str(),erro,sizeof erro);}catch(...){std::snprintf(erro,sizeof erro,"excecao");}}}
-            if(!ok){delete scrfd;scrfd=nullptr;scrfd_falhou=true;}
-            char l[240]{};NRLOGF(l,sizeof l,ok?"ROSTO_JOGADOR_ROSTOS scrfd carregado (nr_scrfd.bin %s)":"ROSTO_JOGADOR_ROSTOS scrfd FALLBACK (%s): segue o YuNet",erro);nrrj::log(l);}
-        if(scrfd){const int tn=nrrj::detector_threads.load(std::memory_order_relaxed);if(tn!=scrfd_thr){scrfd_thr=tn;scrfd->usar_threads(tn,THREAD_PRIORITY_LOWEST);
+        try{const bool curta=pendente();auto& A=nrrj::sinal_rostos();std::unique_lock<std::mutex> l(A.m);
+            if(curta)A.cv.wait_for(l,std::chrono::milliseconds(nrrj::npc2.load(std::memory_order_relaxed)?3:10));
+            else A.cv.wait_for(l,std::chrono::milliseconds(250),[&]{return A.escritas!=vistas;});
+            vistas=A.escritas;}catch(...){Sleep(10);}
+        {const int tn=nrrj::detector_threads.load(std::memory_order_relaxed);if(tn!=scrfd_thr){scrfd_thr=tn;scrfd->usar_threads(tn,THREAD_PRIORITY_LOWEST);
              char l[120]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_ROSTOS scrfd threads=%d",scrfd->threads());nrrj::log(l);}}
         try{
 
@@ -486,16 +317,10 @@ inline void laco_rostos() noexcept {
              if(ir>=0){const auto& E=RR.ent[unsigned(ir)];const int x0=E.x0,y0=E.y0,L=E.l;const std::uint64_t quadro=E.quadro;const double t_cap=E.t;
                  const int n=int(nrrj::roi_lado);hb.resize(size_t(n)*size_t(n)*4);std::memcpy(hb.data(),rb+std::uint64_t(ir)*nrrj::roi_bytes,hb.size()*2);
                  if(E.seq.load(std::memory_order_acquire)==sr&&L>0){ult_roi[k]=sr;fez_roi=true;
-                     const auto t0=std::chrono::steady_clock::now();
-                     if(nrrj::yunet_rapido.load(std::memory_order_relaxed))nryn::tom_bgr_meia(hb.data(),n,n,bgr,meia);
-                     else{lin.resize(size_t(n)*size_t(n)*3);for(size_t i=0;i<size_t(n)*size_t(n);++i)for(int c=0;c<3;++c)lin[i*3+size_t(c)]=meia(hb[i*4+size_t(c)]);
-                     nryn::tom_bgr(lin.data(),n,n,bgr);}
-                     if(scrfd&&(nrrj::npc_todos.load(std::memory_order_relaxed)&1)){scrfd->detectar(bgr.data(),n,n,n*3,rs,.3f,.4f);for(auto& r:rs)r.nota=nrrj::nota_scrfd(r.nota,false);}
-                     else rede_roi.detectar(bgr.data(),n,n,n*3,rs,.3f,.3f);
-                     const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();roi_ms_soma+=ms;++roi_n;
+                     const double ms=detectar_imagem(*scrfd,hb,n,n,bgr,rs,.3f,false);roi_ms_soma+=ms;++roi_n;
                      const float s=float(L)/float(n);auto& RS=nrrj::rostos_roi(k);
                      {std::lock_guard<std::mutex> l(RS.m);RS.lista.clear();
-                         for(const auto& r:rs){RS.lista.push_back({float(x0)+r.x*s,float(y0)+r.y*s,r.w*s,r.h*s,r.nota});auto& b=RS.lista.back();b.px=r.h;for(int i=0;i<5;++i){b.lm[2*i]=float(x0)+r.lm[2*i]*s;b.lm[2*i+1]=float(y0)+r.lm[2*i+1]*s;}}
+                         for(const auto& r:rs)RS.lista.push_back(caixa_saida(r,float(x0),float(y0),s,s));
                          ++RS.versao;RS.quadro=quadro;RS.t=t_cap;RS.ms=ms;++RS.rodadas;}
                      if(roi_n<=4||roi_n%300u==0){char l[200]{};NRLOGF(l,sizeof l,"ROSTO_NPC2_ROI rodadas=%llu npc=%d rostos=%zu ms=%.2f ms_medio=%.2f roi=%d,%d/%d",roi_n,k+2,rs.size(),ms,roi_ms_soma/double(roi_n),x0,y0,L);nrrj::log(l);}}}}
             if(fez_roi)continue;
@@ -510,27 +335,24 @@ inline void laco_rostos() noexcept {
             hb.resize(size_t(w)*size_t(h)*4);std::memcpy(hb.data(),base+std::uint64_t(ib)*nrrj::rosto_bytes,hb.size()*2);
             if(E.seq.load(std::memory_order_acquire)!=sb)continue;
             ult=sb;
-            const auto t0=std::chrono::steady_clock::now();
-            if(nrrj::yunet_rapido.load(std::memory_order_relaxed))nryn::tom_bgr_meia(hb.data(),w,h,bgr,meia);
-            else{lin.resize(size_t(w)*size_t(h)*3);for(size_t i=0;i<size_t(w)*size_t(h);++i)for(int c=0;c<3;++c)lin[i*3+size_t(c)]=meia(hb[i*4+size_t(c)]);
-            nryn::tom_bgr(lin.data(),w,h,bgr);}
-            const bool faixa=ry0>0,sc=usa_scrfd&&scrfd;
-            if(sc){scrfd->detectar(bgr.data(),w,h,w*3,rs,nrrj::scrfd_a(faixa),.4f);
-                for(auto& r:rs)r.nota=nrrj::nota_scrfd(r.nota,faixa);}
-            else rede.detectar(bgr.data(),w,h,w*3,rs,.4f,.3f);
-            const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
+            const bool faixa=ry0>0||rh<oh;
+            const double ms=detectar_imagem(*scrfd,hb,w,h,bgr,rs,nrrj::scrfd_a(faixa),faixa);
             auto& RS=nrrj::rostos();const float sx=float(rw)/float(w),sy=float(rh)/float(h);
             {std::lock_guard<std::mutex> l(RS.m);RS.lista.clear();
-                for(const auto& r:rs){RS.lista.push_back({float(rx0)+r.x*sx,float(ry0)+r.y*sy,r.w*sx,r.h*sy,r.nota});auto& b=RS.lista.back();b.px=r.h;for(int i=0;i<5;++i){b.lm[2*i]=float(rx0)+r.lm[2*i]*sx;b.lm[2*i+1]=float(ry0)+r.lm[2*i+1]*sy;}}
-                ++RS.versao;RS.quadro=quadro;RS.t=t_cap;RS.ms=ms;++RS.rodadas;}
+                for(const auto& r:rs)RS.lista.push_back(caixa_saida(r,float(rx0),float(ry0),sx,sy));
+
+                const float reg[4]{float(rx0),float(ry0),float(rx0+rw),float(ry0+rh)},res=float(w)/float((std::max)(rw,1));
+                std::uint64_t q_l=quadro;double t_l=t_cap;
+                crus.junta_guarda(RS.lista,reg,res,quadro,t_cap,.15,(nrrj::faixa_varre.load(std::memory_order_relaxed)&4u)!=0,.12f*float(oh),q_l,t_l);
+                ++RS.versao;RS.quadro=q_l;RS.t=t_l;RS.ms=ms;++RS.rodadas;}
             if(RS.rodadas<=4||RS.rodadas%100u==0){float m=0,nm=0;for(const auto& r:rs)if(r.h*sy>m){m=r.h*sy;nm=r.nota;}
-                char l[220]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_ROSTOS rodadas=%llu rostos=%zu ms=%.1f img=%dx%d y0=%d maior_altura=%.0f nota=%.2f%s",RS.rodadas,rs.size(),ms,w,h,ry0,double(m),double(nm),sc?" det=scrfd":"");nrrj::log(l);}
+                char l[220]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_ROSTOS rodadas=%llu rostos=%zu ms=%.1f img=%dx%d y0=%d maior_altura=%.0f nota=%.2f det=scrfd",RS.rodadas,rs.size(),ms,w,h,ry0,double(m),double(nm));nrrj::log(l);}
         }catch(...){nrrj::log("ROSTO_JOGADOR_ROSTOS excecao na thread do detector de rosto");Sleep(1000);}
     }
 }
 inline void iniciar_rostos() noexcept {
     static std::atomic<bool> iniciado{false};if(iniciado.exchange(true))return;
-    try{std::thread(laco_rostos).detach();nrrj::log("ROSTO_JOGADOR_ROSTOS thread do detector de rosto (YuNet, CPU, prioridade baixa)");}catch(...){}
+    try{std::thread(laco_rostos).detach();nrrj::log("ROSTO_JOGADOR_ROSTOS thread do detector de rosto (SCRFD, CPU, prioridade baixa)");}catch(...){}
 }
 
 inline void motivo_texto(unsigned m,char* b,size_t n){
@@ -539,63 +361,45 @@ inline void motivo_texto(unsigned m,char* b,size_t n){
 
 inline std::atomic<bool> prof_trocada{false};
 
-template<class Copiar> inline void executar_deteccao(Det& D,const DetTarefa& t,Copiar&& copiar){
+template<class Copiar> struct LinhasD {
+    Copiar* copiar{};float* h{};const float* src{};int w{},hh{};std::vector<unsigned char>* ok{};bool falhou{};unsigned long long bytes{};
+    static bool buscar(void* p,int y0,int y1){
+        auto& L=*static_cast<LinhasD*>(p);y0=(std::max)(y0,0);y1=(std::min)(y1,L.hh);
+        for(int y=y0;y<y1;){if((*L.ok)[size_t(y)]){++y;continue;}int b=y;while(b<y1&&!(*L.ok)[size_t(b)])++b;
+            const size_t off=size_t(y)*size_t(L.w),n=size_t(b-y)*size_t(L.w)*4u;
+            if(!(*L.copiar)(L.h+off,L.src+off,n)){L.falhou=true;return false;}
+            L.bytes+=n;for(int k=y;k<b;++k)(*L.ok)[size_t(k)]=1;y=b;}
+        return true;}
+};
+
+template<class Copiar,class Copiar2d> inline void executar_deteccao(Det& D,const DetTarefa& t,Copiar&& copiar,Copiar2d&& copiar2d){
     const auto t0=std::chrono::steady_clock::now();
     auto& S=D.sets[t.set];
     const size_t ng=size_t(t.gw)*t.gh,nd=size_t(t.dw)*t.dh;
+
+    if(ng>S.gcap||nd>S.cap){S.ocupado.store(false,std::memory_order_release);const auto n=D.fora_cap.fetch_add(1)+1;
+        if(n<=8||(n&255u)==0){char l[200]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_DETECTOR_FORA_DA_CAPACIDADE n=%llu grade=%zu/%zu cheia=%zu/%zu job=%d (pulado)",n,ng,S.gcap,nd,S.cap,t.job);nrrj::log(l);}
+        return;}
     D.h_dq.resize(ng);D.h_mvq.resize(2*ng);D.h_d.resize(nd);
-    const bool ok=copiar(D.h_dq.data(),S.dq,ng*4)&&copiar(D.h_mvq.data(),S.mvq,ng*8)&&copiar(D.h_d.data(),S.d,nd*4);
-    S.ocupado.store(false,std::memory_order_release);
-    if(!ok){nrrj::envenenar("copia das grades do detector");return;}
+    bool ok=copiar(D.h_dq.data(),S.dq,ng*4)&&copiar(D.h_mvq.data(),S.mvq,ng*8);
+    const size_t passo=nrrj::Rastreio::passo_amostra(nd),na=nd?(nd+passo-1)/passo:0;
+    bool sob=ok&&S.amostra&&nd&&na<=det_amostra_max&&copiar2d(S.amostra,4,S.d,passo*4,4,na);
+    if(sob){D.h_amostra.resize(na);ok=copiar(D.h_amostra.data(),S.amostra,na*4);if(ok)for(size_t i=0;i<na;++i)D.h_d[i*passo]=D.h_amostra[i];}
+    else if(ok)ok=copiar(D.h_d.data(),S.d,nd*4);
+    if(!sob)S.ocupado.store(false,std::memory_order_release);
+    if(!ok){S.ocupado.store(false,std::memory_order_release);nrrj::passageira(nrrj::Falha::Detector,"copia das grades do detector");return;}
+    using CopiarT=std::remove_reference_t<Copiar>;
+    LinhasD<CopiarT> L{&copiar,D.h_d.data(),static_cast<const float*>(S.d),t.dw,t.dh,&D.linhas_ok};
+    if(sob)D.linhas_ok.assign(size_t(t.dh),0);
     float k=1.f;
     if(t.quadro&&D.quadro_ant&&t.quadro>D.quadro_ant)k=float((std::min<std::uint64_t>)(t.quadro-D.quadro_ant,8u));
     const auto q=nrprescale::unpack_quadro(nrprescale::quadro.load(std::memory_order_acquire));
     const float esc=q.saida_w&&t.dw?float(q.saida_w)/float(t.dw):3.f,saida_h=q.saida_h?float(q.saida_h):2160.f;
     nrrj::Grades gr;gr.W=t.gw;gr.H=t.gh;gr.dq=D.h_dq.data();gr.mvq=D.h_mvq.data();gr.w=t.dw;gr.h=t.dh;gr.d=D.h_d.data();gr.k=k;gr.esc=esc;gr.saida_h=saida_h;
+    if(sob){gr.linhas_ctx=&L;gr.linhas=&LinhasD<CopiarT>::buscar;}
     gr.t=std::chrono::duration<double>(t0.time_since_epoch()).count();
-    D.rastreio.P.q=(std::max)(1,t.dh/t.gh);
-    D.rastreio.P.corte_modo=nrrj::corte_modo.load(std::memory_order_relaxed);
-    D.rastreio.P.corte_ok=nrrj::corte_ok_ini.load(std::memory_order_relaxed);
-    D.rastreio.P.liga_forte=nrrj::liga_forte.load(std::memory_order_relaxed);
-    D.rastreio.P.adq_nota1=nrrj::adq_nota1.load(std::memory_order_relaxed);
-    D.rastreio.P.sinal_n=nrrj::sinal_n.load(std::memory_order_relaxed);
-    D.rastreio.P.rosto_calibra=nrrj::rosto_calibra.load(std::memory_order_relaxed);D.rastreio.P.rosto_manda=nrrj::rosto_manda.load(std::memory_order_relaxed);
-    D.rastreio.P.alfa_pos=nrrj::alfa_pos.load(std::memory_order_relaxed);D.rastreio.P.alfa_tam=nrrj::alfa_tam.load(std::memory_order_relaxed);
-    D.rastreio.P.rosto_ancora=nrrj::rosto_ancora.load(std::memory_order_relaxed);D.rastreio.P.ancora_nota=nrrj::ancora_nota.load(std::memory_order_relaxed);
-    D.rastreio.P.nota_grande=nrrj::nota_grande.load(std::memory_order_relaxed);D.rastreio.P.nota_grande_px=nrrj::nota_grande_px.load(std::memory_order_relaxed);
-    {const unsigned z=nrrj::zoom.load(std::memory_order_relaxed);
-     if(z&1u){D.rastreio.P.cab_max_4k=nrrj::zoom_cab_4k;D.rastreio.P.recorte_max=int(nrrj::zoom_lado);}
-     D.rastreio.P.persistente=(z&4u)!=0;D.rastreio.P.desliga_n_pers=nrrj::desliga_jobs.load(std::memory_order_relaxed);D.rastreio.P.npc2_zona=nrrj::npc_zona.load(std::memory_order_relaxed);D.rastreio.P.todos_cab_max=nrrj::npc_todos_cab_max.load(std::memory_order_relaxed);if(z&8u)D.rastreio.P.recorte_min=512;
-     D.rastreio.P.recorte_forcado=nrrj::recorte_forcado.load(std::memory_order_relaxed);
-     if(z&16u){const int tr=int(nrrj::teto.load(std::memory_order_relaxed)),fx=nrrj::recorte_fixo_ini.load(std::memory_order_relaxed);
-               (void)tr;D.rastreio.P.recorte_fixo=(std::max)(256,fx>0?fx:1024);}
-     D.rastreio.P.cinema_livre=(z&2u)!=0;}
-    D.rastreio.P.npc=nrrj::npc.load(std::memory_order_relaxed);
-    D.rastreio.P.npc_modo=nrrj::npc_modo.load(std::memory_order_relaxed);D.rastreio.P.rosto_nota=nrrj::rosto_nota.load(std::memory_order_relaxed);
-    D.rastreio.P.npc_segura_s=nrrj::npc_segura_s.load(std::memory_order_relaxed);
-    D.rastreio.P.npc2=nrrj::npc2_ativo();D.rastreio.P.npc2_segura_s=nrrj::npc2_segura_s.load(std::memory_order_relaxed);D.rastreio.P.npc2_vel_max=nrrj::npc2_vel_max.load(std::memory_order_relaxed);
-    D.rastreio.P.npc_max=nrrj::npc_n()>0?nrrj::npc_n():1;
-    D.rastreio.P.adquire=nrrj::adquire.load(std::memory_order_relaxed);D.rastreio.P.reancora=nrrj::reancora.load(std::memory_order_relaxed);D.rastreio.P.caminha_dela=nrrj::caminha_dela.load(std::memory_order_relaxed);
-    D.rastreio.P.npc_degraus=nrrj::npc_degraus.load(std::memory_order_relaxed);D.rastreio.P.npc2_segura_peq=nrrj::npc_segura_peq.load(std::memory_order_relaxed);
-    if(const int r=nrrj::npc_recorte_min2.load(std::memory_order_relaxed))D.rastreio.P.npc2_recorte_min=r;
-    D.rastreio.P.npc2_recorte_forcado=nrrj::npc_recorte_forcado.load(std::memory_order_relaxed);
-    D.rastreio.P.npc_fracao=nrrj::npc_fracao.load(std::memory_order_relaxed);D.rastreio.P.npc_frac_teto=int((nrrj::npc_leve.load(std::memory_order_relaxed)&1)?nrrj::npc_leve_recorte.load(std::memory_order_relaxed):nrrj::npc2_teto.load(std::memory_order_relaxed));
-    D.rastreio.P.npc_canon=nrrj::npc_canon.load(std::memory_order_relaxed);D.rastreio.P.canon.fracao=nrrj::npc_canon_fracao.load(std::memory_order_relaxed);D.rastreio.P.canon.razao=nrrj::npc_canon_razao.load(std::memory_order_relaxed);
-    D.rastreio.P.canon.min_corte=nrrj::npc_canon_corte.load(std::memory_order_relaxed);D.rastreio.P.canon.beta=nrrj::npc_canon_beta.load(std::memory_order_relaxed);D.rastreio.P.canon.rede=int(nrrj::npc_canon_rede.load(std::memory_order_relaxed));
-    D.rastreio.P.npc_leve=nrrj::npc_leve.load(std::memory_order_relaxed);D.rastreio.P.npc_leve_salto=nrrj::npc_leve_salto.load(std::memory_order_relaxed);
-    D.rastreio.P.npc_amplia=nrrj::npc_amplia.load(std::memory_order_relaxed)?int(nrrj::npc_rede_min):0;
-    D.rastreio.P.npc_peito=nrrj::npc_peito.load(std::memory_order_relaxed);
-    D.rastreio.P.npc_frente=nrrj::npc_frente.load(std::memory_order_relaxed);
-    D.rastreio.P.npc2_conf_s=nrrj::npc_conf_s.load(std::memory_order_relaxed);
-    D.rastreio.P.npc_roi_conf=nrrj::npc_roi_conf.load(std::memory_order_relaxed);D.rastreio.P.npc_vel_img=nrrj::npc_vel_img.load(std::memory_order_relaxed);
-    D.rastreio.P.npc_atras=nrrj::npc_atras.load(std::memory_order_relaxed);
-    D.rastreio.P.npc2_cab_min=nrrj::npc_cab_min.load(std::memory_order_relaxed);
-    {const int tb=nrrj::npc_todos.load(std::memory_order_relaxed);D.rastreio.P.npc_todos=tb;D.rastreio.P.todos_nota=nrrj::npc_todos_nota.load(std::memory_order_relaxed);
-     D.rastreio.P.todos_perto=((tb&16)&&nrorc::aplicada())?nrorc::decisao().k_perto:0;if(tb&2)D.rastreio.P.npc2_cab_min=(std::min)(D.rastreio.P.npc2_cab_min,64.f);}
-    D.rastreio.P.npc_corpo=nrrj::npc_corpo.load(std::memory_order_relaxed);
-    D.rastreio.P.npc_camada=nrrj::npc_camada.load(std::memory_order_relaxed);
-    D.rastreio.P.npc_vida=nrrj::npc_vida.load(std::memory_order_relaxed);D.rastreio.P.vida_in_s=nrrj::npc_vida_in.load(std::memory_order_relaxed);
-    if(D.rastreio.P.npc_modo==1||D.rastreio.P.npc2){
+    nrrj::params_rastreio(D.rastreio.P,(std::max)(1,t.dh/t.gh),nrorc::aplicada(),nrorc::aplicada()?nrorc::decisao().k_perto:0,nrorc::aplicada()?int(nrorc::decisao().cap_perto):0);
+    if(D.rastreio.P.npc2){
         iniciar_rostos();
         auto& RS=nrrj::rostos();std::lock_guard<std::mutex> l(RS.m);
         if(RS.versao!=D.rostos_versao){D.rostos_versao=RS.versao;D.rostos_quadro=RS.quadro;D.rostos_t=RS.t;D.rostos.clear();
@@ -608,27 +412,44 @@ template<class Copiar> inline void executar_deteccao(Det& D,const DetTarefa& t,C
             gr.roi_idade[kn]=t.quadro>D.roi_quadro[kn]&&D.roi_quadro[kn]?float((std::min<std::uint64_t>)(t.quadro-D.roi_quadro[kn],30u)):0.f;}
         gr.rostos_idade=t.quadro>D.rostos_quadro&&D.rostos_quadro?float((std::min<std::uint64_t>)(t.quadro-D.rostos_quadro,30u)):0.f;
     }
-    D.rastreio.P.perto=(nrrj::zoom.load(std::memory_order_relaxed)&32u)!=0;
-    D.rastreio.P.npc_min=nrrj::npc_min.load(std::memory_order_relaxed);D.rastreio.P.npc_recorte=nrrj::npc_recorte.load(std::memory_order_relaxed);
-    D.rastreio.P.npc_expande=nrrj::npc_expande.load(std::memory_order_relaxed);
-
-    {const unsigned par=nrredecada::cam::par.load(std::memory_order_relaxed);D.rastreio.P.corte_multi=par>1&&k>=float((std::min)(par,8u));}
 
     {const auto ger=nrrj::ger().load(std::memory_order_acquire);if(D.ger_vista&&ger!=D.ger_vista){D.rastreio.reset_corte();D.tem_ant=false;++D.cortes_fsr;}D.ger_vista=ger;}
+    if(nrrj::externo.load(std::memory_order_relaxed)){float eu=0,ev=0,ea=0,ed=0;bool efora=false;
+        const bool eok=nrjext::ler(eu,ev,ea,ed,&efora);gr.ext_fora=efora;
+        if(eok&&ea>.01f&&ea<.9f&&ed>.3f&&eu>-.1f&&eu<1.1f&&ev>-.1f&&ev<1.1f){const float dy=nrrj::externo_dy.load(std::memory_order_relaxed),es=nrrj::externo_esc.load(std::memory_order_relaxed);
+            gr.ext_tem=true;gr.ext[0]=eu*float(gr.w);gr.ext[1]=(ev+dy*ea)*float(gr.h);gr.ext[2]=ea*float(gr.h)*es;}}
     const auto R=D.rastreio.passo(gr);
+
+    if(nrrj::pose_barata.load(std::memory_order_relaxed)){static nrpose::Classificador PC;static std::uint64_t pose_versao=0;
+        const bool nova=gr.rostos&&gr.rostos_versao!=pose_versao;if(nova)pose_versao=gr.rostos_versao;
+        const double est[3]{double(R.est[0]),double(R.est[1]),double(R.est[2])};float yaw=-1.f;
+        const auto a=nrpose::amostrar(nova,R.on&&R.tem_est,gr.ext_tem,gr.rostos,gr.n_rostos,double(gr.esc),est,D.rastreio.P.rosto_baixa,D.rastreio.P.rosto_cab,D.rastreio.P.rosto_dy,yaw);
+        if(PC.amostra(a,yaw,nrrj::pose_yaw.load(std::memory_order_relaxed),nrrj::pose_seguidas.load(std::memory_order_relaxed))){
+            nrrj::pose_longe.store(PC.longe,std::memory_order_release);
+            if(PC.trocas<=64||(PC.trocas&31u)==0){char l[220]{};NRLOGF(l,sizeof l,"ROSTO_POSE_BARATA estado=%s yaw=%.0f motivo=%s seguidas=%u trocas=%llu pulados=%llu job=%d",
+                PC.longe?"virada":"frente",double(PC.yaw),nrpose::motivo_texto(PC.motivo),PC.seguidas,PC.trocas,nrrj::sj_conta().pose_pulados.load(std::memory_order_relaxed),t.job);nrrj::log(l);}}}
+    if(sob){S.ocupado.store(false,std::memory_order_release);++D.sob_demanda;D.bytes_d+=na*4+L.bytes;D.bytes_d_cheia+=nd*4;
+        if(L.falhou)nrrj::passageira(nrrj::Falha::Detector,"copia das linhas da janela do detector");
+        if(D.sob_demanda<=4||(D.sob_demanda&1023u)==0){char l[200]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_DETECTOR_SOB_DEMANDA jobs=%llu copiado_mb=%.1f cheia_mb=%.1f (proximidade: amostra + linhas das janelas)",
+            D.sob_demanda,double(D.bytes_d)/1048576.0,double(D.bytes_d_cheia)/1048576.0);nrrj::log(l);}}
+    if(!L.falhou)nrrj::sucesso(nrrj::Falha::Detector);
     if(D.rastreio.P.adquire&32)nrrj::giro_inteira.store(R.giro?1:0,std::memory_order_relaxed);
-    if(R.giro_rosto&&(D.rastreio.giro_rosto_n<=32||(D.rastreio.giro_rosto_n&63u)==0)){char l[160]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_GIRO_ROSTO caixa no rosto do YuNet depois do giro job=%d n=%llu",t.job,D.rastreio.giro_rosto_n);nrrj::log(l);}
+    if(R.giro_rosto&&(D.rastreio.giro_rosto_n<=32||(D.rastreio.giro_rosto_n&63u)==0)){char l[160]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_GIRO_ROSTO caixa no rosto do detector depois do giro job=%d n=%llu",t.job,D.rastreio.giro_rosto_n);nrrj::log(l);}
     ++D.deteccoes;if(R.on)++D.on_jobs;
     if(R.tem_est||R.busca)D.sem_cabeca.store(0,std::memory_order_relaxed);else D.sem_cabeca.fetch_add(1,std::memory_order_relaxed);
     if(R.conv_errada){const bool v=!prof_trocada.load();prof_trocada.store(v);
         char l[200]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_CONVENCAO profundidade ao contrario (mediana da proximidade %.3f > 0,5): conversao trocada (trocada=%d) a partir do proximo job",double(R.med_prox),v?1:0);nrrj::log(l);}
     if(R.adotou){char l[200]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_ESCALA nova kface=%.0f (hipotese %d; a do RE e 1550): nenhuma cabeca na escala anterior por 60 jobs",double(R.kface),R.hip);nrrj::log(l);}
 
-    {static unsigned long long ad_visto=0;const auto& s=D.rastreio.ad_ult;if(D.rastreio.ad_n!=ad_visto&&D.rastreio.ad_n<=3000){ad_visto=D.rastreio.ad_n;char la[300]{};NRLOGF(la,sizeof la,"ROSTO_JOGADOR_DESLIGADO_LISTA rostos=%.0f maior_nota=%.2f maior_cab4k=%.0f em=%.0f,%.0f bloqueio=%.0f ancoraveis=%.0f tem_est=%.0f tem_meas=%.0f velha=%.0f job=%d (w3-adqdiag; bits 1 nota 2 pequeno 4 nao_unico 8 sem_prox 16 sem_corpo 32 fraco 64 rastreio/corte)",s[0],s[1],s[2],s[3],s[4],s[5],s[6],s[7],s[8],s[9],t.job);nrrj::log(la);}}
+    {static unsigned long long ad_visto=0;const auto& s=D.rastreio.ad_ult;const auto an=D.rastreio.ad_n;if(an!=ad_visto&&(an<=64||(an&31u)==0)){ad_visto=an;char la[360]{};NRLOGF(la,sizeof la,"ROSTO_JOGADOR_DESLIGADO_LISTA rostos=%.0f maior_nota=%.2f maior_cab4k=%.0f em=%.0f,%.0f bloqueio=%.0f ancoraveis=%.0f tem_est=%.0f tem_meas=%.0f velha=%.0f job=%d n=%llu (w3-adqdiag; bits 1 nota 2 pequeno 4 nao_unico 8 sem_prox 16 sem_corpo 32 fraco 64 rastreio/corte)",s[0],s[1],s[2],s[3],s[4],s[5],s[6],s[7],s[8],s[9],t.job,an);nrrj::log(la);}}
+
+    if(D.rastreio.P.cabeca_prof){const auto& rr=D.rastreio;static unsigned long long pl_visto=0;const double e4=double(esc)*(2160.0/(std::max)(1.0,double(saida_h)));
+        if((rr.prof_liga_n!=pl_visto&&pl_visto==0)||(rr.cprof.jobs&255u)==0){pl_visto=rr.prof_liga_n;char lp[300]{};NRLOGF(lp,sizeof lp,"ROSTO_JOGADOR_CABECA_PROF jobs=%llu com_cabeca=%llu medidas=%llu ligou=%llu cortes_vetados=%llu id_vetos=%llu escala=%.1f escala_n=%d ultima=%.0f,%.0f,%.0f nota=%.2f seg=%d job=%d",
+            rr.cprof.jobs,rr.cprof.com_cabeca,rr.prof_med_n,rr.prof_liga_n,rr.prof_corte_vet,rr.prof_id_veto,rr.cprof.esc,rr.cprof.esc_cont,rr.cps.x*e4,rr.cps.y*e4,rr.cps.lado*e4,rr.cps.nota,rr.cps.n_seg,t.job);nrrj::log(lp);}}
     if(R.reancorou){char l[220]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_REANCOROU pelo rosto da lista job=%d cab4k=%.0f caixa=%.0f,%.0f reancorou=%llu promovido=%llu",t.job,double(R.cab4k),double(R.est[0]),double(R.est[1]),D.rastreio.reancorou_n,D.rastreio.promovido_n);nrrj::log(l);}
-    if(R.adquiriu){char l[220]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_ADQUIRIU pelo rosto do YuNet job=%d cab4k=%.0f caixa=%.0f,%.0f kf_rosto/kf=%.2f adquiriu=%llu promovido=%llu",t.job,double(R.cab4k),double(R.est[0]),double(R.est[1]),double(R.kf_razao),D.rastreio.adquiriu_n,D.rastreio.promovido_n);nrrj::log(l);}
+    if(R.adquiriu){char l[220]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_ADQUIRIU pelo rosto do detector job=%d cab4k=%.0f caixa=%.0f,%.0f kf_rosto/kf=%.2f adquiriu=%llu promovido=%llu",t.job,double(R.cab4k),double(R.est[0]),double(R.est[1]),double(R.kf_razao),D.rastreio.adquiriu_n,D.rastreio.promovido_n);nrrj::log(l);}
     if(R.escala_conf&&(D.rastreio.escala_conf_n<=32||(D.rastreio.escala_conf_n&63u)==0)){char l[200]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_ESCALA confirmada pelo rosto kface=%.0f kf_rosto/kf=%.2f escala_confirmada=%llu job=%d",double(R.kface),double(R.kf_razao),D.rastreio.escala_conf_n,t.job);nrrj::log(l);}
-    if(R.adocao_vetada&&(D.rastreio.adocoes_vetadas<=32||(D.rastreio.adocoes_vetadas&63u)==0)){char l[200]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_ESCALA adocao vetada (hipotese %d: o objeto nao e um rosto do YuNet) vetadas=%llu job=%d",R.hip,D.rastreio.adocoes_vetadas,t.job);nrrj::log(l);}
+    if(R.adocao_vetada&&(D.rastreio.adocoes_vetadas<=32||(D.rastreio.adocoes_vetadas&63u)==0)){char l[200]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_ESCALA adocao vetada (hipotese %d: o objeto nao e um rosto do detector) vetadas=%llu job=%d",R.hip,D.rastreio.adocoes_vetadas,t.job);nrrj::log(l);}
     {static int sinal_ant=1;if(R.sinal!=sinal_ant){sinal_ant=R.sinal;char l[160]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_SINAL do vetor trocado para %d (o vetor trocado explicava o quadro melhor: ok=%.2f ok_trocado=%.2f)",R.sinal,double(R.ok),double(R.ok_neg));nrrj::log(l);}}
     {
         char mt[160];
@@ -649,36 +470,19 @@ template<class Copiar> inline void executar_deteccao(Det& D,const DetTarefa& t,C
             rr.cal_n,rr.manda_n,rr.cal_x,rr.cal_y,rr.cal_s,t.job);nrrj::log(l);}}
     if(R.perto_inicio||R.perto_fim){char l[200]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_PERTO %s segurou=%u jobs motivo=%u lado=%d on=%d cab4k=%.0f escala=%.3f job=%d",R.perto_inicio?"inicio":"fim",
         R.perto_jobs,R.perto_motivo,R.tem_recorte?R.recorte[2]:0,R.on?1:0,double(R.cab4k),double(R.perto_escala),t.job);nrrj::log(l);}
-
     {
         static double lado_ant=0.;static unsigned long long saltos=0;const float emax=nrrj::escala_salto.load(std::memory_order_relaxed);
         if(emax>1.f&&R.on&&R.est[2]>0.){
             bool novo=R.reancorou&&D.rastreio.P.rosto_ancora>0;
             if(lado_ant>0.&&std::fabs(std::log(double(R.est[2])/lado_ant))>std::log(double(emax)))novo=true;
-            if(novo&&!R.corte&&!R.troca_alvo){nrrj::cortar_troca_alvo();D.ger_vista=nrrj::ger().load(std::memory_order_acquire);D.tem_ant=false;++saltos;
+            if(novo&&!R.corte){nrrj::cortar_troca_alvo();D.ger_vista=nrrj::ger().load(std::memory_order_acquire);D.tem_ant=false;++saltos;
                 if(saltos<=32||(saltos&63u)==0){char l[200]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_ESCALA_SALTO n=%llu lado=%.0f antes=%.0f reancorou=%d job=%d (geracao nova)",saltos,double(R.est[2]),lado_ant,R.reancorou?1:0,t.job);nrrj::log(l);}}
             lado_ant=double(R.est[2]);
         }else if(!R.on)lado_ant=0.;
     }
-    if(D.rastreio.P.npc||R.troca_alvo){
-        static unsigned trocas_alvo=0;static std::uint64_t npc_log_q=0;
-        if(R.troca_alvo){++trocas_alvo;D.tem_ant=false;if(!R.corte){nrrj::cortar_troca_alvo();D.ger_vista=nrrj::ger().load(std::memory_order_acquire);}}
-        nrrj::alvo_npc.store(R.alvo_npc,std::memory_order_relaxed);
-        const std::uint64_t qq=t.quadro?t.quadro:D.deteccoes;
-        static bool rf_g_ant=false;const bool rf_g_troca=R.rf_g!=rf_g_ant;rf_g_ant=R.rf_g;
-        if(R.troca_alvo&&D.rastreio.P.npc_modo==1){
-            static std::deque<double> tt;tt.push_back(gr.t);while(!tt.empty()&&gr.t-tt.front()>60.0)tt.pop_front();
-            static const char* const motivos[]{"-","rosto_dela_sumiu","rosto_dela_voltou","npc_maior","npc_sumiu","corte","outro_npc_no_lugar_do_sumido"};
-            char l[300]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_TROCA para=%s motivo=%s nota_dela=%.2f nota_npc=%.2f idade_lista_s=%.3f npc_cab4k=%.0f trocas_por_minuto=%zu job=%d",
-                R.alvo_npc?"npc":"grace",motivos[(R.rf_motivo>=0&&R.rf_motivo<=6)?R.rf_motivo:0],double(R.rf_nota),double(R.rf_npc_nota),double(R.rf_idade_s),double(R.cab4k),tt.size(),t.job);nrrj::log(l);}
-        if(R.troca_alvo||rf_g_troca||qq>=npc_log_q+300u||qq<npc_log_q){npc_log_q=qq;char l[400]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_NPC alvo=%s expande=%.4f npc_cab4k=%.0f trocas=%u bruto=%.4f ativo=%d celulas=%d job=%d corte=%d"
-            " modo=%d rosto_dela=%d nota_dela=%.2f sem_rosto_s=%.2f rostos=%d recorte_pelo_rosto=%d cab4k=%.0f",
-            R.alvo_npc?"npc":(R.rf_g?"grace_rosto":"grace"),double(R.npc_expande),double(R.npc_cab4k),trocas_alvo,double(R.npc_bruto),R.npc_ativo?1:0,R.npc_celulas,t.job,R.corte?1:0,
-            D.rastreio.P.npc_modo,R.rf_vis?1:0,double(R.rf_nota),double(R.rf_sem),R.rf_n,R.rf_g?1:0,double(R.cab4k));nrrj::log(l);}
-    }
     nrrj::grace_on.store(R.on?1:0,std::memory_order_relaxed);
     nrrj::Deteccao d{};d.on=R.on;d.tem=R.tem_est&&R.tem_recorte;d.quadro=t.quadro;d.conf=R.conf;d.cab4k=R.cab4k;
-    if(D.rastreio.cd_tem&&!D.rastreio.trk_npc)d.zela=float(D.rastreio.cd_z);
+    if(D.rastreio.cd_tem)d.zela=float(D.rastreio.cd_z);
     d.motivo=(R.corte?1u:0u)|(R.grande?2u:0u)|(R.cinema?4u:0u)|(R.tem_est?0u:8u);
     if(R.tem_est){d.cx=R.est[0]*esc;d.cy=R.est[1]*esc;d.lado=R.est[2]*esc;
 
@@ -709,11 +513,6 @@ template<class Copiar> inline void executar_deteccao(Det& D,const DetTarefa& t,C
         const std::uint64_t qq=t.quadro?t.quadro:D.deteccoes;const double agora=gr.t;
         if(R2.troca_alvo&&R2.on){L2.t0=agora;L2.movs0=NS.movs;}
         auto& e1=estado();const double ms1=e1.ms_n?e1.ms_soma/e1.ms_n:-1.0;
-        static const bool depura=[]{char v[8]{};std::size_t n=0;return getenv_s(&n,v,sizeof v,"NR_NPC2_DEPURA")==0&&n>1&&v[0]=='1';}();
-        if(depura&&(R2.on||R2.troca_alvo||R2.vida_sai)){char l[340]{};NRLOGF(l,sizeof l,"ROSTO_NPC2_JOB q=%llu on=%d pend=%d sai=%d id=%u caixa4k=%.0f,%.0f,%.0f coberto_s=%.2f prof=%.4f conf_t=%.2f cand=%d nota=%.2f roi_ok=%llu roi_falta=%llu motivo=%d cam=%.0f,%.0f grace=%.0f,%.0f,%.0f prof_ela=%.4f",
-            static_cast<unsigned long long>(t.quadro),(R2.on&&!R2.vida_pend)?1:0,R2.vida_pend?1:0,R2.vida_sai?1:0,NS.id,R2.est[0]*esc,R2.est[1]*esc,R2.est[2]*esc,NS.ocl_t,NS.prof,NS.conf_t,RT.n2c_n,double(NS.nota),NS.roi_ok,NS.roi_falta,R2.rf_motivo,R2.tem_camada?double(R2.camada[0])*esc:0.0,R2.tem_camada?double(R2.camada[1])*esc:0.0,
-            R.tem_est?double(R.est[0])*esc:0.0,R.tem_est?double(R.est[1])*esc:0.0,R.tem_est?double(R.est[2])*esc:0.0,RT.dbg_prof_ela);nrrj::log(l);}
-        if(depura&&RT.P.npc_canon&&R2.on){char l[260]{};NRLOGF(l,sizeof l,"ROSTO_NPC2_CANON q=%llu id=%u trilha=%d cab4k=%.0f s4k=%.1f razao=%.3f lado=%d centro4k=%.1f,%.1f medidas=%llu rejeitadas=%llu reinicios=%llu sem=%llu",static_cast<unsigned long long>(t.quadro),NS.id,NS.cn.tem?1:0,double(R2.est[2])*esc,NS.cn.tem?NS.cn.s*esc:0.0,NS.cn.tem&&NS.cn.s>0?double(R2.est[2])/NS.cn.s:0.0,R2.recorte[2],double(R2.rec_f[0])*esc,double(R2.rec_f[1])*esc,NS.cn.medidas,NS.cn.rejeitadas,NS.cn.reinicios,NS.cn_sem);nrrj::log(l);}
         if(R2.troca_alvo&&R2.on&&R2.rf_motivo>0){char l[200]{};static const char* const mt[]{"-","sem_rosto","fora_da_tela","corte","rapido","sobre_grace","outro","promovido"};
             NRLOGF(l,sizeof l,"ROSTO_NPC2 soltou motivo=%s (e prendeu outro no mesmo job) job=%d",mt[(R2.rf_motivo>=1&&R2.rf_motivo<=7)?R2.rf_motivo:6],t.job);nrrj::log(l);}
         if(R2.vida_oculto_novo||R2.vida_volta){char l[200]{};NRLOGF(l,sizeof l,"ROSTO_NPC2 %s id=%u cab4k=%.0f coberto_jobs=%llu ocultos=%llu job=%d",R2.vida_oculto_novo?"oculto":"reapareceu",NS.id,double(R2.cab4k),NS.ocl_jobs,NS.vida_ocultos,t.job);nrrj::log(l);}
@@ -748,19 +547,20 @@ template<class Copiar> inline void executar_deteccao(Det& D,const DetTarefa& t,C
 
 inline void laco_detector() noexcept {
     auto& D=det();
-    using SetDev=int(*)(int);using Cria=int(*)(void**,unsigned);using CopiaA=int(*)(void*,const void*,size_t,int,void*);using Sinc=int(*)(void*);
-    HMODULE h=GetModuleHandleW(L"amdhip64_7.dll");
-    auto setdev=h?reinterpret_cast<SetDev>(GetProcAddress(h,"hipSetDevice")):nullptr;auto cria=h?reinterpret_cast<Cria>(GetProcAddress(h,"hipStreamCreateWithFlags")):nullptr;
-    auto copia=h?reinterpret_cast<CopiaA>(GetProcAddress(h,"hipMemcpyAsync")):nullptr;auto sinc=h?reinterpret_cast<Sinc>(GetProcAddress(h,"hipStreamSynchronize")):nullptr;
+    const auto a=nrhip::api_rosto();
+    const auto setdev=a.set_device;const auto cria=a.stream_create_with_flags;const auto copia=a.memcpy_async;const auto sinc=a.stream_synchronize;
     void* stream{};bool dispositivo=false;
     for(;;){
         DetTarefa t{};
         {std::unique_lock<std::mutex> l(D.m);D.cv.wait(l,[&]{return D.tem;});t=D.fila;D.tem=false;}
+        if(nrgpu::perdida()){D.sets[t.set].ocupado.store(false);return;}
         try{
             if(!copia||!sinc||!cria){D.sets[t.set].ocupado.store(false);nrrj::envenenar("hipMemcpyAsync ausente (detector em thread)");continue;}
             if(!dispositivo){if(setdev&&t.device>=0)(void)setdev(t.device);if(cria(&stream,1u)||!stream){D.sets[t.set].ocupado.store(false);nrrj::envenenar("stream do detector");continue;}dispositivo=true;}
-            executar_deteccao(D,t,[&](void* dst,const void* src,size_t n){return copia(dst,src,n,2,stream)==0&&sinc(stream)==0;});
-        }catch(...){D.sets[t.set].ocupado.store(false);nrrj::envenenar("excecao no detector (thread)");}
+            const auto c2=a.memcpy_2d_async;
+            executar_deteccao(D,t,[&](void* dst,const void* src,size_t n){return hip_ok(copia(dst,src,n,2,stream),"detector (copia)")&&hip_ok(sinc(stream),"detector (stream)");},
+                [&](void* dst,size_t dp,const void* src,size_t sp,size_t w,size_t hh){return c2&&hip_ok(c2(dst,dp,src,sp,w,hh,3,stream),"detector (copia 2D)")&&hip_ok(sinc(stream),"detector (stream)");});
+        }catch(...){D.sets[t.set].ocupado.store(false);nrrj::passageira(nrrj::Falha::Detector,"excecao no detector (thread)");}
     }
 }
 
@@ -798,7 +598,7 @@ inline void sem_dados_log(Estado& e,int job,const char* motivo){
 inline void preparar_deteccao(Estado& e,Hip& hip,char* base,int job){
     auto& D=det();e.det_pend=false;
 
-    nrrj::grade().invertida.store(((read<int>(base,0x94A80)!=0)!=prof_trocada.load(std::memory_order_relaxed))?1:0,std::memory_order_relaxed);
+    nrrj::grade().invertida.store(((read<int>(base,nrproxy::rva_flags_ffx)!=0)!=prof_trocada.load(std::memory_order_relaxed))?1:0,std::memory_order_relaxed);
     CenaMv m{};int fonte=0;const char* motivo="?";
     if(CenaGpu::mv_do_job(m)){
         if(m.dep){fonte=1;if(prof_trocada.load(std::memory_order_relaxed))m.dinv=m.dinv?0:1;}
@@ -814,17 +614,25 @@ inline void preparar_deteccao(Estado& e,Hip& hip,char* base,int job){
         const auto qd=nrprescale::unpack_quadro(nrprescale::quadro.load(std::memory_order_acquire));const float f4=qd.saida_h?2160.f/float(qd.saida_h):1.f;
         auto& RS=nrrj::rostos();std::lock_guard<std::mutex> l(RS.m);for(const auto& c:RS.lista)if(c.nota>=.7f&&1.6f*c.h*f4>=280.f)rosto_grande=true;}
     if(!rosto_grande&&D.sem_cabeca.load(std::memory_order_relaxed)>economia_apos&&(unsigned(job)%economia_cada)!=0u){D.economizados.fetch_add(1,std::memory_order_relaxed);return;}
-    const int q=(std::max)(1,m.mvh/180),gw=m.mvw/q,gh=m.mvh/q;if(gw<16||gh<16){sem_dados_log(e,job,"grade_pequena");return;}
+    const auto gd=nrrj::grade_det(m.mvw,m.mvh);const int q=gd.q,gw=gd.gw,gh=gd.gh;if(gw<16||gh<16){sem_dados_log(e,job,"grade_pequena");return;}
     const int set=det_thread.load(std::memory_order_relaxed)?int(unsigned(job)&1u):0;
     auto& S=D.sets[set];
     if(S.ocupado.load(std::memory_order_acquire)){D.pulados.fetch_add(1);return;}
     const size_t need=size_t(m.mvw)*m.mvh;
-    if(need>S.cap){
+
+    if(nrrj::DetCap c{S.cap,S.gcap};nrrj::det_nova_cap(c,need,size_t(gw)*gh)){
+        if(!nrrj::det_aloc_pode(S.pausa,job))return;
         for(void** p:{&S.dq,&S.mvq,&S.d})if(*p){(void)hip.release(*p);*p=nullptr;}
-        S.cap=0;
-        if(hip.allocate(&S.dq,size_t(gw)*gh*4)||hip.allocate(&S.mvq,size_t(gw)*gh*8)||hip.allocate(&S.d,need*4)){(void)hip.error();nrrj::envenenar("hipMalloc detector");return;}
-        S.cap=need;
+        S.cap=0;S.gcap=0;
+        if(aloca(hip,&S.dq,c.grade*4,"detector")||aloca(hip,&S.mvq,c.grade*8,"detector")||aloca(hip,&S.d,c.cheia*4,"detector")){(void)hip.error();
+            for(void** p:{&S.dq,&S.mvq,&S.d})if(*p){(void)hip.release(*p);*p=nullptr;}
+            nrrj::det_aloc_falhou(S.pausa,job);char t[96]{};NRLOGF(t,sizeof t,"hipMalloc detector (proxima tentativa em %u jobs)",S.pausa.espera);
+            nrrj::passageira(nrrj::Falha::Detector,t);return;}
+        nrrj::det_aloc_ok(S.pausa);
+        S.cap=c.cheia;S.gcap=c.grade;
+        if(c.cheia>need||c.grade>size_t(gw)*gh){char l[200]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_DETECTOR_REALOCOU conjunto=%d cheia=%zu grade=%zu (pedido %zu/%d)",set,c.cheia,c.grade,need,gw*gh);nrrj::log(l);}
     }
+    if(!S.amostra&&!S.amostra_tentada){S.amostra_tentada=true;if(aloca(hip,&S.amostra,det_amostra_max*4,"detector (amostra)"))S.amostra=nullptr;}
     int qq=q,ugw=gw,ugh=gh;void* a[]={&m,&qq,&ugw,&ugh,&S.dq,&S.mvq,&S.d};lancar(hip,e.k_reduz,size_t(gw)*gh,a);
     int dev=-1;if(hip.device(&dev))dev=-1;
     e.det_tarefa=DetTarefa{set,gw,gh,m.mvw,m.mvh,job,nrreusostate::quadro_do_job(job),dev,fonte};e.det_pend=true;e.det_dinv=m.dinv;
@@ -840,9 +648,10 @@ inline void avaliar_recorte(Estado& e,Hip& hip,char* base,void* primary,int job,
      for(int kn=1;kn<=nrrj::npc_n();++kn){nrrj::Inst i1(kn);
         if(nrrj::ativo()){auto& e1=estado();std::unique_lock<std::mutex> l(e1.mutex,std::defer_lock);if(kn>1)l.lock();
             try{if(modulo(e1,hip))avaliar_recorte_i(e1,hip,base,primary,job,dest,rw,rh,pitch,formato);}
-            catch(const HipFailure& f){char t[160]{};NRLOGF(t,sizeof t,"hip fase=%s status=%d (recorte npc2)",f.phase,f.status);nrrj::envenenar(t);}
-            catch(const std::exception& x){nrrj::envenenar(x.what());}
-            catch(...){nrrj::envenenar("excecao recorte npc2");}}
+            catch(const HipFailure& f){char t[160]{};NRLOGF(t,sizeof t,"hip fase=%s status=%d (recorte npc2)",f.phase,f.status);nrrj::passageira(nrrj::Falha::Recorte,t);}
+            catch(const nrrj::FalhaPermanente& x){nrrj::envenenar(x.what());}
+            catch(const std::exception& x){nrrj::passageira(nrrj::Falha::Recorte,x.what());}
+            catch(...){nrrj::passageira(nrrj::Falha::Recorte,"excecao recorte npc2");}}
         if(nrrj::sj_q())sj_intercalar();}}
 }
 
@@ -850,12 +659,16 @@ inline void pontos_dela(nrrj::Slot& S,unsigned s) noexcept {
     try{
         auto& P=nrrj::pontos();auto& E=P.ent[s];const unsigned char* base=P.base.load(std::memory_order_acquire);
         if(!base||E.seq.load(std::memory_order_acquire)!=S.seq||E.l<=0||!(S.hl>0.f))return;
-        thread_local nryn::Rede rede;thread_local int simd=-1;thread_local std::vector<std::uint8_t> bgr;thread_local std::vector<nryn::Rosto> rs;thread_local std::vector<std::uint16_t> hb;
-        {const int sm=nrrj::yunet_simd.load(std::memory_order_relaxed);if(sm!=simd){simd=sm;rede.usar_simd(sm);}}
+
+        thread_local nrsc::Rede* scrfd=nullptr;thread_local bool scrfd_tentou=false;
+        thread_local std::vector<std::uint8_t> bgr;thread_local std::vector<nrdet::Rosto> rs;thread_local std::vector<std::uint16_t> hb;
+        if(!scrfd_tentou){scrfd_tentou=true;char erro[160]{};scrfd=scrfd_carregar(false,erro,sizeof erro);
+            char l[220]{};NRLOGF(l,sizeof l,scrfd?"ROSTO_JOGADOR_PONTOS detector scrfd (nr_scrfd.bin %s)":"ROSTO_JOGADOR_PONTOS sem o SCRFD (%s): caixa pela profundidade",erro);nrrj::log(l);}
+        if(!scrfd)return;
         const int n=int(nrrj::roi_lado);hb.resize(size_t(n)*size_t(n)*4);std::memcpy(hb.data(),base+std::uint64_t(s)*nrrj::roi_bytes,hb.size()*2);
         if(E.seq.load(std::memory_order_acquire)!=S.seq)return;
         const auto t0=std::chrono::steady_clock::now();
-        nryn::tom_bgr_meia(hb.data(),n,n,bgr,meia);rede.detectar(bgr.data(),n,n,n*3,rs,.5f,.3f);
+        (void)detectar_imagem(*scrfd,hb,n,n,bgr,rs,nrrj::scrfd_a(false),false);
         const float k=float(E.l)/float(n),hl=S.hl;int ib=-1;float bd=1e9f,cx=0,cy=0;
         for(size_t i=0;i<rs.size();++i){const auto& r=rs[i];if(r.nota<.6f)continue;const float fh=r.h*k;if(fh<.4f*hl||fh>1.f*hl)continue;
             float mx=0,my=0;for(int p=0;p<5;++p){mx+=r.lm[2*p];my+=r.lm[2*p+1];}mx=float(E.x0)+mx/5.f*k;my=float(E.y0)+my/5.f*k;
@@ -867,9 +680,32 @@ inline void pontos_dela(nrrj::Slot& S,unsigned s) noexcept {
         (void)ax;(void)ay;(void)rod;
     }catch(...){}
 }
+
+inline void aplicar_estilo(char* base) noexcept {
+    if(!nrrjcl::ini_lido.load(std::memory_order_acquire)||!nrrjcl::tem_estilo())return;
+    static unsigned ultimo=~0u;static float forca_base=0.f;
+    static nrrjcl::CampoEstilo<float> cc{},cf{};static nrrjcl::CampoEstilo<bool> cl{};
+    unsigned s=read<unsigned>(base,0x71d084);if(s>2)s=0;
+    if(s==ultimo)return;
+    if(forca_base<=0.f)forca_base=nrrj::passo1_forca.load(std::memory_order_relaxed);
+    ultimo=s;
+    const float c=nrrjcl::cor_estilo[s].load();
+    nrrjcl::cor_publicar(nrrjcl::campo_estilo(cc,nrrjcl::cor_f.load(),c>=0.f,c,nrrjcl::cor_base.load()));
+    const int l=nrrjcl::luz_estilo[s].load();
+    nrrjcl::luz.store(nrrjcl::campo_estilo(cl,nrrjcl::luz.load(),l>=0,l!=0,nrrjcl::luz_base.load()));
+    const float f=nrrjcl::forca_estilo[s].load();
+    nrrj::passo1_forca.store(nrrjcl::campo_estilo(cf,nrrj::passo1_forca.load(std::memory_order_relaxed),f>0.f,f,forca_base));
+    nrrjcl::menu_escreveu.store(true);
+    char t[160]{};NRLOGF(t,sizeof t,"ROSTO_ESTILO estilo=%u cor=%.2f luz=%d forca=%.2f",s,double(nrrjcl::cor_f.load()),nrrjcl::luz.load()?1:0,double(nrrj::passo1_forca.load()));
+    nrrj::log(t);
+}
 inline void avaliar_recorte_i(Estado& e,Hip& hip,char* base,void* primary,int job,void* dest,int rw,int rh,int pitch,int formato,const SjAval* sa){
+    aplicar_estilo(base);
     nrorc::EscopoOrigem eo(nrrj::inst_atual()>=1?nrorc::Origem::Npc:nrorc::Origem::Rosto);
     nrorc::EscopoRedeRosto er;
+
+    if(nrrj::retomou()){const unsigned v=nrrj::varrer_slots_velhos(job);nrrj::cortar();
+        char l[160]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_RETOMOU depois da pausa job=%d slots_livres=%u (geracao nova)",job,v);nrrj::log(l);}
     auto& g=nrrj::global();
     int s=-1;
     if(sa){
@@ -885,74 +721,125 @@ inline void avaliar_recorte_i(Estado& e,Hip& hip,char* base,void* primary,int jo
     const int etiqueta=sa?sa->id:job;
     auto& S=g.slot[unsigned(s)];
     try{
-        if(nrneuraltone::requested&&!nrneuraltone::multipass_ok)throw std::runtime_error("ToneCurve ACES ou ToneLift > 0: dominio da rede diferente do da composicao");
+        if(nrneuraltone::requested&&!nrneuraltone::multipass_ok)throw nrrj::FalhaPermanente("ToneCurve ACES ou ToneLift > 0: dominio da rede diferente do da composicao");
         if(formato!=0||!dest||rw<64||rh<64||pitch<rw*8)throw std::runtime_error("residuo da cena fora do contrato (half RGBA)");
         if(!importar(e)||!grades(e,hip)){S.palavra.store(nrrj::palavra(nrrj::Livre,0),std::memory_order_release);return;}
         const unsigned n=S.n,L=S.L,ow=S.ow,oh=S.oh;
         if(nrrj::inst_atual()==0&&nrrj::caminha_dela.load(std::memory_order_relaxed)==3)pontos_dela(S,unsigned(s));
-        bool amplia=(nrrj::zoom.load(std::memory_order_relaxed)&8u)&&n<=2u*L;
+        bool amplia=false;
         amplia=amplia||((nrrj::npc_amplia_inst()||nrrj::canon_inst())&&n<=2u*L);
         amplia=amplia||(nrrj::todos_inst()&&n<=2u*L);
         amplia=amplia||(nrrj::inst_atual()==0&&nrrj::rede_fixa.load(std::memory_order_relaxed)&&n<=nrrj::rede_fixa.load(std::memory_order_relaxed)*L);
+
+        amplia=amplia||(::nrgeo::ligada.load(std::memory_order_relaxed)&&n<=2u*L);
         if(n<nrrj::n_min||n>nrrj::n_cap()||(n&127u)||(L<n&&!amplia)||!ow||!oh)throw std::runtime_error("recorte fora do contrato");
 
         {static std::atomic<unsigned> vistos{0};const unsigned b=1u<<((n/128u)&31u);
          if(!(vistos.fetch_or(b,std::memory_order_relaxed)&b)){char l[160]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_REDE_LADO n=%u recorte=%u teto=%u reduz=%d",n,L,nrrj::teto.load(),L>n?1:0);nrrj::log(l);}}
-        Tempos tm3;tm3.marca(hip);
         const auto t0=std::chrono::steady_clock::now();
-        const float expo=[&]{const float v=read<float>(base,0x90CC0+4*(unsigned(job)&3u));return std::isfinite(v)&&v>0.f?v:1.f;}();
-        const unsigned tonemap=read<unsigned>(base,0x94698)!=0?1u:0u;
+        const float expo=expo_do_job(base,job);
+        const unsigned tonemap=tonemap_do_proxy(base);
         float passo=float(L)/float(n),bx=float(S.x),by=float(S.y),fow=float(ow),foh=float(oh);
 
         float bxc=sa?bx+sa->dx:bx,byc=sa?by+sa->dy:by;
         char* ent=e.base_hip+nrrj::offset_ent(unsigned(s));char* sai=e.base_hip+nrrj::offset_sai(unsigned(s));
         unsigned urw=unsigned(rw),urh=unsigned(rh),upitch=unsigned(pitch/2),un=n;
-        const bool despeja=despejo_n()&&e.avaliados+1==despejo_n();
-        std::filesystem::path pasta;if(despeja){pasta=pasta_helper()/L"nr_rosto_jogador_despejo";std::error_code ec;std::filesystem::create_directories(pasta,ec);}
-        if(despeja){hip.completed("rj_despejo");despejar(hip,ent,size_t(n)*n*8,pasta/L"recorte_linear.raw");}
 
-        if(nrrj::soma_cena.load(std::memory_order_relaxed))check(hip.set(e.dc,0,size_t(n)*n*16));
+        const bool di=nrrj::delta_inteiro()&&e.k_delta_el&&e.k_guarda_el;
+
+        const bool scena=nrrj::soma_cena.load(std::memory_order_relaxed)&&!di;
+        if(di&&nrrj::soma_cena.load(std::memory_order_relaxed)){static std::atomic<bool> avisou{false};if(!avisou.exchange(true))nrrj::log("ROSTO_JOGADOR_DELTA_INTEIRO aviso: NeuralRostoJogadorSomaCena=1 ignorado no modo (o Delta inteiro ja traz a banda baixa; a cena entraria 2 vezes)");}
+        if(scena)check(hip.set(e.dc,0,size_t(n)*n*16));
         else{void* a[]={&dest,&urw,&urh,&upitch,&bxc,&byc,&passo,&fow,&foh,&un,&e.dc};lancar(hip,e.k_cena,size_t(n)*n,a);}
+
+        const unsigned clm=nrrjcl::modo();const bool cl=!di&&clm&&e.k_cl_cena&&e.k_cl_baixa&&e.k_cl_aplica;
+        if(cl&&nrrj::soma_cena.load(std::memory_order_relaxed)){void* a[]={&dest,&urw,&urh,&upitch,&bxc,&byc,&passo,&fow,&foh,&un,&e.D};lancar(hip,e.k_cena,size_t(n)*n,a);}
+
+        bool rcorte=nrrj::ruido_inst()&&nrrj::ruido_banda.load(std::memory_order_relaxed)>0.f&&e.k_rpeso&&e.k_rmedia&&e.k_rbanda;
+
+        const float lt=nrrj::ruido_limpa.load(std::memory_order_relaxed);
+        bool limpa=nrrj::ruido_inst()&&lt>0.f&&e.k_lgrad&&e.k_lpeso&&e.k_limpa&&e.k_lumin&&e.k_blur1;
+        const unsigned lfonte=nrrj::ruido_fonte.load(std::memory_order_relaxed);int lrt=-1;
+        if(limpa&&lfonte==2u){bool mudou=false;std::string val;lrt=nrrtjogo::estado(&mudou,&val);
+            if(mudou||e.l_n+e.l_rt_desligado==0){char t[200]{};NRLOGF(t,sizeof t,"ROSTO_RUIDO_FONTE inst=%d config.ini RayTracingSetting=%s rt=%d (%s)",nrrj::inst_atual(),val.empty()?"?":val.c_str(),lrt,lrt<0?"sem a chave: o detector":lrt?"limpeza ligada":"limpeza desligada");nrrj::log(t);}
+            if(lrt==0){limpa=false;++e.l_rt_desligado;}}
+        const bool lquer_det=limpa&&(lfonte==0u||(lfonte==2u&&lrt<0));
+        bool ldet=lquer_det&&e.k_rpeso&&e.k_rmedia;
+        if(lquer_det&&!ldet)limpa=false;
+        if((rcorte||ldet)&&!e.r_tentado){e.r_tentado=true;if(aloca_par(hip,&e.rw,size_t(nrrj::n_cap())*nrrj::n_cap()*4,&e.rsoma,16,"RuidoRT")){nrrj::log("ROSTO_RUIDO sem memoria para o peso: corte desligado nesta instancia");}}
+        rcorte=rcorte&&e.rw&&e.rsoma;
+        if(ldet&&!(e.rw&&e.rsoma)){ldet=false;limpa=false;}
+        if(rcorte||ldet){void* a[]={&ent,&un,&e.rw};lancar(hip,e.k_rpeso,size_t(n)*n,a);}
         {float ex=expo;unsigned tm=tonemap;void* a[]={&ent,&un,&ex,&tm};lancar(hip,e.k_entrada,size_t(n)*n,a);}
 
-        if(!sa&&e.pula_job==job){e.pula_job=0;S.palavra.store(nrrj::palavra(nrrj::Livre,0),std::memory_order_release);return;}
+        {const float am=nrrj::entrada_media.load(std::memory_order_relaxed);
+         if(am>0.f&&nrrj::inst_atual()==0&&e.k_ema){
+            if(!e.ema&&!e.ema_tentado){e.ema_tentado=true;if(aloca(hip,&e.ema,size_t(nrrj::n_cap())*nrrj::n_cap()*8,"EntradaMedia"))e.ema=nullptr;}
+            if(e.ema){const bool cont=nrrj::entrada_media_continua(e.ema_reg,S.x,S.y,L,n,std::uint64_t(S.geracao));
+                float a=am,lim=nrrj::entrada_media_limiar.load(std::memory_order_relaxed);unsigned uc=cont?1u:0u;
+                void* ar[]={&ent,&e.ema,&un,&a,&lim,&uc};lancar(hip,e.k_ema,size_t(n)*n,ar);
+                if(cont)++e.ema_usos;else ++e.ema_novos;
+                if(e.ema_usos+e.ema_novos<=3||((e.ema_usos+e.ema_novos)&255u)==0){char t[160]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_ENTRADA_MEDIA usos=%llu recortes_novos=%llu n=%u L=%u",e.ema_usos,e.ema_novos,n,L);nrrj::log(t);}}}}
 
         bool fres=nrrj::frescor.load(std::memory_order_relaxed)>0.f&&nrrj::acumula.load(std::memory_order_relaxed)&&nrrj::temporal_inst()&&nrrj::frescor_inst()&&e.k_lumin&&e.k_bandas2&&e.k_meia4;
-        if(fres&&!e.lin&&!e.lin_tentado){e.lin_tentado=true;if(hip.allocate(&e.lin,size_t(nrrj::n_cap())*nrrj::n_cap()*4)){(void)hip.error();e.lin=nullptr;}}
+        if(fres&&!e.lin&&!e.lin_tentado){e.lin_tentado=true;if(aloca(hip,&e.lin,size_t(nrrj::n_cap())*nrrj::n_cap()*4,"frescor"))e.lin=nullptr;}
         fres=fres&&e.lin;
         if(fres){void* a[]={&ent,&un,&e.lin};lancar(hip,e.k_lumin,size_t(n)*n,a);}
-        tm3.marca(hip);
-        void* p=contexto(e,hip,base,primary);
-        {const float f1=nrrj::forca_passo1();if(f1!=1.f)write<float>(p,0x30,read<float>(p,0x30)*f1);}
-        if(const unsigned r1=r1_modo()){
 
-            static const unsigned r1_antes=[]{char b[16]{};size_t k=0;return getenv_s(&k,b,sizeof b,"NR_RJ_R1_ANTES")==0&&k?unsigned(std::strtoul(b,nullptr,10)):0u;}();
-            static const unsigned r1_sono=[]{char b[16]{};size_t k=0;return getenv_s(&k,b,sizeof b,"NR_RJ_R1_SONO")==0&&k?unsigned(std::strtoul(b,nullptr,10)):0u;}();
-            static const unsigned r1_flush=[]{char b[16]{};size_t k=0;return getenv_s(&k,b,sizeof b,"NR_RJ_R1_FLUSH")==0&&k?unsigned(std::strtoul(b,nullptr,10)):0u;}();
-            static void* r1_lixo{};if(r1_flush&&!r1_lixo&&hip.allocate(&r1_lixo,size_t(r1_flush)<<20)){(void)hip.error();r1_lixo=nullptr;}
-            if(r1_antes){hip.completed("rj_r1");Sleep(r1_antes);}
-            const auto m1=r1_eval(hip,base,p,ent,sai,n);
-            if(r1_sono)Sleep(r1_sono);
-            if(r1_lixo){check(hip.set(r1_lixo,int(e.avaliados&255u),size_t(r1_flush)<<20));hip.completed("rj_r1");}
-            p=contexto(e,hip,base,primary);const auto m2=r1_eval(hip,base,p,ent,sai,n);
-            static unsigned long long r1_linhas=0;
-            if(r1_linhas<400||(e.avaliados&15u)==0){++r1_linhas;
-                char t[260]{};NRLOGF(t,sizeof t,"ROSTO_R1 aval=%llu n=%u e1_cpu=%.3f e1=%.3f e2_cpu=%.3f e2=%.3f",e.avaliados+1,n,m1.chamada,m1.total,m2.chamada,m2.total);nrrj::log(t);}
-            if(r1>=2&&e.avaliados+1==40){
-                const unsigned nn_max=(std::min)(nrrj::teto.load(std::memory_order_relaxed),nrrj::n_max);
-                for(unsigned nn=256u;nn<=(std::max)(1024u,nn_max)&&nn<=nrrj::n_max;nn+=128u){
-                    R1Medida a{},b{};p=contexto(e,hip,base,primary);a=r1_eval(hip,base,p,ent,sai,nn);
-                    p=contexto(e,hip,base,primary);b=r1_eval(hip,base,p,ent,sai,nn);
-                    p=contexto(e,hip,base,primary);const auto c=r1_eval(hip,base,p,ent,sai,nn);
-                    char t[260]{};NRLOGF(t,sizeof t,"ROSTO_R1_LADO n=%u mpx=%.4f a=%.3f b_cpu=%.3f b=%.3f c_cpu=%.3f c=%.3f",nn,double(nn)*nn/1e6,a.total,b.chamada,b.total,c.chamada,c.total);nrrj::log(t);
-                }
-                p=contexto(e,hip,base,primary);(void)r1_eval(hip,base,p,ent,sai,n);
-            }
+        if(fres&&nrrj::frescor_borrado.load(std::memory_order_relaxed)&&e.k_blur1){
+            float sg=1.6f/passo;unsigned r=raio_cv(sg),h1=1,h0=0,ref=1;
+            void* a1[]={&e.lin,&e.tmp1,&un,&un,&sg,&r,&h1,&ref};lancar(hip,e.k_blur1,size_t(n)*n,a1);
+            void* a2[]={&e.tmp1,&e.lin,&un,&un,&sg,&r,&h0,&ref};lancar(hip,e.k_blur1,size_t(n)*n,a2);}
+
+        void* ent_rede=ent;
+        if(limpa){
+            const float lcel=foh/2160.f/passo;const size_t n2=size_t(n)*n;
+            float* pl=static_cast<float*>(e.d0);void* b2=pl;void* b16=pl+n2;void* grs=pl+2*n2;void* wp=pl+3*n2;
+            unsigned h1=1,h0=0,ref=1;
+            auto borra=[&](void* src,void* dst,float sg){unsigned r=raio_cv(sg);void* a1[]={&src,&e.tmp1,&un,&un,&sg,&r,&h1,&ref};lancar(hip,e.k_blur1,n2,a1);
+                void* a2[]={&e.tmp1,&dst,&un,&un,&sg,&r,&h0,&ref};lancar(hip,e.k_blur1,n2,a2);};
+            {void* a[]={&ent,&un,&e.luma};lancar(hip,e.k_lumin,n2,a);}
+            borra(e.luma,b2,nrrj::ruido_limpa_fina.load(std::memory_order_relaxed)*lcel);
+            borra(e.luma,b16,nrrj::ruido_limpa_grossa.load(std::memory_order_relaxed)*lcel);
+            {float c=lcel;void* a[]={&b2,&b16,&un,&c,&e.gl};lancar(hip,e.k_lgrad,n2,a);}
+            borra(e.gl,grs,3.f*lcel);
+            {float lim=nrrj::ruido_limpa_borda.load(std::memory_order_relaxed),con=nrrj::ruido_limpa_contraste.load(std::memory_order_relaxed);
+             void* a[]={&grs,&b2,&b16,&un,&lim,&con,&e.gl};lancar(hip,e.k_lpeso,n2,a);}
+            borra(e.gl,wp,4.f*lcel);
+            ElipseK el0{(S.hx-bx)/passo,(S.hy-by)/passo,S.hl/passo,float(NR_AREA_SEMI_X),float(NR_AREA_SEMI_Y),float(NR_AREA_BORDA0),float(NR_AREA_BORDA1),float(NR_AREA_MIOLO0),float(NR_AREA_MIOLO1)};
+            if(ldet){check(hip.set(e.rsoma,0,16));float r6=.6f;void* a[]={&e.rw,&un,&el0,&r6,&e.rsoma};lancar(hip,e.k_rmedia,size_t(n/8)*(n/8),a);}
+            {void* so=ldet?e.rsoma:nullptr;float f0=nrrj::ruido_rosto0.load(std::memory_order_relaxed),f1=nrrj::ruido_rosto1.load(std::memory_order_relaxed),t=lt,rmax=nrrj::ruido_limpa_razao.load(std::memory_order_relaxed);
+             void* a[]={&ent,&e.luma,&b2,&b16,&wp,&so,&un,&t,&f0,&f1,&rmax,&e.D};lancar(hip,e.k_limpa,n2,a);}
+            ent_rede=e.D;++e.l_n;
+            if(e.l_n<=3||(e.l_n&63u)==0){
+                if(!e.lsoma&&!e.l_tentado){e.l_tentado=true;if(aloca(hip,&e.lsoma,16,"RuidoRTLimpa"))e.lsoma=nullptr;}
+                float ls[2]{},rs[2]{};
+                if(e.lsoma){check(hip.set(e.lsoma,0,16));float r6=.6f;void* a[]={&wp,&un,&el0,&r6,&e.lsoma};lancar(hip,e.k_rmedia,size_t(n/8)*(n/8),a);check(hip.copy(ls,e.lsoma,8,2));}
+                if(ldet)check(hip.copy(rs,e.rsoma,8,2));
+                float wf=1.f;if(ldet){const float wm=rs[1]>0.f?rs[0]/rs[1]:0.f,a0=nrrj::ruido_rosto0.load(),a1=nrrj::ruido_rosto1.load();float q=(wm-a0)/(a1-a0);q=q<0.f?0.f:q>1.f?1.f:q;wf=q*q*(3.f-2.f*q);}
+                char t[220]{};NRLOGF(t,sizeof t,"ROSTO_RUIDO_LIMPA_STAT inst=%d limpezas=%llu n=%u fonte=%u rt_jogo=%d Wf=%.3f forca=%.2f peso_pele=%.3f rt_desligado=%llu",
+                    nrrj::inst_atual(),e.l_n,n,lfonte,lrt,double(wf),double(lt),ls[1]>0.f?double(ls[0]/ls[1]):-1.,e.l_rt_desligado);nrrj::log(t);}
         }
-        else if(nrrj::ablacao.load(std::memory_order_relaxed)&2u)check(hip.copy(sai,ent,size_t(n)*n*8,3));
-        else native<Eval>(base,0x2a080)(p,ent,int(n*8),0,int(n),int(n),sai,int(n*8),0,0,nullptr);
+
+        {const float esl=nrrj::entrada_sigma_celulas(nrrj::entrada_sigma.load(std::memory_order_relaxed),foh,passo);
+         if(esl>0.f&&e.k_meia4&&e.k_blur4&&e.k_f4meia&&!e.esg_falhou){
+            const size_t n2=size_t(n)*n;
+            if(e.esg&&e.esg_px<n2){(void)hip.release(e.esg);e.esg=nullptr;e.esg_px=0;}
+            if(!e.esg){const size_t cap=(std::max)(size_t(nrrj::n_cap())*nrrj::n_cap(),n2);
+                if(aloca(hip,&e.esg,cap*16,"EntradaSigma")){e.esg=nullptr;e.esg_falhou=true;nrrj::log("ROSTO_JOGADOR_ENTRADA_SIGMA sem memoria: desligada nesta instancia");}
+                else e.esg_px=cap;}
+            if(e.esg){float sg=esl;unsigned r=raio_cv(sg),h1=1,h0=0,ref=1;
+                {void* a[]={&ent_rede,&un,&e.d0};lancar(hip,e.k_meia4,n2,a);}
+                {void* a[]={&e.d0,&e.esg,&un,&un,&sg,&r,&h1,&ref};lancar(hip,e.k_blur4,n2,a);}
+                {void* a[]={&e.esg,&e.d0,&un,&un,&sg,&r,&h0,&ref};lancar(hip,e.k_blur4,n2,a);}
+                {void* a[]={&e.d0,&un,&e.esg};lancar(hip,e.k_f4meia,n2,a);}
+                ent_rede=e.esg;++e.esg_n;
+                if(e.esg_n<=3||(e.esg_n&255u)==0){char t[180]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_ENTRADA_SIGMA inst=%d usos=%llu n=%u L=%u sigma_cel=%.3f raio=%u limpa=%d",nrrj::inst_atual(),e.esg_n,n,L,double(sg),r,limpa?1:0);nrrj::log(t);}}}}
+        void* p=contexto(e,hip,base,primary);
+        {const float f1=nrrj::passo1_forca.load(std::memory_order_relaxed);if(f1!=1.f)write<float>(p,0x30,read<float>(p,0x30)*f1);}
+        if(nrrj::ablacao.load(std::memory_order_relaxed)&2u)check(hip.copy(sai,ent,size_t(n)*n*8,3));
+        else native<Eval>(base,0x2a080)(p,ent_rede,int(n*8),0,int(n),int(n),sai,int(n*8),0,0,nullptr);
         hip.completed("rj_rede");
-        tm3.marca(hip);
 
         char* sai_f=sai;
         if(nrrj::passos.load(std::memory_order_relaxed)>=2&&e.k_sat&&!(nrrj::ablacao.load(std::memory_order_relaxed)&2u)){
@@ -964,7 +851,7 @@ inline void avaliar_recorte_i(Estado& e,Hip& hip,char* base,void* primary,int jo
 
             {const unsigned c2=nrrj::passo2_cada.load(std::memory_order_relaxed);if(c2>1)cabe=cabe&&(e.p2_k++%c2)==0;}
             if(!e.in2&&!e.buf2_tentado){e.buf2_tentado=true;const size_t b=size_t(nrrj::n_cap())*nrrj::n_cap()*8;
-                if(hip.allocate(&e.in2,b)||hip.allocate(&e.out2,b)){(void)hip.error();e.in2=e.out2=nullptr;nrrj::log("ROSTO_JOGADOR_PASSOS sem memoria: 1 passo");}}
+                if(aloca_par(hip,&e.in2,b,&e.out2,b,"2o passo")){nrrj::log("ROSTO_JOGADOR_PASSOS sem memoria: 1 passo");}}
             if(cabe&&e.in2&&e.out2){
                 {void* a[]={&sai,&un,&e.in2};lancar(hip,e.k_sat,size_t(n)*n,a);}
                 p=contexto(e,hip,base,primary);write<float>(p,0x30,.03125f*nrrj::passo2_forca.load(std::memory_order_relaxed));
@@ -973,22 +860,29 @@ inline void avaliar_recorte_i(Estado& e,Hip& hip,char* base,void* primary,int jo
             }else if(e.in2)++e.passos2_pulados;
             if(e.p1_n<=4||(e.p1_n&63u)==0){char t[200]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_PASSOS n=%u p1=%.2f p1_ema=%.2f p1_min=%.2f cabe=%d passos2=%llu pulados2=%llu",e.p1_n,p1,e.p1_ema,e.p1_min,cabe?1:0,e.passos2,e.passos2_pulados);nrrj::log(t);}
         }
-        if(r3_modo()&&e.avaliados+1>=30&&(e.avaliados+1-30)%20==0&&e.avaliados+1<=130)r3_diag(e,hip,base,primary,ent,sai,n);
-        tm3.marca(hip);
         const auto t_rede=std::chrono::steady_clock::now();
         {void* a[]={&ent,&sai_f,&e.dc,&un,&e.d0};lancar(hip,e.k_dif,size_t(n)*n,a);}
 
+        if(cl){void* sc=nrrj::soma_cena.load(std::memory_order_relaxed)?e.D:e.dc;void* a[]={&sc,&un,&sai};lancar(hip,e.k_cl_cena,size_t(n)*n,a);}
+
         const float cel=foh/2160.f/passo;
         unsigned f=4,nl=n/4;
+
+        const bool camada_vai=!di&&nrrj::blur_rapido.load(std::memory_order_relaxed)&&[&]{
+            const unsigned cm=nrrj::borda_camada.load(std::memory_order_relaxed);if(!(cm&&e.k_camada&&e.k_baixa_m&&e.k_blur4w&&e.k_delta_m))return false;
+            const bool emp=nrrj::inst_atual()>=1&&nrrj::npc_borda_camada.load(std::memory_order_relaxed);
+            const DetTarefa T=emp?estado_de(0).det_tarefa:e.det_tarefa;const auto& DS=det().sets[unsigned(T.set>=0?T.set:0)];
+            return T.job==job&&T.set>=0&&DS.d&&T.dw>=16&&T.dh>=16&&size_t(T.dw)*T.dh<=DS.cap;}();
+        if(!camada_vai&&!di){
         {void* a[]={&e.d0,&un,&f,&nl,&e.lo};lancar(hip,e.k_baixa,size_t(nl)*nl,a);}
         {float sl=nrrj::banda_sigma.load(std::memory_order_relaxed)*cel/float(f);unsigned rl=raio_cv(sl),h1=1,h0=0,ref=1;
          void* a1[]={&e.lo,&e.lo2,&nl,&nl,&sl,&rl,&h1,&ref};lancar(hip,e.k_blur4,size_t(nl)*nl,a1);
-         void* a2[]={&e.lo2,&e.lo,&nl,&nl,&sl,&rl,&h0,&ref};lancar(hip,e.k_blur4,size_t(nl)*nl,a2);}
-        ElipseK el{(S.hx-bx)/passo,(S.hy-by)/passo,S.hl/passo,.50f,.60f,.85f,1.15f,.55f,.85f};
+         void* a2[]={&e.lo2,&e.lo,&nl,&nl,&sl,&rl,&h0,&ref};lancar(hip,e.k_blur4,size_t(nl)*nl,a2);}}
+        ElipseK el{(S.hx-bx)/passo,(S.hy-by)/passo,S.hl/passo,float(NR_AREA_SEMI_X),float(NR_AREA_SEMI_Y),float(NR_AREA_BORDA0),float(NR_AREA_BORDA1),float(NR_AREA_MIOLO0),float(NR_AREA_MIOLO1)};
         unsigned dep=0;
 
         bool camada=false;
-        if(const unsigned cmodo=nrrj::borda_camada.load(std::memory_order_relaxed);cmodo&&e.k_camada&&e.k_baixa_m&&e.k_blur4w&&e.k_delta_m){
+        if(const unsigned cmodo=nrrj::borda_camada.load(std::memory_order_relaxed);!di&&cmodo&&e.k_camada&&e.k_baixa_m&&e.k_blur4w&&e.k_delta_m){
 
             const bool emprestada=nrrj::inst_atual()>=1&&nrrj::npc_borda_camada.load(std::memory_order_relaxed);
             const DetTarefa T=emprestada?estado_de(0).det_tarefa:e.det_tarefa;const int dinv_t=emprestada?estado_de(0).det_dinv:e.det_dinv;
@@ -1004,19 +898,52 @@ inline void avaliar_recorte_i(Estado& e,Hip& hip,char* base,void* primary,int jo
                  void* b2[]={&e.lo2,&e.gl,&nl,&nl,&sl,&rl,&h0,&ref};lancar(hip,e.k_blur4w,size_t(nl)*nl,b2);}
                 float rg=nrrj::borda_camada_reg.load(std::memory_order_relaxed);unsigned enc=cmodo>=2?1u:0u;
                 {void* a[]={&e.d0,&e.lo,&e.gl,&e.tmp1,&un,&f,&nl,&el,&dep,&rg,&enc,&e.D,&e.luma};lancar(hip,e.k_delta_m,size_t(n)*n,a);}
-                if(despeja){hip.completed("rj_despejo");despejar(hip,e.tmp1,size_t(n)*n*4,pasta/L"mascara_camada.raw");}
                 camada=true;++e.camada_n;
             }else ++e.camada_sem;
             if(e.camada_n+e.camada_sem<=4||((e.camada_n+e.camada_sem)&63u)==0){char t[160]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_CAMADA job=%d usadas=%llu sem_grade=%llu modo=%u",job,e.camada_n,e.camada_sem,cmodo);nrrj::log(t);}
         }
-        if(!camada){void* a[]={&e.d0,&e.lo,&un,&f,&nl,&el,&dep,&e.D,&e.luma};lancar(hip,e.k_delta,size_t(n)*n,a);}
+        if(!camada&&camada_vai){
+            {void* a[]={&e.d0,&un,&f,&nl,&e.lo};lancar(hip,e.k_baixa,size_t(nl)*nl,a);}
+            {float sl=nrrj::banda_sigma.load(std::memory_order_relaxed)*cel/float(f);unsigned rl=raio_cv(sl),h1=1,h0=0,ref=1;
+             void* a1[]={&e.lo,&e.lo2,&nl,&nl,&sl,&rl,&h1,&ref};lancar(hip,e.k_blur4,size_t(nl)*nl,a1);
+             void* a2[]={&e.lo2,&e.lo,&nl,&nl,&sl,&rl,&h0,&ref};lancar(hip,e.k_blur4,size_t(nl)*nl,a2);}}
+        if(di){
+            float er0=nrrj::elipse_r0.load(std::memory_order_relaxed),er1=nrrj::elipse_r1.load(std::memory_order_relaxed),eb=nrrj::delta_inteiro_borda_celulas(foh,passo);
+            void* a[]={&e.d0,&un,&el,&er0,&er1,&eb,&e.D,&e.luma};lancar(hip,e.k_delta_el,size_t(n)*n,a);
+            if(++e.di_n<=3||(e.di_n&255u)==0){char t[180]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_DELTA_INTEIRO inst=%d usos=%llu n=%u L=%u r0=%.2f r1=%.2f borda_cel=%.1f hl_cel=%.1f",nrrj::inst_atual(),e.di_n,n,L,double(er0),double(er1),double(eb),double(el.hl));nrrj::log(t);}}
+        else if(!camada){void* a[]={&e.d0,&e.lo,&un,&f,&nl,&el,&dep,&e.D,&e.luma};lancar(hip,e.k_delta,size_t(n)*n,a);}
+
+        if(rcorte){check(hip.set(e.rsoma,0,16));
+         {float r6=.6f;void* a[]={&e.rw,&un,&el,&r6,&e.rsoma};lancar(hip,e.k_rmedia,size_t(n/8)*(n/8),a);}
+         {float sw=nrrj::ruido_peso_sigma.load(std::memory_order_relaxed)*cel;unsigned rw_=raio_cv(sw),h1=1,h0=0,ref=1;
+          void* a1[]={&e.rw,&e.tmp1,&un,&un,&sw,&rw_,&h1,&ref};lancar(hip,e.k_blur1,size_t(n)*n,a1);
+          void* a2[]={&e.tmp1,&e.gl,&un,&un,&sw,&rw_,&h0,&ref};lancar(hip,e.k_blur1,size_t(n)*n,a2);}
+         {float sf=nrrj::ruido_fino.load(std::memory_order_relaxed)*cel;unsigned rf=raio_cv(sf),h1=1,h0=0,ref=1;
+          void* a1[]={&e.D,&e.dc,&un,&un,&sf,&rf,&h1,&ref};lancar(hip,e.k_blur4,size_t(n)*n,a1);
+          void* a2[]={&e.dc,&e.d0,&un,&un,&sf,&rf,&h0,&ref};lancar(hip,e.k_blur4,size_t(n)*n,a2);}
+         {float sb=nrrj::ruido_banda.load(std::memory_order_relaxed),f0=nrrj::ruido_rosto0.load(std::memory_order_relaxed),f1=nrrj::ruido_rosto1.load(std::memory_order_relaxed);
+          void* a[]={&e.D,&e.luma,&e.d0,&e.gl,&e.rsoma,&un,&sb,&f0,&f1};lancar(hip,e.k_rbanda,size_t(n)*n,a);}
+         ++e.r_cortes;}
         {float s4=4.f*cel;unsigned r4=raio_cv(s4),h1=1,h0=0,zero=2;
          void* b1[]={&e.luma,&e.tmp1,&un,&un,&s4,&r4,&h1,&zero};lancar(hip,e.k_blur1,size_t(n)*n,b1);
          void* b2[]={&e.tmp1,&e.gl,&un,&un,&s4,&r4,&h0,&zero};lancar(hip,e.k_blur1,size_t(n)*n,b2);}
-        if(despeja){hip.completed("rj_despejo");
-            despejar(hip,sai,size_t(n)*n*8,pasta/L"saida_rede.raw");despejar(hip,ent,size_t(n)*n*8,pasta/L"entrada_tom.raw");
-            despejar(hip,e.dc,size_t(n)*n*16,pasta/L"residuo_cena.raw");despejar(hip,e.D,size_t(n)*n*16,pasta/L"delta_antes_guarda.raw");}
-        {void* a[]={&e.D,&e.gl,&un,&el,&dep,&ent};lancar(hip,e.k_guarda,size_t(n)*n,a);}
+
+        if(cl){
+            const float sg=nrrjcl::sigma.load(std::memory_order_relaxed),sp=sg>0.f?sg:nrrj::banda_sigma.load(std::memory_order_relaxed);
+            if(clm&2u){{void* a[]={&sai,&e.D,&un,&f,&nl,&e.lo};lancar(hip,e.k_cl_baixa,size_t(nl)*nl,a);}
+                float sl=sp*cel/float(f);unsigned rl=raio_cv(sl),h1=1,h0=0,ref=1;
+                void* a1[]={&e.lo,&e.lo2,&nl,&nl,&sl,&rl,&h1,&ref};lancar(hip,e.k_blur4,size_t(nl)*nl,a1);
+                void* a2[]={&e.lo2,&e.lo,&nl,&nl,&sl,&rl,&h0,&ref};lancar(hip,e.k_blur4,size_t(nl)*nl,a2);}
+            {float km=nrrjcl::razao_max;unsigned um=clm;void* a[]={&e.D,&sai,&ent,&e.lo,&un,&f,&nl,&el,&dep,&um,&km};lancar(hip,e.k_cl_aplica,size_t(n)*n,a);}
+            if(++e.cl_n<=3||(e.cl_n&255u)==0){char t[160]{};NRLOGF(t,sizeof t,"ROSTO_COR n=%llu inst=%d cor=%d luz=%d sigma=%.1f soma_cena=%d",e.cl_n,nrrj::inst_atual(),(clm&1u)?0:1,(clm&2u)?0:1,double(sp),nrrj::soma_cena.load()?1:0);nrrj::log(t);}
+        }
+        if(di){
+
+            float sL=16.f*cel;unsigned rL=raio_cv(sL),h1=1,h0=0,ref=1;
+            void* b1[]={&e.luma,&e.tmp1,&un,&un,&sL,&rL,&h1,&ref};lancar(hip,e.k_blur1,size_t(n)*n,b1);
+            void* b2[]={&e.tmp1,&e.d0,&un,&un,&sL,&rL,&h0,&ref};lancar(hip,e.k_blur1,size_t(n)*n,b2);
+            void* a[]={&e.D,&e.gl,&e.d0,&un,&el,&ent};lancar(hip,e.k_guarda_el,size_t(n)*n,a);}
+        else{void* a[]={&e.D,&e.gl,&un,&el,&dep,&ent};lancar(hip,e.k_guarda,size_t(n)*n,a);}
 
         float soma_h[3]{};const bool mede=(e.avaliados%64u)==0u;
         if(mede){check(hip.set(e.soma,0,16));void* a[]={&e.D,&un,&e.soma};lancar(hip,e.k_mede,(size_t(n)*n+15)/16,a);}
@@ -1031,20 +958,17 @@ inline void avaliar_recorte_i(Estado& e,Hip& hip,char* base,void* primary,int jo
         }
         {void* tag=e.base_hip+nrrj::offset_tag(unsigned(s));unsigned uj=unsigned(etiqueta);void* a[]={&tag,&uj};check(hip.launch(e.k_etiqueta,1,1,1,1,1,1,0,nullptr,a,nullptr));}
         hip.completed("rj_delta");
-        tm3.marca(hip);
-        if(tempos_modo()){static unsigned long long nt=0;if(nt++<400){char t[200]{};NRLOGF(t,sizeof t,"ROSTO_R3_TEMPOS aval=%llu n=%u pre=%.3f rede1=%.3f rede2=%.3f pos=%.3f",e.avaliados+1,n,tm3.ms[0],tm3.ms[1],tm3.ms[2],tm3.ms[3]);nrrj::log(t);}}
         if(mede)check(hip.copy(soma_h,e.soma,12,2));
-        if(despeja){despejar(hip,ent,size_t(n)*n*8,pasta/L"delta_final.raw");
-            std::ofstream fj(pasta/L"despejo.json");
-            fj<<"{\"job\":"<<job<<",\"slot\":"<<s<<",\"x\":"<<S.x<<",\"y\":"<<S.y<<",\"L\":"<<L<<",\"n\":"<<n<<",\"saida\":["<<ow<<","<<oh<<"],\"cabeca\":["<<S.hx<<","<<S.hy<<","<<S.hl<<"],"
-              <<"\"exposicao\":"<<expo<<",\"tonemap\":"<<tonemap<<",\"residuo_cena\":["<<rw<<","<<rh<<"],"
-              <<"\"formatos\":{\"recorte_linear\":\"half4 n x n (cor linear da saida do FSR)\",\"entrada_tom\":\"half4 (entrada da rede)\",\"saida_rede\":\"half4\","
-              <<"\"residuo_cena\":\"float4 n x n\",\"delta_antes_guarda\":\"float4\",\"delta_final\":\"half4 (dominio do tom)\"}}\n";
-            char t[160];NRLOGF(t,sizeof t,"ROSTO_JOGADOR_DESPEJO job=%d pasta=nr_rosto_jogador_despejo",job);nrrj::log(t);}
+        if(rcorte&&(e.r_cortes<=3||(e.r_cortes&63u)==0)){float rs[2]{};check(hip.copy(rs,e.rsoma,8,2));
+         const float wm=rs[1]>0.f?rs[0]/rs[1]:0.f,a0=nrrj::ruido_rosto0.load(),a1=nrrj::ruido_rosto1.load();float t=(wm-a0)/(a1-a0);t=t<0.f?0.f:t>1.f?1.f:t;
+         char lr[200]{};NRLOGF(lr,sizeof lr,"ROSTO_RUIDO_STAT inst=%d cortes=%llu n=%u peso_miolo=%.3f Wf=%.3f s=%.2f amostras=%.0f",nrrj::inst_atual(),e.r_cortes,n,double(wm),double(t*t*(3.f-2.f*t)),double(nrrj::ruido_banda.load()),double(rs[1]));nrrj::log(lr);}
         S.palavra.store(nrrj::palavra(nrrj::Pronto,etiqueta),std::memory_order_release);g.prontos.fetch_add(1);
+        nrrj::sucesso(nrrj::Falha::Recorte);
         const auto t1=std::chrono::steady_clock::now();
         const double ms=std::chrono::duration<double,std::milli>(t1-t0).count(),ms_rede=std::chrono::duration<double,std::milli>(t_rede-t0).count();
         e.ms_soma+=ms;++e.ms_n;e.ms_max=(std::max)(e.ms_max,ms);e.ultimo_ms=ms;
+        if(nrrj::agenda_ligada()){const int ii=nrrj::inst_atual();auto& cm=nrrj::custo_ms_v[ii];
+            const float norm=float(ms)*nrag::custo_tabela(1024u)/nrag::custo_tabela(n);cm.store(nrag::custo_ema(cm.load(std::memory_order_relaxed),norm),std::memory_order_relaxed);}
         ++e.avaliados;g.avaliacoes.fetch_add(1);
         if(e.avaliados<=6||mede||(nrrj::leve_npc()&&(e.avaliados&15u)==0u)){
             char t[360]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_TEMPO avaliacoes=%llu job=%d n=%u L=%u ms=%.2f rede_ms=%.2f ms_media=%.2f ms_max=%.2f prontos=%llu pulados_marcador=%llu delta_abs=%.5f delta_escuro=%.6f",
@@ -1054,40 +978,10 @@ inline void avaliar_recorte_i(Estado& e,Hip& hip,char* base,void* primary,int jo
         }
     }catch(const HipFailure& f){
         S.palavra.store(nrrj::palavra(nrrj::Livre,0),std::memory_order_release);
-        char t[160]{};NRLOGF(t,sizeof t,"hip fase=%s status=%d",f.phase,f.status);nrrj::envenenar(t);
-    }catch(const std::exception& x){S.palavra.store(nrrj::palavra(nrrj::Livre,0),std::memory_order_release);nrrj::envenenar(x.what());}
-    catch(...){S.palavra.store(nrrj::palavra(nrrj::Livre,0),std::memory_order_release);nrrj::envenenar("excecao");}
-}
-
-inline void portao_pulo(Estado& e,Hip& hip,char* base,int job){
-    e.pula_job=0;
-    const float lim=nrrj::pula_limiar.load(std::memory_order_relaxed);if(lim==0.f||!e.k_mini||!importar(e))return;
-    auto& g=nrrj::global();int s=-1;
-    for(unsigned k=0;k<nrrj::slots;++k){const auto w=g.slot[k].palavra.load(std::memory_order_acquire);
-        if(nrrj::estado_de(w)==nrrj::Escrito&&nrrj::job_de(w)==job){if(g.marcado(k)==g.slot[k].seq)s=int(k);break;}}
-    if(s<0)return;
-    auto& S=g.slot[unsigned(s)];
-    const unsigned n=S.n,L=S.L;if(n<nrrj::n_min||n>nrrj::n_max||L<n)return;
-    if(!e.mini&&hip.allocate(&e.mini,4096)){(void)hip.error();e.mini=nullptr;}
-    if(!e.mini)return;
-    const float passo=float(L)/float(n);
-    float cxc=(S.hx-float(S.x))/passo,cyc=(S.hy-float(S.y))/passo,meio=.6f*S.hl/passo;
-    float expo=[&]{const float v=read<float>(base,0x90CC0+4*(unsigned(job)&3u));return std::isfinite(v)&&v>0.f?v:1.f;}();
-    unsigned tm=read<unsigned>(base,0x94698)!=0?1u:0u,un=n;
-    char* ent=e.base_hip+nrrj::offset_ent(unsigned(s));
-    void* a[]={&ent,&un,&cxc,&cyc,&meio,&expo,&tm,&e.mini};lancar(hip,e.k_mini,1024,a);
-    std::array<float,1024> m{};check(hip.copy(m.data(),e.mini,4096,2));
-    double dif=0,ref=0,rel=-1,esc=-1;
-    const bool comp=e.mini_tem&&e.mini_ger==S.geracao&&e.mini_hl>0.f;
-    if(comp){for(size_t i=0;i<1024;++i){dif+=std::fabs(double(m[i])-double(e.mini_ref[i]));ref+=std::fabs(double(e.mini_ref[i]));}
-        rel=dif/(std::max)(ref,1e-3);esc=std::fabs(double(S.hl)/double(e.mini_hl)-1.0);}
-    const int sa=comp?nrrj::slot_do_job(e.mini_job):-1;
-    const bool pronto=sa>=0&&nrrj::estado_de(g.slot[unsigned(sa)].palavra.load(std::memory_order_acquire))==nrrj::Pronto;
-    const bool pula=lim>0.f&&comp&&pronto&&rel<double(lim)&&esc<.04&&e.pulos_seguidos<nrrj::pula_max.load(std::memory_order_relaxed);
-    ++e.portoes;
-    if(e.portoes<=300||(e.portoes&15u)==0){char t[220]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_PULA n=%llu job=%d rel=%.5f esc=%.4f pronto=%d pula=%d seguidos=%u pulados=%llu",e.portoes,job,rel,esc,pronto?1:0,pula?1:0,e.pulos_seguidos,e.pulados+(pula?1u:0u));nrrj::log(t);}
-    if(pula){++e.pulos_seguidos;++e.pulados;e.pula_job=job;return;}
-    e.pulos_seguidos=0;e.mini_ref=m;e.mini_hl=S.hl;e.mini_ger=S.geracao;e.mini_tem=true;e.mini_job=job;
+        char t[160]{};NRLOGF(t,sizeof t,"hip fase=%s status=%d",f.phase,f.status);nrrj::passageira(nrrj::Falha::Recorte,t);
+    }catch(const nrrj::FalhaPermanente& x){S.palavra.store(nrrj::palavra(nrrj::Livre,0),std::memory_order_release);nrrj::envenenar(x.what());}
+    catch(const std::exception& x){S.palavra.store(nrrj::palavra(nrrj::Livre,0),std::memory_order_release);nrrj::passageira(nrrj::Falha::Recorte,x.what());}
+    catch(...){S.palavra.store(nrrj::palavra(nrrj::Livre,0),std::memory_order_release);nrrj::passageira(nrrj::Falha::Recorte,"excecao");}
 }
 
 struct Preparo {char* base{};void* primary{};bool feito{},falhou{};};
@@ -1101,10 +995,15 @@ inline bool preparar_orcamento(Estado& e0,Hip& hip,char* base,void* primary){
     const size_t n2=size_t(d.cap_grace)*d.cap_grace;
     if(nrrj::frescor.load()>0.f&&nrrj::acumula.load()&&e0.k_lumin&&e0.k_bandas2&&e0.k_meia4&&!e0.lin){e0.lin_tentado=true;check(hip.allocate(&e0.lin,n2*4));}
     if(nrrj::passos.load()>=2&&e0.k_sat&&!e0.in2){e0.buf2_tentado=true;check(hip.allocate(&e0.in2,n2*8));check(hip.allocate(&e0.out2,n2*8));}
-    if(nrrj::pula_limiar.load()!=0.f&&e0.k_mini&&!e0.mini)check(hip.allocate(&e0.mini,4096));
+    if(nrrj::pula_limiar.load()>0.f&&e0.k_mini&&!e0.mini)check(hip.allocate(&e0.mini,4096));
+
+    auto ruido=[&](Estado& e,unsigned n){if(!nrrj::ruido_peso.load()||!nrrj::ruido_inst()||!e.k_rpeso||!e.k_rmedia||e.rw)return;
+        e.r_tentado=true;check(hip.allocate(&e.rw,size_t(n)*n*4));check(hip.allocate(&e.rsoma,16));
+        if(nrrj::ruido_limpa.load()>0.f&&!e.lsoma){e.l_tentado=true;check(hip.allocate(&e.lsoma,16));}};
+    ruido(e0,d.cap_grace);
     if(!importar(e0))return false;
     for(int k=1;k<=d.k_npc;++k){nrrj::Inst ik(k);auto& e=estado();std::lock_guard<std::mutex> l(e.mutex);
-        compartilhar(e,e0);if(!importar(e))return false;
+        compartilhar(e,e0);if(!importar(e))return false;ruido(e,nrrj::n_cap());
         if(k==1&&!ctx_unico())(void)contexto(e,hip,base,primary);}
     const auto t1=std::chrono::steady_clock::now();
     const auto la=nrorc::lados_aquecer(d,ctx_unico());
@@ -1136,6 +1035,12 @@ inline void antes_do_publish(char* base,void* primary,int job,void* dest,int rw,
     if(job<=0)return;
     ler_ini(base);
     nrorc_vram::por_job(job);
+
+    nrrj::tique.fetch_add(1,std::memory_order_relaxed);
+    {static std::uint64_t epoca_vista=0;if(nrrj::falhas_epoca(nrrj::epoca_backend.load(std::memory_order_acquire),epoca_vista)){
+
+        {auto& U=ultimo_pub();std::lock_guard<std::mutex> lu(U.m);U.f=Estado::Fora{};}
+        nrrj::log("ROSTO_JOGADOR_FALHAS_ZERADAS backend novo (contadores de falhas passageiras e pausas do zero; ultimo job publicado e tabela job -> quadro limpos)");}}
     if(!nrrj::ativo())return;
     auto& e=estado();std::lock_guard<std::mutex> lock(e.mutex);
     e.fora_pend=Estado::Fora{};
@@ -1152,7 +1057,8 @@ inline void antes_do_publish(char* base,void* primary,int job,void* dest,int rw,
             if(!e.carregado)(void)contexto(e,hip,base,primary);
 
             if(nrrj::npc2_ativo())for(int kn=1;kn<=nrrj::npc_n();++kn){nrrj::Inst i1(kn);auto& e1=estado();std::lock_guard<std::mutex> l1(e1.mutex);
-                try{if(nrrj::ativo()&&modulo(e1,hip)&&kn==1&&!e1.carregado)(void)contexto(e1,hip,base,primary);}catch(...){nrrj::envenenar("pesos npc2");}}
+                try{if(nrrj::ativo()&&modulo(e1,hip)&&kn==1&&!e1.carregado)(void)contexto(e1,hip,base,primary);}
+                catch(const nrrj::FalhaPermanente&){nrrj::envenenar("pesos npc2");}catch(...){nrrj::passageira(nrrj::Falha::Recorte,"pesos npc2");}}
         }
 
         else if(!preparo().feito){preparo().base=base;preparo().primary=primary;preparar_deteccao(e,hip,base,job);return;}
@@ -1160,9 +1066,10 @@ inline void antes_do_publish(char* base,void* primary,int job,void* dest,int rw,
 
         if(nrrj::fora.load(std::memory_order_relaxed))e.fora_pend=Estado::Fora{job,base,primary,dest,rw,rh,pitch,formato};
         else avaliar_recorte(e,hip,base,primary,job,dest,rw,rh,pitch,formato);
-    }catch(const HipFailure& f){char t[160]{};NRLOGF(t,sizeof t,"hip fase=%s status=%d (preparo)",f.phase,f.status);nrrj::envenenar(t);}
-    catch(const std::exception& x){nrrj::envenenar(x.what());}
-    catch(...){nrrj::envenenar("excecao preparo");}
+    }catch(const HipFailure& f){char t[160]{};NRLOGF(t,sizeof t,"hip fase=%s status=%d (preparo)",f.phase,f.status);nrrj::passageira(nrrj::Falha::Recorte,t);}
+    catch(const nrrj::FalhaPermanente& x){nrrj::envenenar(x.what());}
+    catch(const std::exception& x){nrrj::passageira(nrrj::Falha::Recorte,x.what());}
+    catch(...){nrrj::passageira(nrrj::Falha::Recorte,"excecao preparo");}
 }
 
 struct FilaRede {std::mutex m;std::condition_variable cv;std::deque<std::pair<Estado::Fora,int>> fila;unsigned long long hs{};bool tentada{},ok{};
@@ -1182,7 +1089,92 @@ inline int sj_escolher_pendente() noexcept {
     return s;
 }
 
+inline int sj_idade_pronto(unsigned s) noexcept {
+    auto& g=nrrj::global();const auto& S=g.slot[s];
+    int idade=-1;
+    {std::uint64_t qp=0;
+
+     for(unsigned k2=0;k2<nrrj::slots;++k2){const auto& P=g.slot[k2];const auto w2=P.palavra.load(std::memory_order_acquire);
+         if(nrrj::estado_de(w2)!=nrrj::Pronto||!nrrj::id_e_quadro(nrrj::job_de(w2)))continue;
+         const std::uint64_t pg=P.geracao,pq=P.quadro;std::atomic_thread_fence(std::memory_order_acquire);
+         if(P.palavra.load(std::memory_order_relaxed)!=w2)continue;
+         if(pg==S.geracao&&pq<=S.quadro&&pq>qp)qp=pq;}
+     if(qp)idade=int(S.quadro-qp);}
+    return idade;
+}
+struct ReusoMede {nrrj::PortaoReuso p;float* host{};void* ev{};bool tentou{},sem_api{};unsigned long long n{},atrasadas{};};
+inline ReusoMede& reuso_mede(){static auto* r=new ReusoMede;return *r;}
+inline bool sj_medir_reuso(Estado& e,Hip& hip,char* base,int job,int s,bool* congela_ok=nullptr){
+    const float lim=nrrj::pula_limiar.load(std::memory_order_relaxed);
+    if(!(lim>0.f)||!e.k_mini||!importar(e))return false;
+    auto& g=nrrj::global();auto& S=g.slot[unsigned(s)];
+
+    const unsigned n=S.n,L=S.L;if(n<nrrj::n_min||n>nrrj::n_cap()||!L)return false;
+    if(!e.mini&&aloca(hip,&e.mini,4096,"portao do rosto"))e.mini=nullptr;
+    if(!e.mini)return false;
+    auto& R=reuso_mede();
+    const auto a=nrhip::api_rosto();
+    if(!R.tentou){R.tentou=true;
+        void* h{};if(a.host_malloc&&a.event_create_with_flags&&a.event_record&&a.event_query&&hip.copy_async&&!a.host_malloc(&h,4096,0u)&&h){
+            R.host=static_cast<float*>(h);if(a.event_create_with_flags(&R.ev,0x2u )||!R.ev)R.ev=nullptr;}
+        if(!R.host||!R.ev){R.sem_api=true;(void)hip.error();nrrj::log("ROSTO_REUSO sem a copia assincrona (hipHostMalloc/hipEvent): o pulo do recorte fica desligado");}}
+    if(R.sem_api)return false;
+
+    bool pronta=false;
+    if(R.p.pend){const int q=a.event_query(R.ev);
+        if(q==0)pronta=true;else if(q==600)++R.atrasadas;else{(void)nrgpu::hip(q,"portao do rosto (hipEventQuery)");return false;}}
+
+    const int idade=sj_idade_pronto(unsigned(s));
+
+    bool cg=false;if(nrrj::pula_congela.load(std::memory_order_relaxed)){const auto dt=nrrj::ler_deteccao();cg=dt.tem&&nrrj::congela_parado(dt.vx,dt.vy,nrrj::pula_congela_vel.load(std::memory_order_relaxed));}
+    if(congela_ok)*congela_ok=cg;
+    const bool real=R.p.decidir(pronta?R.host:nullptr,S.hl,S.geracao,idade,nrrj::sj_q(),lim,cg?0xffffffffu:nrrj::pula_max.load(std::memory_order_relaxed));
+
+    if(!R.p.pend||pronta){
+        const float passo=float(L)/float(n);
+        float cxc=(S.hx-float(S.x))/passo,cyc=(S.hy-float(S.y))/passo,meio=.6f*S.hl/passo;
+        float expo=expo_do_job(base,job);unsigned tm=tonemap_do_proxy(base),un=n;
+        char* ent=e.base_hip+nrrj::offset_ent(unsigned(s));
+        void* ar[]={&ent,&un,&cxc,&cyc,&meio,&expo,&tm,&e.mini};lancar(hip,e.k_mini,1024,ar);
+        check(hip.copy_async(R.host,e.mini,4096,2,nullptr));
+        if(const int r=a.event_record(R.ev,nullptr)){(void)nrgpu::hip(r,"portao do rosto (hipEventRecord)");return real;}
+        R.p.lancou(S.hl,S.geracao,!real);}
+    ++R.n;
+    if(R.n<=64||(R.n&31u)==0){char t[300]{};NRLOGF(t,sizeof t,"ROSTO_REUSO n=%llu quadro=%llu ger=%llu hl=%.0f real=%d rel=%.4f idade=%d pulados=%llu lim=%.3f atrasadas=%llu (miniatura do recorte anterior, copia assincrona)",
+        R.n,static_cast<unsigned long long>(S.quadro),static_cast<unsigned long long>(S.geracao),double(S.hl),real?1:0,R.p.rel,idade,R.p.pulados,double(lim),R.atrasadas);nrrj::log(t);}
+    return real;
+}
+
+inline bool sj_congelar(Estado& e,Hip& hip,int s,int id) noexcept {
+    try{
+        if(!e.base_hip||!e.k_etiqueta)return false;
+        auto& g=nrrj::global();auto& S=g.slot[unsigned(s)];
+        int p=-1;std::uint64_t qp=0;std::uint64_t wp=0;
+        for(unsigned k=0;k<nrrj::slots;++k){if(int(k)==s)continue;const auto& P=g.slot[k];const auto w2=P.palavra.load(std::memory_order_acquire);
+            if(nrrj::estado_de(w2)!=nrrj::Pronto||!nrrj::id_e_quadro(nrrj::job_de(w2)))continue;
+            if(P.geracao!=S.geracao||P.quadro>S.quadro||P.quadro<=qp)continue;
+            if(P.x!=S.x||P.y!=S.y||P.L!=S.L||P.n!=S.n||P.ow!=S.ow||P.oh!=S.oh)continue;
+            if(!nrrj::congela_no_lugar(S.hx,S.hy,S.hl,P.hx0,P.hy0,P.hl,nrrj::pula_congela_px.load(std::memory_order_relaxed)))continue;
+            std::atomic_thread_fence(std::memory_order_acquire);if(P.palavra.load(std::memory_order_relaxed)!=w2)continue;
+            p=int(k);qp=P.quadro;wp=w2;}
+        if(p<0)return false;
+        auto w=S.palavra.load(std::memory_order_acquire);
+        if(nrrj::estado_de(w)!=nrrj::Escrito||nrrj::job_de(w)!=id||!S.palavra.compare_exchange_strong(w,nrrj::palavra(nrrj::Avaliando,id),std::memory_order_acq_rel))return false;
+        const size_t b=size_t(S.n)*S.n*8u;
+        check(hip.copy(e.base_hip+nrrj::offset_ent(unsigned(s)),e.base_hip+nrrj::offset_ent(unsigned(p)),b,3));
+        check(hip.copy(e.base_hip+nrrj::offset_sai(unsigned(s)),e.base_hip+nrrj::offset_sai(unsigned(p)),b,3));
+        S.hx0=g.slot[unsigned(p)].hx0;S.hy0=g.slot[unsigned(p)].hy0;
+        if(g.slot[unsigned(p)].palavra.load(std::memory_order_acquire)!=wp){S.palavra.store(nrrj::palavra(nrrj::Livre,0),std::memory_order_release);return false;}
+        {void* tag=e.base_hip+nrrj::offset_tag(unsigned(s));unsigned uj=unsigned(id);void* a[]={&tag,&uj};check(hip.launch(e.k_etiqueta,1,1,1,1,1,1,0,nullptr,a,nullptr));}
+        hip.completed("rj_congela");
+        S.palavra.store(nrrj::palavra(nrrj::Pronto,id),std::memory_order_release);g.prontos.fetch_add(1);
+        return true;
+    }catch(...){auto& S=nrrj::global().slot[unsigned(s)];auto w=S.palavra.load(std::memory_order_acquire);
+        if(nrrj::estado_de(w)==nrrj::Avaliando)S.palavra.store(nrrj::palavra(nrrj::Livre,0),std::memory_order_release);return false;}
+}
+
 inline void sj_avaliar(Estado& e0,int s) noexcept {
+    if(nrgpu::perdida())return;
     nrrj::Inst i0(0);auto& g=nrrj::global();auto& C=nrrj::sj_conta();auto& S=g.slot[unsigned(s)];
     const auto w=S.palavra.load(std::memory_order_acquire);const int id=nrrj::job_de(w);
     auto livre=[&]{auto ww=w;S.palavra.compare_exchange_strong(ww,nrrj::palavra(nrrj::Livre,0),std::memory_order_acq_rel);};
@@ -1195,10 +1187,26 @@ inline void sj_avaliar(Estado& e0,int s) noexcept {
     SjAval a{s,id,0.f,0.f};
     {const int r=nrrj::sj_desloc_par(nrrj::caminho_rb.load(std::memory_order_acquire),S.quadro,Fj,a.dx,a.dy);
      if(r==1)C.estendido.fetch_add(1,std::memory_order_relaxed);else if(r==2)C.zero.fetch_add(1,std::memory_order_relaxed);else if(r==3)C.tabela_tarde.fetch_add(1,std::memory_order_relaxed);}
+
+    if(nrrj::pose_barata.load(std::memory_order_relaxed)){static unsigned pose_seg=0;
+        if(nrpose::pula(nrrj::pose_longe.load(std::memory_order_acquire),pose_seg,nrrj::pose_cadencia.load(std::memory_order_relaxed),sj_idade_pronto(unsigned(s)),nrrj::sj_q())){
+            ++pose_seg;livre();const auto np=C.pose_pulados.fetch_add(1,std::memory_order_relaxed)+1;
+            if(np<=6||(np&127u)==0){char l[160]{};NRLOGF(l,sizeof l,"ROSTO_POSE_BARATA_PULO pulados=%llu quadro=%llu",np,static_cast<unsigned long long>(S.quadro));nrrj::log(l);}
+            return;}
+        pose_seg=0;}
     const auto t0=std::chrono::steady_clock::now();
-    try{Hip hip;if(modulo(e0,hip))avaliar_recorte_i(e0,hip,f.base,f.primary,f.job,f.dest,f.rw,f.rh,f.pitch,f.formato,&a);}
-    catch(const HipFailure& x){char tt[160]{};NRLOGF(tt,sizeof tt,"hip fase=%s status=%d (recorte de quadro)",x.phase,x.status);nrrj::envenenar(tt);}
-    catch(...){nrrj::envenenar("excecao recorte de quadro");}
+    bool pulou=false,cg=false;
+    try{Hip hip;if(modulo(e0,hip)){try{pulou=sj_medir_reuso(e0,hip,f.base,f.job,s,&cg);}catch(...){pulou=false;}}
+        if(pulou&&cg&&sj_congelar(e0,hip,s,id)){
+            const auto nc=C.congelados.fetch_add(1,std::memory_order_relaxed)+1;C.pulados_reuso.fetch_add(1,std::memory_order_relaxed);
+            if(nc<=3||(nc&127u)==0){char l[160]{};NRLOGF(l,sizeof l,"ROSTO_JOGADOR_PULA_CONGELA congelados=%llu quadro=%llu",nc,static_cast<unsigned long long>(S.quadro));nrrj::log(l);}
+            return;}
+
+        if(pulou&&!cg){livre();C.pulados_reuso.fetch_add(1,std::memory_order_relaxed);return;}
+        if(modulo(e0,hip))avaliar_recorte_i(e0,hip,f.base,f.primary,f.job,f.dest,f.rw,f.rh,f.pitch,f.formato,&a);}
+    catch(const HipFailure& x){char tt[160]{};NRLOGF(tt,sizeof tt,"hip fase=%s status=%d (recorte de quadro)",x.phase,x.status);nrrj::passageira(nrrj::Falha::Recorte,tt);}
+    catch(const nrrj::FalhaPermanente& x){nrrj::envenenar(x.what());}
+    catch(...){nrrj::passageira(nrrj::Falha::Recorte,"excecao recorte de quadro");}
     if(nrrj::estado_de(S.palavra.load(std::memory_order_acquire))==nrrj::Escrito)livre();
     const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
     auto& F=fila_rede();F.sj_ms_soma+=ms;++F.sj_n;
@@ -1216,12 +1224,11 @@ inline void sj_intercalar() noexcept {
 }
 inline void laco_rede() noexcept {
     auto& F=fila_rede();auto& e=estado();
-    using SetDev=int(*)(int);HMODULE h=GetModuleHandleW(L"amdhip64_7.dll");auto setdev=h?reinterpret_cast<SetDev>(GetProcAddress(h,"hipSetDevice")):nullptr;
+    const auto setdev=nrhip::api_rosto().set_device;
     static HANDLE timer=CreateWaitableTimerExW(nullptr,nullptr,0x00000002 ,TIMER_ALL_ACCESS);
     const auto dorme_us=[](unsigned us){if(!us)return;LARGE_INTEGER due{};due.QuadPart=-LONGLONG(us)*10;
         if(timer&&SetWaitableTimer(timer,&due,0,nullptr,nullptr,FALSE))WaitForSingleObject(timer,us/1000u+50u);else Sleep((us+999u)/1000u);};
-    static constexpr unsigned auto_us[5]{0,1500,3000,4500,6000};
-    double auto_ms[5]{};unsigned auto_n[5]{};unsigned long long auto_k=0;int dev_atual=-1;
+    nrrj::EsperaAuto ea(nrrj::espera_auto_us);int dev_atual=-1;
     na_thread_rede=true;
     if(nrrj::sj_q())nrrj::acordar_rede.store(&sj_acordar,std::memory_order_release);
     for(;;){
@@ -1244,6 +1251,7 @@ inline void laco_rede() noexcept {
          else if(sj_s<0)F.cv.wait(l,[&]{return !F.fila.empty()||F.sj_pend;});
          F.sj_pend=false;
          if(!F.fila.empty()){item=F.fila.front();F.fila.pop_front();hs=F.hs;tem_item=true;}}
+        if(nrgpu::perdida())return;
         if(sj_s>=0&&sj_marcado){
             F.sj_espera_soma+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-F.sj_desde).count();
             nrregswin::rjsync::Rosto ev;std::lock_guard<std::mutex> lock(e.mutex);sj_avaliar(e,sj_s);}
@@ -1254,46 +1262,44 @@ inline void laco_rede() noexcept {
             if(setdev&&item.second>=0&&item.second!=dev_atual){(void)setdev(item.second);dev_atual=item.second;}
 
             if(nrregswin::rjsync::flag_set_n.load(std::memory_order_acquire)>hs)++F.hs_espera_ok;else ++F.hs_espera_falhou;
-            bool tem=false,pula=false;int auto_i=-1;unsigned esp=0;
+            bool tem=false;int auto_i=-1;unsigned esp=0;
 
             {nrregswin::rjsync::Rosto ev;std::lock_guard<std::mutex> lock(e.mutex);
-                try{Hip hip;portao_pulo(e,hip,f.base,f.job);}catch(...){e.pula_job=0;}
-                pula=e.pula_job==f.job;
-                if(pula){try{Hip hip;avaliar_recorte(e,hip,f.base,f.primary,f.job,f.dest,f.rw,f.rh,f.pitch,f.formato);}catch(...){}}
                 auto& g=nrrj::global();
                 for(unsigned k=0;k<nrrj::slots&&!tem;++k){const auto w=g.slot[k].palavra.load(std::memory_order_acquire);tem=nrrj::estado_de(w)==nrrj::Escrito&&nrrj::job_de(w)==f.job;}
             }
-            if(pula)continue;
             if(!tem){++F.sem_recorte;
                 nrregswin::rjsync::Rosto ev;std::lock_guard<std::mutex> lock(e.mutex);
                 try{Hip hip;avaliar_recorte(e,hip,f.base,f.primary,f.job,f.dest,f.rw,f.rh,f.pitch,f.formato);}catch(...){}
                 continue;}
             esp=nrrj::espera_us.load(std::memory_order_relaxed);
             if(esp==nrrj::espera_present)esp=0;
-            if(esp==nrrj::espera_auto){
-                const unsigned long long k=auto_k++;
-                if(k<25)auto_i=int(k%5);else if(k%16==0)auto_i=int((k/16)%5);
-                else{auto_i=0;for(int i=1;i<5;++i)if(auto_n[i]&&(auto_n[auto_i]==0||auto_ms[i]<auto_ms[auto_i]))auto_i=i;}
-                esp=auto_us[auto_i];if(k<5)auto_i=-1;
-            }
+            if(esp==nrrj::espera_auto){const unsigned long long k=ea.k;auto_i=ea.escolher(25);esp=ea.us[auto_i];if(k<5)auto_i=-1;}
             dorme_us(esp);
             double ms=-1.0;
             {nrregswin::rjsync::Rosto ev;std::lock_guard<std::mutex> lock(e.mutex);
                 e.ultimo_ms=-1.0;
                 try{Hip hip;avaliar_recorte(e,hip,f.base,f.primary,f.job,f.dest,f.rw,f.rh,f.pitch,f.formato);}
-                catch(const HipFailure& x){char t[160]{};NRLOGF(t,sizeof t,"hip fase=%s status=%d (recorte thread)",x.phase,x.status);nrrj::envenenar(t);}
-                catch(...){nrrj::envenenar("excecao recorte thread");}
+                catch(const HipFailure& x){char t[160]{};NRLOGF(t,sizeof t,"hip fase=%s status=%d (recorte thread)",x.phase,x.status);nrrj::passageira(nrrj::Falha::Recorte,t);}
+                catch(const nrrj::FalhaPermanente& x){nrrj::envenenar(x.what());}
+                catch(...){nrrj::passageira(nrrj::Falha::Recorte,"excecao recorte thread");}
                 ms=e.ultimo_ms;}
             ++F.feitos;
-            if(auto_i>=0&&ms>0){auto_ms[auto_i]=auto_n[auto_i]?.75*auto_ms[auto_i]+.25*ms:ms;++auto_n[auto_i];}
+            ea.medir(auto_i,ms);
             F.total_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t_item).count();
             if(F.feitos<=8||(F.feitos&31u)==0){char t[300]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_THREAD_REDE feitos=%llu sem_recorte=%llu hs_ok=%llu hs_falhou=%llu espera_us=%u ms=%.2f total_ms=%.2f auto[0/1.5/3/4.5/6]=%.2f/%.2f/%.2f/%.2f/%.2f",
-                F.feitos,F.sem_recorte,F.hs_espera_ok,F.hs_espera_falhou,esp,ms,F.total_ms,auto_ms[0],auto_ms[1],auto_ms[2],auto_ms[3],auto_ms[4]);nrrj::log(t);}
-        }catch(...){nrrj::envenenar("excecao na thread do recorte");}
+                F.feitos,F.sem_recorte,F.hs_espera_ok,F.hs_espera_falhou,esp,ms,F.total_ms,ea.ms[0],ea.ms[1],ea.ms[2],ea.ms[3],ea.ms[4]);nrrj::log(t);}
+        }catch(...){nrrj::passageira(nrrj::Falha::Recorte,"excecao na thread do recorte");}
     }
 }
 inline void depois_do_publish() noexcept {
-    if(!nrrj::ativo())return;
+    if(!nrrj::ativo()){
+
+        if(!nrrj::ligado.load(std::memory_order_relaxed)||nrrj::global().envenenado.load(std::memory_order_relaxed)||!nrrj::pausado())return;
+        auto& e=estado();std::lock_guard<std::mutex> lock(e.mutex);
+        if(e.grade_lido>=0){auto& S=nrrj::grade().slot[unsigned(e.grade_lido)];e.grade_lido=-1;S.palavra.store(nrrj::palavra_g(nrrj::GLivre,0),std::memory_order_release);}
+        e.det_pend=false;e.fora_pend=Estado::Fora{};
+        return;}
     auto& e=estado();std::lock_guard<std::mutex> lock(e.mutex);
     nrorc::EscopoOrigem eo(nrorc::Origem::Rosto);
     if(nrorc::modo()==1){auto& P=preparo();
@@ -1310,7 +1316,7 @@ inline void depois_do_publish() noexcept {
         if(!F.tentada){F.tentada=true;try{std::thread(laco_rede).detach();F.ok=true;}catch(...){F.ok=false;}
             if(!F.ok&&nrrj::sj_q()){nrrj::sem_job_q.store(0);nrrj::log("ROSTO_JOGADOR_SEMJOB_FALHOU thread da rede nao subiu: recorte so no job");}}
         if(F.ok){
-            int dev=-1;{using GetDev=int(*)(int*);HMODULE h=GetModuleHandleW(L"amdhip64_7.dll");auto gd=h?reinterpret_cast<GetDev>(GetProcAddress(h,"hipGetDevice")):nullptr;if(!gd||gd(&dev))dev=-1;}
+            int dev=-1;{const auto gd=nrhip::api_rosto().get_device;if(!gd||gd(&dev))dev=-1;}
             {std::lock_guard<std::mutex> l(F.m);F.fila.emplace_back(e.fora_pend,dev);F.hs=nrregswin::rjsync::flag_set_n.load(std::memory_order_acquire);}
             e.fora_pend=Estado::Fora{};F.cv.notify_one();
         }
@@ -1319,16 +1325,10 @@ inline void depois_do_publish() noexcept {
     if(e.fora_pend.job>0){
         const auto f=e.fora_pend;e.fora_pend=Estado::Fora{};
 
-        try{Hip hip;portao_pulo(e,hip,f.base,f.job);}catch(...){e.pula_job=0;}
-        if(e.pula_job==f.job){try{Hip hip;avaliar_recorte(e,hip,f.base,f.primary,f.job,f.dest,f.rw,f.rh,f.pitch,f.formato);}catch(...){}
-            goto detector;}
-
-        static constexpr unsigned auto_us[5]{0,1500,3000,4500,6000};
-        static double auto_ms[5]{};static unsigned auto_n[5]{};static unsigned long long auto_k=0;int auto_i=-1;
+        static nrrj::EsperaAuto ea(nrrj::espera_auto_us);int auto_i=-1;
         unsigned esp=nrrj::espera_us.load(std::memory_order_relaxed);
 
-        static constexpr unsigned pres_us[5]{0,1000,2000,3000,4000};
-        static double pres_ms[5]{};static unsigned pres_n[5]{};static unsigned long long pres_k=0;static double pres_espera=0;int pres_i=-1;
+        static nrrj::EsperaAuto ep(nrrj::espera_present_us);static double pres_espera=0;int pres_i=-1;
         if(esp==nrrj::espera_present){
             static HANDLE tp=CreateWaitableTimerExW(nullptr,nullptr,0x00000002,TIMER_ALL_ACCESS);
             const auto p0=nrrj::presents_fim.load(std::memory_order_acquire);const auto tw=std::chrono::steady_clock::now();
@@ -1336,10 +1336,7 @@ inline void depois_do_publish() noexcept {
                 LARGE_INTEGER due{};due.QuadPart=-2500;
                 if(tp&&SetWaitableTimer(tp,&due,0,nullptr,nullptr,FALSE))WaitForSingleObject(tp,20);else Sleep(1);}
             pres_espera=.9*pres_espera+.1*std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tw).count();
-            const unsigned long long k=pres_k++;
-            if(k<20)pres_i=int(k%5);else if(k%16==0)pres_i=int((k/16)%5);
-            else{pres_i=0;for(int i=1;i<5;++i)if(pres_n[i]&&(pres_n[pres_i]==0||pres_ms[i]<pres_ms[pres_i]))pres_i=i;}
-            esp=pres_us[pres_i];
+            pres_i=ep.escolher(20);esp=ep.us[pres_i];
         }
 
         static unsigned long long r6_sem=0,r6_com=0;bool r6_descarta=false;
@@ -1350,19 +1347,11 @@ inline void depois_do_publish() noexcept {
             else{++r6_com;
                 if(esp==nrrj::espera_auto){
 
-                    const unsigned long long k=auto_k++;
-                    if(k<25)auto_i=int(k%5);else if(k%16==0)auto_i=int((k/16)%5);
-                    else{auto_i=0;for(int i=1;i<5;++i)if(auto_n[i]&&(auto_n[auto_i]==0||auto_ms[i]<auto_ms[auto_i]))auto_i=i;}
-                    r6_descarta=k<5;esp=auto_us[auto_i];
+                    const unsigned long long k=ea.k;auto_i=ea.escolher(25);r6_descarta=k<5;esp=ea.us[auto_i];
                 }}
             if((r6_sem+r6_com)<=8||((r6_sem+r6_com)&255u)==0){char t[160]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_ESPERA_JOB job=%d com_recorte=%llu sem_recorte=%llu espera_us=%u",f.job,r6_com,r6_sem,esp);nrrj::log(t);}
         }
-        if(esp==nrrj::espera_auto){
-            const unsigned long long k=auto_k++;
-            if(k<20)auto_i=int(k%5);else if(k%16==0)auto_i=int((k/16)%5);
-            else{auto_i=0;for(int i=1;i<5;++i)if(auto_n[i]&&(auto_n[auto_i]==0||auto_ms[i]<auto_ms[auto_i]))auto_i=i;}
-            esp=auto_us[auto_i];
-        }
+        if(esp==nrrj::espera_auto){auto_i=ea.escolher(20);esp=ea.us[auto_i];}
         if(esp){
             static HANDLE timer=CreateWaitableTimerExW(nullptr,nullptr,0x00000002 ,TIMER_ALL_ACCESS);
             LARGE_INTEGER due{};due.QuadPart=-LONGLONG(esp)*10;
@@ -1370,18 +1359,18 @@ inline void depois_do_publish() noexcept {
         }
         e.ultimo_ms=-1.0;
         try{Hip hip;avaliar_recorte(e,hip,f.base,f.primary,f.job,f.dest,f.rw,f.rh,f.pitch,f.formato);}
-        catch(const HipFailure& x){char t[160]{};NRLOGF(t,sizeof t,"hip fase=%s status=%d (recorte fora)",x.phase,x.status);nrrj::envenenar(t);}
-        catch(...){nrrj::envenenar("excecao recorte fora");}
+        catch(const HipFailure& x){char t[160]{};NRLOGF(t,sizeof t,"hip fase=%s status=%d (recorte fora)",x.phase,x.status);nrrj::passageira(nrrj::Falha::Recorte,t);}
+        catch(const nrrj::FalhaPermanente& x){nrrj::envenenar(x.what());}
+        catch(...){nrrj::passageira(nrrj::Falha::Recorte,"excecao recorte fora");}
         if(pres_i>=0&&e.ultimo_ms>0){
-            pres_ms[pres_i]=pres_n[pres_i]?.75*pres_ms[pres_i]+.25*e.ultimo_ms:e.ultimo_ms;++pres_n[pres_i];
-            if(pres_k<=24||(pres_k&63u)==0){char t[240]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_ESPERA_PRESENT k=%llu ate_present=%.2f ms[0/1/2/3/4]=%.2f/%.2f/%.2f/%.2f/%.2f",pres_k,pres_espera,pres_ms[0],pres_ms[1],pres_ms[2],pres_ms[3],pres_ms[4]);nrrj::log(t);}
+            ep.medir(pres_i,e.ultimo_ms);
+            if(ep.k<=24||(ep.k&63u)==0){char t[240]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_ESPERA_PRESENT k=%llu ate_present=%.2f ms[0/1/2/3/4]=%.2f/%.2f/%.2f/%.2f/%.2f",ep.k,pres_espera,ep.ms[0],ep.ms[1],ep.ms[2],ep.ms[3],ep.ms[4]);nrrj::log(t);}
         }
         if(auto_i>=0&&e.ultimo_ms>0&&!r6_descarta){
-            auto_ms[auto_i]=auto_n[auto_i]?.75*auto_ms[auto_i]+.25*e.ultimo_ms:e.ultimo_ms;++auto_n[auto_i];
-            if(auto_k<=24||(auto_k&63u)==0){char t[220]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_ESPERA_AUTO k=%llu ms[0/1.5/3/4.5/6]=%.2f/%.2f/%.2f/%.2f/%.2f",auto_k,auto_ms[0],auto_ms[1],auto_ms[2],auto_ms[3],auto_ms[4]);nrrj::log(t);}
+            ea.medir(auto_i,e.ultimo_ms);
+            if(ea.k<=24||(ea.k&63u)==0){char t[220]{};NRLOGF(t,sizeof t,"ROSTO_JOGADOR_ESPERA_AUTO k=%llu ms[0/1.5/3/4.5/6]=%.2f/%.2f/%.2f/%.2f/%.2f",ea.k,ea.ms[0],ea.ms[1],ea.ms[2],ea.ms[3],ea.ms[4]);nrrj::log(t);}
         }
     }
-detector:
     if(!e.det_pend)return;e.det_pend=false;
     auto& D=det();const auto t=e.det_tarefa;
     if(det_thread.load(std::memory_order_relaxed)){
@@ -1394,8 +1383,10 @@ detector:
             D.cv.notify_one();return;
         }
     }
-    try{Hip hip;executar_deteccao(D,t,[&](void* dst,const void* src,size_t n){return hip.copy(dst,src,n,2)==0;});}
-    catch(const HipFailure& f){D.sets[t.set].ocupado.store(false);char l[160]{};NRLOGF(l,sizeof l,"hip fase=%s status=%d (detector)",f.phase,f.status);nrrj::envenenar(l);}
-    catch(...){D.sets[t.set].ocupado.store(false);nrrj::envenenar("excecao detector");}
+    try{Hip hip;const auto c2=nrhip::api_rosto().memcpy_2d;
+        executar_deteccao(D,t,[&](void* dst,const void* src,size_t n){return hip_ok(hip.copy(dst,src,n,2),"detector (copia)");},
+            [&](void* dst,size_t dp,const void* src,size_t sp,size_t w,size_t hh){return c2&&hip_ok(c2(dst,dp,src,sp,w,hh,3),"detector (copia 2D)");});}
+    catch(const HipFailure& f){D.sets[t.set].ocupado.store(false);char l[160]{};NRLOGF(l,sizeof l,"hip fase=%s status=%d (detector)",f.phase,f.status);nrrj::passageira(nrrj::Falha::Detector,l);}
+    catch(...){D.sets[t.set].ocupado.store(false);nrrj::passageira(nrrj::Falha::Detector,"excecao detector");}
 }
 }

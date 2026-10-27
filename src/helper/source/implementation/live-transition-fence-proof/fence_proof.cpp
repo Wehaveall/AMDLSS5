@@ -43,11 +43,11 @@ Result OwnedFence::signal(Value target) noexcept {
 }
 Result OwnedFence::poll() noexcept {
     if(result_.status==Status::Failed) return result_;
+
+    if(result_.status!=Status::Ready) last_read_=backend_->completed_value();
     if(!validate()) return result_;
     if(result_.status==Status::Ready) return result_;
-    const Value value=backend_->completed_value();
-    last_read_=value;
-    if(!validate()) return result_;
+    const Value value=last_read_;
     if(value==Max || value>result_.target || value<last_observed_) return fail("removed, foreign or regressed fence value");
     last_observed_=value;
     result_.status=value==result_.target?Status::Completed:Status::Pending;
@@ -60,4 +60,5 @@ bool OwnedFence::arm(void* event) noexcept {
 Result OwnedFence::snapshot() const noexcept { return result_; }
 const char* OwnedFence::failure() const noexcept { return failure_; }
 long OwnedFence::removed_reason() noexcept { return backend_?backend_->removed_reason():0; }
+void OwnedFence::dred() noexcept { if(backend_)backend_->dred(); }
 }

@@ -1,36 +1,22 @@
 float3 ResiduoAmpliado(uint2 p);
+#ifdef NR_POST_MASCARA
+
+cbuffer CM : register(b1) { uint cmLarg, cmAlt, cmPitch, cmBits; };
+ByteAddressBuffer cmMascara : register(t2);
+
+RWTexture2D<uint> cmBordas : register(u2);
+float3 ResiduoAmpliadoMascara(uint2 p);
+#define NR_RESIDUAL_AT(p) ResiduoAmpliadoMascara(p)
+#else
 #define NR_RESIDUAL_AT(p) ResiduoAmpliado(p)
+#endif
 #ifdef NR_POST_NPC
 
 float3 NpcAjustar(uint2 p, float3 c, float3 e);
 #endif
 #include "../../../../nr-controls-complete/shader/compose.hlsl"
 
-#ifdef NR_POST_GANHO
-#define NR_RA_NOME ResiduoBase
-#else
-#define NR_RA_NOME ResiduoAmpliado
-#endif
-#ifdef NR_POST_CR
-
-float3 NR_RA_NOME(uint2 p) {
-    uint rw, rh; res.GetDimensions(rw, rh);
-    const float2 s = (float2(p) + 0.5) * float2(rw, rh) / float2(w, h) - 0.5;
-    const int2 b = int2(floor(s)); const float2 f = s - float2(b);
-    const int2 m = int2(rw, rh) - 1;
-    const float2 a0 = f * (-0.5 + f * (1.0 - 0.5 * f)), a1 = 1.0 + f * f * (-2.5 + 1.5 * f);
-    const float2 a2 = f * (0.5 + f * (2.0 - 1.5 * f)), a3 = f * f * (-0.5 + 0.5 * f);
-    const float wx[4] = {a0.x, a1.x, a2.x, a3.x}; const float wy[4] = {a0.y, a1.y, a2.y, a3.y};
-    float3 r = float3(0, 0, 0);
-    [unroll] for (int j = 0; j < 4; ++j) { float3 l = float3(0, 0, 0);
-        [unroll] for (int i = 0; i < 4; ++i) l += res[clamp(b + int2(i - 1, j - 1), 0, m)].rgb * wx[i];
-        r += l * wy[j]; }
-    const float3 v0 = res[clamp(b, 0, m)].rgb, v1 = res[clamp(b + int2(1, 0), 0, m)].rgb;
-    const float3 v2 = res[clamp(b + int2(0, 1), 0, m)].rgb, v3 = res[clamp(b + int2(1, 1), 0, m)].rgb;
-    return clamp(r, min(min(v0, v1), min(v2, v3)), max(max(v0, v1), max(v2, v3)));
-}
-#else
-float3 NR_RA_NOME(uint2 p) {
+float3 ResiduoAmpliado(uint2 p) {
     uint rw, rh; res.GetDimensions(rw, rh);
 
     const float2 s = (float2(p) + 0.5) * float2(rw, rh) / float2(w, h) - 0.5;
@@ -40,9 +26,70 @@ float3 NR_RA_NOME(uint2 p) {
     const float3 d = res[clamp(b + int2(0, 1), 0, m)].rgb, e = res[clamp(b + int2(1, 1), 0, m)].rgb;
     return lerp(lerp(a, c, f.x), lerp(d, e, f.x), f.y);
 }
-#endif
-#ifdef NR_POST_GANHO
-float3 ResiduoAmpliado(uint2 p) { return ResiduoBase(p) * asfloat(gp2); }
+#ifdef NR_POST_MASCARA
+bool CmBit(int2 q) {
+    q = clamp(q, int2(0, 0), int2(int(cmLarg) - 1, int(cmAlt) - 1));
+    const uint a = uint(q.y) * cmPitch + uint(q.x);
+    return ((cmMascara.Load(a & ~3u) >> ((a & 3u) * 8u)) & cmBits & 255u) != 0u;
+}
+bool CmNucleo(float2 uv) {
+    const int2 b = int2(floor(uv * float2(cmLarg, cmAlt) - 0.5));
+    return CmBit(b) && CmBit(b + int2(1, 0)) && CmBit(b + int2(0, 1)) && CmBit(b + int2(1, 1));
+}
+float3 ResiduoAmpliadoMascara(uint2 p) {
+    if (cmBordas[p / 8u] == 0u) return ResiduoAmpliado(p);
+    uint rw, rh; res.GetDimensions(rw, rh);
+    const float2 tam = float2(rw, rh);
+    const bool cp = CmNucleo((float2(p) + 0.5) / float2(w, h));
+    const float2 s = (float2(p) + 0.5) * tam / float2(w, h) - 0.5;
+    const int2 b = int2(floor(s)); const float2 f = s - float2(b);
+    const int2 m = int2(rw, rh) - 1;
+    float3 acc = float3(0, 0, 0); float ws = 0.0; uint iguais = 0u;
+    [unroll] for (int j = 0; j < 2; ++j) [unroll] for (int i = 0; i < 2; ++i) {
+        const int2 q = clamp(b + int2(i, j), int2(0, 0), m);
+        if (CmNucleo((float2(q) + 0.5) / tam) != cp) continue;
+        const float wq = (i ? f.x : 1.0 - f.x) * (j ? f.y : 1.0 - f.y);
+        acc += wq * res[q].rgb; ws += wq; ++iguais;
+    }
+    if (iguais == 4u) return ResiduoAmpliado(p);
+    if (!(ws > 1e-6)) {
+        acc = float3(0, 0, 0); ws = 0.0;
+        [unroll] for (int j2 = -1; j2 <= 2; ++j2) [unroll] for (int i2 = -1; i2 <= 2; ++i2) {
+            const int2 q = clamp(b + int2(i2, j2), int2(0, 0), m);
+            if (CmNucleo((float2(q) + 0.5) / tam) != cp) continue;
+            const float wq = max(0.0, 2.0 - abs(float(i2) - f.x)) * max(0.0, 2.0 - abs(float(j2) - f.y));
+            acc += wq * res[q].rgb; ws += wq;
+        }
+    }
+    return ws > 1e-6 ? acc / ws : ResiduoAmpliado(p);
+}
+
+int CmJanela(float pmin_, uint wSaida, uint wRede, uint wEst, bool fim) {
+    const float s = (pmin_ + 0.5) * float(wRede) / float(wSaida) - 0.5;
+    const int q = clamp(int(floor(s)) + (fim ? 2 : -1), 0, int(wRede) - 1);
+    const int a = int(floor((pmin_ + 0.5) / float(wSaida) * float(wEst) - 0.5)) + (fim ? 1 : 0);
+    const int t = int(floor((float(q) + 0.5) / float(wRede) * float(wEst) - 0.5)) + (fim ? 1 : 0);
+    return fim ? max(a, t) : min(a, t);
+}
+[numthreads(8, 8, 1)] void BordasPost(uint3 id : SV_DispatchThreadID) {
+    uint rw, rh; res.GetDimensions(rw, rh);
+    if (id.x * 8u >= w || id.y * 8u >= h) return;
+    const float2 p0 = float2(id.xy * 8u), p1 = float2(min(id.xy * 8u + 7u, uint2(w - 1u, h - 1u)));
+    int x0 = clamp(CmJanela(p0.x, w, rw, cmLarg, false), 0, int(cmLarg) - 1), x1 = clamp(CmJanela(p1.x, w, rw, cmLarg, true), 0, int(cmLarg) - 1);
+    int y0 = clamp(CmJanela(p0.y, h, rh, cmAlt, false), 0, int(cmAlt) - 1), y1 = clamp(CmJanela(p1.y, h, rh, cmAlt, true), 0, int(cmAlt) - 1);
+
+    {
+        const float2 e = float2(cmLarg, cmAlt) / float2(w, h);
+        const int2 m = int2(int(cmLarg) - 1, int(cmAlt) - 1);
+        const int2 fa = clamp(int2(floor((float2(int2(id.xy * 8u) - 6) + 0.5) * e)), int2(0, 0), m);
+        const int2 fb = clamp(int2(floor((float2(int2(id.xy * 8u) + 13) + 0.5) * e)), int2(0, 0), m);
+        x0 = min(x0, fa.x); y0 = min(y0, fa.y); x1 = max(x1, fb.x); y1 = max(y1, fb.y);
+    }
+    const bool primeiro = CmBit(int2(x0, y0));
+    uint misto = 0u;
+    [loop] for (int y = y0; y <= y1 && misto == 0u; ++y) [loop] for (int x = x0; x <= x1; ++x) if (CmBit(int2(x, y)) != primeiro) { misto = 1u; break; }
+    cmBordas[id.xy] = misto;
+}
 #endif
 #ifdef NR_POST_NPC
 
@@ -142,6 +189,7 @@ float3 NpcComposto(uint2 p, float4 c) {
     bool bridge = (tone & 0x80000000) != 0 && !(di == 20 && co == 20 && gu == 40);
     if (!bridge) {
         if (tone & 1) { float3 s = c.rgb * expo; float3 b = float3(tmf(s.r), tmf(s.g), tmf(s.b));
+            d = NR_PROTEGE_REALCE(b, d);
             e = max(s + tmi3(NR_GRADE(b + d)) - float3(tmi(b.r), tmi(b.g), tmi(b.b)), 0.0) / expo;
         } else e = NR_GRADE(saturate(c.rgb + d));
     } else if (all(d == float3(0, 0, 0))) {
@@ -151,6 +199,7 @@ float3 NpcComposto(uint2 p, float4 c) {
         if (tone & 1) {
             float3 s = c.rgb * expo, b = float3(tmf(s.r), tmf(s.g), tmf(s.b));
             float3 proxy = float3(tmi(b.r), tmi(b.g), tmi(b.b));
+            d = NR_PROTEGE_REALCE(b, d);
             float3 model = tmi3(NR_GRADE(b + d));
             e = max(ComposeControls(s, proxy, model, detail, color, guard), 0.0) / expo;
         } else e = saturate(ComposeControls(c.rgb, c.rgb, NR_GRADE(saturate(c.rgb + d)), detail, color, guard));

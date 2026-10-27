@@ -14,8 +14,9 @@ RWTexture2D<float4> estado : register(u0);
 RWTexture2D<float4> saida : register(u1);
 SamplerState linear0 : register(s0);
 
-static const float3 LUMA = float3(0.2126, 0.7152, 0.0722);
-float tmf(float v) { v = max(v, 0.0); v = v / (1.0 + v); return v <= 0.0031308 ? v * 12.92 : 1.055 * pow(v, 1.0 / 2.4) - 0.055; }
+#include "tom_comum.hlsli"
+static const float3 LUMA = NR_LUMA;
+#include "prof_comum.hlsli"
 float3 tom(float3 c) {
     if (!all(isfinite(c))) return float3(0.0, 0.0, 0.0);
     return tonemap != 0u ? float3(tmf(c.r * expo), tmf(c.g * expo), tmf(c.b * expo)) : saturate(c);
@@ -48,8 +49,8 @@ float4 correcao(int2 p) {
     const uint2 o = min(uint2(uvp * tam), uint2(largura - 1, altura - 1));
     const float za = profundidade.Load(int4(p, fatia, 0));
     const float zb = profundidade.Load(int4(o, fatiaAnterior, 0));
-    const float tol = max(profAbs, profRel * max(abs(za), abs(zb)));
-    if (!(isfinite(za) && isfinite(zb) && tol > 0.0 && abs(za - zb) <= tol)) return float4(0.0, 0.0, 0.0, 0.0);
+    const float tol = NR_TOL_PROF(profAbs, profRel, za, zb);
+    if (!NR_MESMA_SUPERFICIE(za, zb, tol)) return float4(0.0, 0.0, 0.0, 0.0);
     const float4 h = catmull(uvp * tam);
     if (!all(isfinite(h)) || h.a < 0.999) return float4(0.0, 0.0, 0.0, 0.0);
     const float3 bc = tom(cor.Load(int4(p, fatia, 0)).rgb);

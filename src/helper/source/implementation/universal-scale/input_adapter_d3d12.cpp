@@ -3,9 +3,13 @@
 #include "nr_adapt_motion.h"
 #include "nr_adapt_output.h"
 #include "nr_adapt_depth.h"
+#include "nr_adapt_copyout.h"
+#include "nr_adapt_exposure.h"
 
 #include <d3d12.h>
 #include <wrl/client.h>
+#include "../../../runtime/d3d12_comum.h"
+#include "../../../runtime/estado_ffx.h"
 #include <array>
 #include <climits>
 #include <cstring>
@@ -16,37 +20,17 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 constexpr std::uint32_t kFfxComputeRead=4;
-D3D12_RESOURCE_STATES d3d12_state(std::uint32_t value) noexcept{
-  switch(value){
-    case 1:return D3D12_RESOURCE_STATE_COMMON;
-    case 2:return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    case 4:return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    case 8:return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    case 12:return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE|D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    case 16:return D3D12_RESOURCE_STATE_COPY_SOURCE;
-    case 32:return D3D12_RESOURCE_STATE_COPY_DEST;
-    case 20:return D3D12_RESOURCE_STATE_COPY_SOURCE|D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    default:return static_cast<D3D12_RESOURCE_STATES>(UINT_MAX);
-  }
-}
-constexpr auto kUnknownState=static_cast<D3D12_RESOURCE_STATES>(UINT_MAX);
-void barrier(ID3D12GraphicsCommandList* list,ID3D12Resource* resource,D3D12_RESOURCE_STATES before,D3D12_RESOURCE_STATES after) noexcept{
-  if(before==after)return;D3D12_RESOURCE_BARRIER value{};value.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  value.Transition={resource,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,before,after};list->ResourceBarrier(1,&value);
-}
-void uav_barrier(ID3D12GraphicsCommandList* list,ID3D12Resource* resource) noexcept{
-  D3D12_RESOURCE_BARRIER value{};value.Type=D3D12_RESOURCE_BARRIER_TYPE_UAV;value.UAV.pResource=resource;list->ResourceBarrier(1,&value);
-}
-bool same_device(ID3D12Device* expected,ID3D12DeviceChild* child) noexcept{
-  if(!expected||!child)return false;ComPtr<ID3D12Device> actual;
-  return SUCCEEDED(child->GetDevice(IID_PPV_ARGS(&actual)))&&actual.Get()==expected;
-}
+
+D3D12_RESOURCE_STATES d3d12_state(std::uint32_t value) noexcept{return nrd3d::estado_ffx(value);}
+constexpr auto kUnknownState=nrd3d::estado_recusado;
 class Adapter final:public InputAdapter {
 
-  static constexpr UINT kBlocks=32,kPerBlock=8;
-  ComPtr<ID3D12Device> device_;ComPtr<ID3D12RootSignature> root_;std::array<ComPtr<ID3D12PipelineState>,4> pipelines_;
+  static constexpr UINT kBlocks=32,kPerBlock=10;
+  ComPtr<ID3D12Device> device_;ComPtr<ID3D12RootSignature> root_;std::array<ComPtr<ID3D12PipelineState>,6> pipelines_;
   ComPtr<ID3D12DescriptorHeap> heap_;UINT stride_{},block_{};
   ComPtr<ID3D12Resource> color_,motion_,depth_;D3D12_RESOURCE_STATES color_state_{},motion_state_{},depth_state_{};
+  ComPtr<ID3D12Resource> output_;D3D12_RESOURCE_STATES output_state_{};
+  ComPtr<ID3D12Resource> exposure_;D3D12_RESOURCE_STATES exposure_state_{};
 
   struct Retired {ComPtr<ID3D12Resource> resource;unsigned due{};};
   std::deque<Retired> retired_;unsigned conversions_{};
@@ -63,9 +47,10 @@ class Adapter final:public InputAdapter {
     ComPtr<ID3DBlob> blob,error;
     if(FAILED(D3D12SerializeRootSignature(&signature,D3D_ROOT_SIGNATURE_VERSION_1,&blob,&error))||
        FAILED(device->CreateRootSignature(0,blob->GetBufferPointer(),blob->GetBufferSize(),IID_PPV_ARGS(&root_))))return false;
-    const std::pair<const void*,SIZE_T> code[4]{{g_nr_adapt_color,sizeof(g_nr_adapt_color)},{g_nr_adapt_motion,sizeof(g_nr_adapt_motion)},
-                                                {g_nr_adapt_output,sizeof(g_nr_adapt_output)},{g_nr_adapt_depth,sizeof(g_nr_adapt_depth)}};
-    for(unsigned i=0;i<4;++i){D3D12_COMPUTE_PIPELINE_STATE_DESC p{};p.pRootSignature=root_.Get();p.CS={code[i].first,code[i].second};
+    const std::pair<const void*,SIZE_T> code[6]{{g_nr_adapt_color,sizeof(g_nr_adapt_color)},{g_nr_adapt_motion,sizeof(g_nr_adapt_motion)},
+                                                {g_nr_adapt_output,sizeof(g_nr_adapt_output)},{g_nr_adapt_depth,sizeof(g_nr_adapt_depth)},
+                                                {g_nr_adapt_copyout,sizeof(g_nr_adapt_copyout)},{g_nr_adapt_exposure,sizeof(g_nr_adapt_exposure)}};
+    for(unsigned i=0;i<6;++i){D3D12_COMPUTE_PIPELINE_STATE_DESC p{};p.pRootSignature=root_.Get();p.CS={code[i].first,code[i].second};
       if(FAILED(device->CreateComputePipelineState(&p,IID_PPV_ARGS(&pipelines_[i]))))return false;}
     D3D12_DESCRIPTOR_HEAP_DESC heap{};heap.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;heap.NumDescriptors=kBlocks*kPerBlock;
     heap.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
@@ -99,7 +84,7 @@ class Adapter final:public InputAdapter {
   bool command(void* opaque,ComPtr<ID3D12GraphicsCommandList>& list) noexcept{
     if(!opaque||FAILED(static_cast<IUnknown*>(opaque)->QueryInterface(IID_PPV_ARGS(&list))))return false;
     const auto type=list->GetType();
-    return (type==D3D12_COMMAND_LIST_TYPE_DIRECT||type==D3D12_COMMAND_LIST_TYPE_COMPUTE)&&same_device(device_.Get(),list.Get());
+    return (type==D3D12_COMMAND_LIST_TYPE_DIRECT||type==D3D12_COMMAND_LIST_TYPE_COMPUTE)&&nrd3d::mesmo_dispositivo(device_.Get(),list.Get());
   }
 
   void copy(ID3D12GraphicsCommandList* list,ID3D12Resource* source,D3D12_RESOURCE_STATES source_state,std::uint32_t view,
@@ -107,12 +92,12 @@ class Adapter final:public InputAdapter {
             const float mul[4],UINT w,UINT h,UINT slot) noexcept{
     srv(slot,source,view);uav(slot+1,destination,destination_format);
     const bool readable=(source_state&D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)!=0;
-    if(!readable)barrier(list,source,source_state,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    barrier(list,destination,destination_state,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    run(list,pipeline,slot,slot+1,mul,w,h);uav_barrier(list,destination);
-    barrier(list,destination,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    if(!readable)nrd3d::transicao(list,source,source_state,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    nrd3d::transicao(list,destination,destination_state,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    run(list,pipeline,slot,slot+1,mul,w,h);nrd3d::barreira_uav(list,destination);
+    nrd3d::transicao(list,destination,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     destination_state=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    if(!readable)barrier(list,source,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,source_state);
+    if(!readable)nrd3d::transicao(list,source,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,source_state);
   }
 public:
   bool describe(void* resource,NrResourceDesc& out) noexcept override{
@@ -130,41 +115,70 @@ public:
       if(FAILED(static_cast<IUnknown*>(d.input)->QueryInterface(IID_PPV_ARGS(&input)))||
          FAILED(static_cast<IUnknown*>(d.motion)->QueryInterface(IID_PPV_ARGS(&motion)))||
          FAILED(static_cast<IUnknown*>(d.depth)->QueryInterface(IID_PPV_ARGS(&depth)))||FAILED(input->GetDevice(IID_PPV_ARGS(&device))))return GpuStatus::Unsupported;
-      if(!initialize(device.Get())||!same_device(device_.Get(),motion.Get())||!same_device(device_.Get(),depth.Get()))return GpuStatus::Unsupported;
+      if(!initialize(device.Get())||!nrd3d::mesmo_dispositivo(device_.Get(),motion.Get())||!nrd3d::mesmo_dispositivo(device_.Get(),depth.Get()))return GpuStatus::Unsupported;
       ComPtr<ID3D12GraphicsCommandList> list;if(!command(d.command,list))return GpuStatus::Unsupported;
       const auto input_state=d3d12_state(d.input_state),motion_state=d3d12_state(d.motion_state),depth_state=d3d12_state(d.depth_state);
       if((plan.color&&input_state==kUnknownState)||(plan.motion&&motion_state==kUnknownState)||(plan.depth&&depth_state==kUnknownState))return GpuStatus::Unsupported;
+
+      if(list->GetType()==D3D12_COMMAND_LIST_TYPE_COMPUTE&&((plan.color&&!nrffx_estado::valido_em_compute(unsigned(input_state)))||
+         (plan.motion&&!nrffx_estado::valido_em_compute(unsigned(motion_state)))||(plan.depth&&!nrffx_estado::valido_em_compute(unsigned(depth_state)))))
+        return GpuStatus::Unsupported;
       if(plan.color&&!texture(DXGI_FORMAT_R16G16B16A16_FLOAT,d.render_w,d.render_h,color_,color_state_))return GpuStatus::FailedBeforeRecord;
       if(plan.motion&&!texture(DXGI_FORMAT_R16G16_FLOAT,d.render_w,d.render_h,motion_,motion_state_))return GpuStatus::FailedBeforeRecord;
       if(plan.depth&&!texture(DXGI_FORMAT_R32_FLOAT,d.render_w,d.render_h,depth_,depth_state_))return GpuStatus::FailedBeforeRecord;
+      if(plan.output&&!texture(DXGI_FORMAT_R16G16B16A16_FLOAT,d.output_w,d.output_h,output_,output_state_))return GpuStatus::FailedBeforeRecord;
+      ComPtr<ID3D12Resource> exposure;D3D12_RESOURCE_STATES exposure_state{};
+      if(plan.exposure){
+        if(!d.exposure||FAILED(static_cast<IUnknown*>(d.exposure)->QueryInterface(IID_PPV_ARGS(&exposure)))||!nrd3d::mesmo_dispositivo(device_.Get(),exposure.Get()))return GpuStatus::Unsupported;
+        exposure_state=d3d12_state(d.exposure_state);if(exposure_state==kUnknownState)return GpuStatus::Unsupported;
+        if(!texture(DXGI_FORMAT_R32_FLOAT,1,1,exposure_,exposure_state_))return GpuStatus::FailedBeforeRecord;
+      }
       block_=(block_+1)%kBlocks;++conversions_;
       while(!retired_.empty()&&int(conversions_-retired_.front().due)>=0)retired_.pop_front();
       if(plan.color){const float mul[4]{plan.color_scale,1.f,1.f,1.f};
         copy(list.Get(),input.Get(),input_state,plan.color_view,color_.Get(),color_state_,DXGI_FORMAT_R16G16B16A16_FLOAT,0,mul,d.render_w,d.render_h,0);
         out.color=color_.Get();out.color_state=kFfxComputeRead;}
-      if(plan.motion){const float mul[4]{plan.motion_x,plan.motion_y,1.f,1.f};
+      if(plan.motion){const float mul[4]{plan.motion_x,plan.motion_y,plan.motion_amostra_x,plan.motion_amostra_y};
         copy(list.Get(),motion.Get(),motion_state,plan.motion_view,motion_.Get(),motion_state_,DXGI_FORMAT_R16G16_FLOAT,1,mul,d.render_w,d.render_h,2);
         out.motion=motion_.Get();out.motion_state=kFfxComputeRead;}
       if(plan.depth){const float mul[4]{1.f,1.f,1.f,1.f};
         copy(list.Get(),depth.Get(),depth_state,plan.depth_view,depth_.Get(),depth_state_,DXGI_FORMAT_R32_FLOAT,3,mul,d.render_w,d.render_h,6);
         out.depth=depth_.Get();out.depth_state=kFfxComputeRead;}
+      if(plan.exposure){const float mul[4]{1.f,1.f,1.f,1.f};
+        copy(list.Get(),exposure.Get(),exposure_state,plan.exposure_view,exposure_.Get(),exposure_state_,DXGI_FORMAT_R32_FLOAT,5,mul,1,1,8);
+        out.exposure=exposure_.Get();out.exposure_state=kFfxComputeRead;}
+      if(plan.output){nrd3d::transicao(list.Get(),output_.Get(),output_state_,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);output_state_=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        out.output=output_.Get();out.output_state=2;}
       return GpuStatus::Ready;
     }catch(...){return GpuStatus::FailedAfterRecord;}
   }
   GpuStatus finish(const nrffx::RawDescriptor& d,const AdapterPlan& plan) noexcept override{
     try{
-      if(plan.output_scale==1.f)return GpuStatus::Ready;
+      if(plan.output_scale==1.f&&!plan.output)return GpuStatus::Ready;
       ComPtr<ID3D12Resource> output;ComPtr<ID3D12GraphicsCommandList> list;
-      if(!device_||FAILED(static_cast<IUnknown*>(d.output)->QueryInterface(IID_PPV_ARGS(&output)))||!same_device(device_.Get(),output.Get())||
+      if(!device_||FAILED(static_cast<IUnknown*>(d.output)->QueryInterface(IID_PPV_ARGS(&output)))||!nrd3d::mesmo_dispositivo(device_.Get(),output.Get())||
          !command(d.command,list))return GpuStatus::Unsupported;
       const auto state=d3d12_state(d.output_state);if(state==kUnknownState)return GpuStatus::Unsupported;
+      if(list->GetType()==D3D12_COMMAND_LIST_TYPE_COMPUTE&&!nrffx_estado::valido_em_compute(unsigned(state)))return GpuStatus::Unsupported;
+      if(plan.output){
+
+        if(!output_)return GpuStatus::Unsupported;
+        uav(4,output.Get(),static_cast<DXGI_FORMAT>(plan.output_view));srv(5,output_.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
+        nrd3d::transicao(list.Get(),output.Get(),state,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        if(state==D3D12_RESOURCE_STATE_UNORDERED_ACCESS)nrd3d::barreira_uav(list.Get(),output.Get());
+        nrd3d::transicao(list.Get(),output_.Get(),output_state_,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        const float mul[4]{plan.output_scale,1.f,1.f,1.f};run(list.Get(),4,5,4,mul,d.output_w,d.output_h);
+        nrd3d::barreira_uav(list.Get(),output.Get());nrd3d::transicao(list.Get(),output.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,state);
+        nrd3d::transicao(list.Get(),output_.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);output_state_=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        return GpuStatus::Ready;
+      }
       uav(4,output.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
       {D3D12_SHADER_RESOURCE_VIEW_DESC none{};none.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;none.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;
        none.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;none.Texture2D.MipLevels=1;device_->CreateShaderResourceView(nullptr,&none,cpu(5));}
-      barrier(list.Get(),output.Get(),state,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-      if(state==D3D12_RESOURCE_STATE_UNORDERED_ACCESS)uav_barrier(list.Get(),output.Get());
+      nrd3d::transicao(list.Get(),output.Get(),state,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+      if(state==D3D12_RESOURCE_STATE_UNORDERED_ACCESS)nrd3d::barreira_uav(list.Get(),output.Get());
       const float mul[4]{plan.output_scale,1.f,1.f,1.f};run(list.Get(),2,5,4,mul,d.output_w,d.output_h);
-      uav_barrier(list.Get(),output.Get());barrier(list.Get(),output.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,state);
+      nrd3d::barreira_uav(list.Get(),output.Get());nrd3d::transicao(list.Get(),output.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,state);
       return GpuStatus::Ready;
     }catch(...){return GpuStatus::FailedAfterRecord;}
   }

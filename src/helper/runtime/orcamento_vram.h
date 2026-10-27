@@ -3,6 +3,7 @@
 #include "nr_publico.h"
 #include "orcamento.h"
 #include "log_fila.h"
+#include "pasta_helper.h"
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -10,6 +11,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include "hip_rosto.h"
 #include <dxgi1_4.h>
 #include <algorithm>
 #include <atomic>
@@ -20,10 +22,8 @@
 #include <string>
 namespace nrorc_vram {
 inline const std::wstring& pasta() noexcept {
- static const std::wstring p=[]{HMODULE self{};wchar_t path[32768]{};
-  if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&pasta),&self)||
-     !GetModuleFileNameW(self,path,32768))return std::wstring();
-  std::wstring s(path);const auto k=s.find_last_of(L"\\/");return k==std::wstring::npos?std::wstring():s.substr(0,k+1);}();
+ static const std::wstring p=[]{
+  std::wstring s(nrpasta::modulo().wstring());if(s.empty())return std::wstring();const auto k=s.find_last_of(L"\\/");return k==std::wstring::npos?std::wstring():s.substr(0,k+1);}();
  return p;}
 inline std::atomic<int> job_visto{0};
 
@@ -45,7 +45,7 @@ using Malloc=int(*)(void**,std::size_t);
 inline std::atomic<Malloc> malloc_real{nullptr};
 inline Malloc resolver_malloc() noexcept {
  if(auto m=malloc_real.load(std::memory_order_acquire))return m;
- HMODULE h=GetModuleHandleW(L"amdhip64_7.dll");const auto m=h?reinterpret_cast<Malloc>(GetProcAddress(h,"hipMalloc")):nullptr;
+ const auto m=nrhip::api_rosto().malloc_;
  malloc_real.store(m,std::memory_order_release);return m;}
 
 struct VivosHip {std::mutex m;nrorc::Vivos v;};
@@ -67,7 +67,7 @@ using Free=int(*)(void*);
 inline std::atomic<Free> free_real{nullptr};
 inline Free resolver_free() noexcept {
  if(auto f=free_real.load(std::memory_order_acquire))return f;
- HMODULE h=GetModuleHandleW(L"amdhip64_7.dll");const auto f=h?reinterpret_cast<Free>(GetProcAddress(h,"hipFree")):nullptr;
+ const auto f=nrhip::api_rosto().free_;
  free_real.store(f,std::memory_order_release);return f;}
 
 inline int hip_free_contado(void* p) noexcept {
@@ -99,20 +99,30 @@ inline Vram medir(IDXGIAdapter3* a) noexcept {
  return v;}
 inline bool hip_mem(std::uint64_t& livre,std::uint64_t& total) noexcept {
  using Info=int(*)(std::size_t*,std::size_t*);
- static const Info f=[]{HMODULE h=GetModuleHandleW(L"amdhip64_7.dll");return h?reinterpret_cast<Info>(GetProcAddress(h,"hipMemGetInfo")):nullptr;}();
+ static const Info f=nrhip::api_rosto().mem_get_info;
  std::size_t a{},b{};if(!f||f(&a,&b))return false;livre=a;total=b;return true;}
+
+#define NR_ORC_CALIB_ARQUIVO 0
+#if NR_ORC_CALIB_ARQUIVO
 inline std::wstring arq_calib(){return pasta()+L"nr_orcamento.ini";}
+#endif
 inline nrorc::Calib ler_calib() noexcept {
  nrorc::Calib c{};
+#if NR_ORC_CALIB_ARQUIVO
  try{const auto a=arq_calib();
   c.outros_pico=std::uint64_t(GetPrivateProfileIntW(L"Orcamento",L"OutrosPicoMb",0,a.c_str()))*nrorc::MB;
   c.budget=std::uint64_t(GetPrivateProfileIntW(L"Orcamento",L"BudgetMb",0,a.c_str()))*nrorc::MB;}catch(...){}
+#endif
  return c;}
 inline void gravar_calib(const nrorc::Calib& c) noexcept {
+#if NR_ORC_CALIB_ARQUIVO
  try{const auto a=arq_calib();wchar_t v[32]{};
   swprintf_s(v,L"%llu",static_cast<unsigned long long>(c.outros_pico/nrorc::MB));WritePrivateProfileStringW(L"Orcamento",L"OutrosPicoMb",v,a.c_str());
   swprintf_s(v,L"%llu",static_cast<unsigned long long>(c.budget/nrorc::MB));WritePrivateProfileStringW(L"Orcamento",L"BudgetMb",v,a.c_str());
   swprintf_s(v,L"%lu",GetCurrentProcessId());WritePrivateProfileStringW(L"Orcamento",L"Pid",v,a.c_str());}catch(...){}
+#else
+ (void)c;
+#endif
 }
 
 inline void configurar(int modo,unsigned folga_mb,unsigned outros_mb) noexcept {
@@ -132,6 +142,10 @@ inline int formatar_decisao(char* b,std::size_t n,const nrorc::Config& c,const n
   d.cap_grace,d.k_npc,d.cap_npc,M(d.total),mt,c.teto_grace,c.npc_max,c.teto_npc,c.ctx_unico?1:0,
   M(nrorc::custo_grace(c,1024)),M(nrorc::custo_grace(c,1536)),M(nrorc::custo_grace(c,2048)),M(nrorc::custo_npc(c,1024)),M(nrorc::custo_npc(c,768)),M(nrorc::custo_npc(c,512)));}
 
+inline void pausar_calib(std::uint64_t ms=30000) noexcept {
+ auto& E=nrorc::estado();const std::uint64_t ate=GetTickCount64()+ms,ant=E.calib_pausa_ate.exchange(ate);
+ if(ant<GetTickCount64())log("NPC_ORCAMENTO_CALIB_PAUSA gravacao F9: o pico nao mede ate %llu ms depois",static_cast<unsigned long long>(ms));}
+
 inline void amostra(int job) noexcept {
  auto& E=nrorc::estado();const auto v=medir(adaptador());std::uint64_t hl=0,ht=0;(void)hip_mem(hl,ht);
  LARGE_INTEGER q{},f{};QueryPerformanceCounter(&q);QueryPerformanceFrequency(&f);
@@ -141,7 +155,7 @@ inline void amostra(int job) noexcept {
   static_cast<unsigned long long>(hl/nrorc::MB),static_cast<unsigned long long>(ro/nrorc::MB),static_cast<unsigned long long>(G.bytes[unsigned(nrorc::Origem::Cena)].load()/nrorc::MB),
   G.tardias.load(),G.selado.load()?1:0,C(nrorc::Api::HipMalloc),C(nrorc::Api::HipMallocProxy),C(nrorc::Api::Recurso),C(nrorc::Api::Pso),C(nrorc::Api::Raiz),C(nrorc::Api::Heap),C(nrorc::Api::RecriaCena));
  if(nrorc::modo()==1)log_pool(job,"serie");
- if(v.ok&&E.decidido.load(std::memory_order_acquire)&&nrorc::atualizar_pico(E.calib,nrorc::outros_agora(v.uso,v.uso_nl,E.nl_inicio.load(),ro),v.budget))gravar_calib(E.calib);}
+ if(v.ok&&E.decidido.load(std::memory_order_acquire)&&GetTickCount64()>=E.calib_pausa_ate.load(std::memory_order_relaxed)&&nrorc::atualizar_pico(E.calib,nrorc::outros_agora(v.uso,v.uso_nl,E.nl_inicio.load(),ro),v.budget))gravar_calib(E.calib);}
 
 inline void por_job(int job) noexcept {
  const int m=nrorc::modo();if(!m)return;

@@ -1,4 +1,5 @@
 #include "../../../runtime/nr_publico.h"
+#include "../../../runtime/proxy_layout.h"
 #include "live_binding.h"
 #include "wait_trace.h"
 #include "retry_policy.h"
@@ -15,6 +16,10 @@
 #include "../../../runtime/rede_cada.h"
 #include "../../../runtime/custo_perfil.h"
 #include "../../../runtime/expo_trava.h"
+#include "../../../runtime/filtros.h"
+#include "../../../runtime/rostos_quadro.h"
+#include "../../../runtime/gpu_perdida.h"
+#include "../../../runtime/fg_externo.h"
 #include <atomic>
 #include <cstring>
 #include <limits>
@@ -29,7 +34,7 @@ namespace nrlive {
 namespace wt=nr::wait_trace;
 namespace {
 using nrtransition::Kind;using nrtransition::State;using nrtransition::Stage;
-template<class T>T field(const nractive::Globals& g,unsigned r)noexcept{T v{};std::memcpy(&v,g.data()+r-nractive::globals_begin,sizeof(v));return v;}
+using nrproxy::field;
 nractive::Config fixed_config(const nractive::Globals& g){auto c=nractive::configuration(g);c[0]=0;return c;}
 nractive::Config lifecycle_config(const nractive::Globals& g){
 
@@ -40,7 +45,7 @@ unsigned config_mask(const nractive::Config& a,const nractive::Config& b){
     unsigned m=0;for(unsigned i=0;i<a.size()&&i<32;++i)if(a[i]!=b[i])m|=1u<<i;return m;
 }
 bool structure_valid(const nractive::Globals& g){
-    const float local=field<float>(g,0x94AA4),skin=field<float>(g,0x94AA8);
+    const float local=field<float>(g,nrproxy::rva_estrutura_local),skin=field<float>(g,nrproxy::rva_estrutura_pele);
     return std::isfinite(local)&&local>=0.f&&local<=2.f&&std::isfinite(skin)&&
         (skin==-1.f||(skin>=0.f&&skin<=2.f));
 }
@@ -69,15 +74,16 @@ bool present_queue_known(std::uint64_t queue)noexcept{
 }
 void forget_present_queues()noexcept{for(auto& slot:present_queues)slot.store(0);present_queue_next.store(0);frame_generation.store(false);}
 void note_frame_generation()noexcept{frame_generation.store(true,std::memory_order_relaxed);nrreproject::fg_marca();}
-bool frame_generation_seen()noexcept{return frame_generation.load(std::memory_order_relaxed);}
+
+bool frame_generation_seen()noexcept{return frame_generation.load(std::memory_order_relaxed)||nrfgext::disponivel();}
 bool post_reset_matches(const nractive::Globals& before,const nractive::Globals& after)noexcept{
-    for(auto r:{0x949A8u,0x948E0u,0x94708u,0x94800u,0x94758u,0x949D0u,0x94718u,0x94720u})if(field<std::uint64_t>(after,r))return false;
-    for(auto r:{0x949B0u,0x948E8u,0x949DCu,0x94740u,0x94744u,0x94748u,0x948F0u,0x948C4u,0x94848u})if(field<unsigned>(after,r))return false;
-    for(auto r:{0x949B8u,0x948F5u,0x949F4u,0x94711u})if(field<std::uint8_t>(after,r))return false;
-    for(auto r:{0x949BCu,0x949C8u,0x949D8u,0x949E4u,0x94A60u,0x94808u})if(field<int>(after,r)!=-1)return false;
+    for(auto r:{0x949A8u,0x948E0u,0x94708u,0x94800u,0x94758u,nrproxy::rva_lista_pendente,0x94718u,0x94720u})if(field<std::uint64_t>(after,r))return false;
+    for(auto r:{0x949B0u,0x948E8u,nrproxy::rva_job_aceito,0x94740u,0x94744u,0x94748u,0x948F0u,0x948C4u,0x94848u})if(field<unsigned>(after,r))return false;
+    for(auto r:{0x949B8u,nrproxy::rva_interop_ativo,0x949F4u,nrproxy::rva_inline_ativo})if(field<std::uint8_t>(after,r))return false;
+    for(auto r:{nrproxy::rva_worker_job,nrproxy::rva_job_pronto,nrproxy::rva_job_pendente,0x949E4u,nrproxy::rva_job_compondo,0x94808u})if(field<int>(after,r)!=-1)return false;
     for(auto r:{0x94850u,0x94858u,0x94860u,0x94868u})if(field<std::uint64_t>(after,r))return false;
     if(field<std::uint16_t>(after,0x94870))return false;
-    for(auto c:{0x94298u,0x94398u,0x94498u,0x94598u}){
+    for(auto c:{nrproxy::rva_cache_cor,nrproxy::rva_cache_mv,nrproxy::rva_cache_prof,nrproxy::rva_cache_expo}){
 
         for(unsigned off=0x48;off<0x78;++off)
             if(field<std::uint8_t>(before,c+off)!=field<std::uint8_t>(after,c+off))return false;
@@ -86,16 +92,31 @@ bool post_reset_matches(const nractive::Globals& before,const nractive::Globals&
         if(field<unsigned>(after,c+0x30)||field<unsigned>(after,c+0x34)||field<int>(after,c+0x38)!=-1||field<std::uint8_t>(after,c+0x78))return false;
         if(field<unsigned>(after,c+0x3C)!=field<unsigned>(before,c+0x3C))return false;
     }
-    for(auto c:{0x946C0u,0x946E0u,0x948F8u,0x94918u,0x94938u,0x94958u,0x94A08u})for(unsigned i=0;i<4;++i)if(field<std::uint64_t>(after,c+8*i))return false;
+    for(auto c:{0x946C0u,0x946E0u,0x948F8u,0x94918u,0x94938u,0x94958u,nrproxy::rva_residuo})for(unsigned i=0;i<4;++i)if(field<std::uint64_t>(after,c+8*i))return false;
     for(unsigned i=0;i<4;++i)if(field<unsigned>(after,0x94A28+4*i))return false;
     for(unsigned i=0;i<0x60;++i)if(field<std::uint8_t>(after,0x94780+i))return false;
     if(field<unsigned>(after,0x94844)!=field<unsigned>(after,0x94840))return false;
-    for(auto r:{0x93F38u,0x93F40u,0x948B8u,0x949C0u,0x94728u,0x94760u,0x94A00u,0x94A38u,0x94A40u,0x94A48u,0x94A50u})if(field<std::uint64_t>(before,r)!=field<std::uint64_t>(after,r))return false;
-    for(auto r:{0x94A58u,0x94A5Cu,0x94BA0u})if(field<unsigned>(before,r)!=field<unsigned>(after,r))return false;
+    for(auto r:{nrproxy::rva_dispositivo,nrproxy::rva_fila,0x948B8u,nrproxy::rva_cerca_alvo,0x94728u,0x94760u,0x94A00u,0x94A38u,0x94A40u,0x94A48u,0x94A50u})if(field<std::uint64_t>(before,r)!=field<std::uint64_t>(after,r))return false;
+    for(auto r:{0x94A58u,0x94A5Cu,nrproxy::rva_hip_dispositivo})if(field<unsigned>(before,r)!=field<unsigned>(after,r))return false;
     return fixed_config(before)==fixed_config(after);
 }
+
+struct TextoAtomico {
+    std::atomic<const char*> v;
+    TextoAtomico(const char* t)noexcept:v(t){}
+    TextoAtomico& operator=(const char* t)noexcept{v.store(t,std::memory_order_relaxed);return *this;}
+    operator const char*()const noexcept{return v.load(std::memory_order_relaxed);}
+};
 struct PinnedBinding::Impl {
     std::recursive_mutex state_mutex;
+
+    struct DescritorCache{const void* de{};bool feito{},ok{};nrffx::Descriptor d{};} desc_cache;
+    bool decodificar(const void* descriptor,nrffx::Descriptor& d)noexcept{
+        auto& c=desc_cache;
+        if(!c.de||c.de!=descriptor)return nrffx::decode(descriptor,d);
+        if(!c.feito){c.ok=nrffx::decode(descriptor,c.d);c.feito=true;}
+        d=c.d;return c.ok;
+    }
     std::unique_ptr<Host> host;std::unique_ptr<nrtransition::Controller> controller;std::unique_ptr<nrfence::OwnedFence> fence;
     NrActiveSchedulerV1 scheduler{},retired_scheduler{},baseline{};bool retired_valid{},baseline_valid{};nractive::Config config{};nractive::Globals reset_before{},stopped_globals{},queue_before{};
     bool valid{},production{},failed{},in_dispatch{},in_capture{},attempted{},maintenance{},reset_consumed{},reset_returned{},layout_used{},stopped{},producer_closed{};
@@ -113,6 +134,19 @@ struct PinnedBinding::Impl {
         if(now-abandono_desde<abandono_ms)return false;
         ++abandonos;diagnostic="ffx_geometry_abandoned_list_retiring";return true;
     }
+
+    struct MotivoSoFsr{char id[64];unsigned long long n;};std::array<MotivoSoFsr,32> so_fsr_motivos{};unsigned long long so_fsr_total{};const char* motivo_so_fsr{};
+    void contar_so_fsr(const char* motivo)noexcept{
+        char chave[48];nrcompat::gate_id(motivo&&*motivo?motivo:"sem_motivo",chave,sizeof chave);++so_fsr_total;
+        MotivoSoFsr* m=nullptr;for(auto& x:so_fsr_motivos){if(!x.id[0]){std::snprintf(x.id,sizeof x.id,"quadro_so_fsr_%s",chave);m=&x;break;}
+            if(!std::strncmp(x.id+14,chave,sizeof x.id-14)){m=&x;break;}}
+        if(!m)m=&so_fsr_motivos.back();
+        const auto n=++m->n;
+        if(n==1||n==1024){char d[160];NRLOGF(d,sizeof d,"quadros so FSR por este motivo=%llu (todos os motivos %llu; despachos com NR ligado %llu)",n,so_fsr_total,
+            static_cast<unsigned long long>(enabled_dispatches));nrcompat::report(m->id,d);}
+        if((n&(n-1))==0||n%1024==0)nrlogfila::linha(L"nr_reproject.log","pid=%lu SO_FSR motivo=%s quadros=%llu total=%llu despachos=%llu\n",GetCurrentProcessId(),m->id+14,n,so_fsr_total,
+            static_cast<unsigned long long>(enabled_dispatches));
+    }
     bool reproject_authorized{},capture_invoked{};void* reproject_command{};void* reproject_destination{};int reproject_job{};
     int async_pending_job{},last_completed_async{};std::uint64_t async_started{};
 
@@ -124,8 +158,13 @@ struct PinnedBinding::Impl {
 
     int first_used_job{},window_job{};long long window_left_us{};nrjob::Tuning tuning{};bool tuning_read{};
     unsigned owner{};std::uint64_t device{},queue{},presentation_queue{},proof_device{},proof_queue{},menu_generation{},epoch{},ticket_sequence{},fence_sequence{},batch_fence{};
-    bool relevant_wrapper{},internal_wrapper{};unsigned wrapper_count{},wrapper_thread{};std::array<void*,64> wrapper_lists{};
-    Stage requested{Stage::Pre};bool enabled{};float local_structure{},skin_structure{};const char* diagnostic="not_admitted";
+    bool relevant_wrapper{},internal_wrapper{};unsigned wrapper_count{},wrapper_thread{};
+
+    std::vector<void*> wrapper_lists{};
+    bool guarda_listas(unsigned count,void** lists)noexcept{
+        try{wrapper_lists.assign(lists,lists+count);wrapper_count=count;return true;}catch(...){wrapper_lists.clear();wrapper_count=0;fail("queue_wrapper_lists_alloc_failed");return false;}
+    }
+    Stage requested{Stage::Pre};bool enabled{};float local_structure{},skin_structure{};TextoAtomico diagnostic{"not_admitted"};
     char queue_diagnostic[512]{};
 
     std::atomic<std::uint64_t> fast_queue{0},fast_observed{0},fast_list{0};std::atomic<bool> fast_live{false};
@@ -168,7 +207,7 @@ struct PinnedBinding::Impl {
     }
 
     bool fast_foreign(void* q,unsigned count,void** lists,unsigned thread)const noexcept{
-        if(!fast_live.load(std::memory_order_acquire)||count>64||(!lists&&count))return false;
+        if(!fast_live.load(std::memory_order_acquire)||count>listas_por_submissao_max||(!lists&&count))return false;
         const auto render=fast_queue.load(std::memory_order_relaxed);
         if(!render||(reinterpret_cast<std::uint64_t>(q)==render&&thread==owner))return false;
         const auto observed=fast_observed.load(std::memory_order_relaxed),tracked=fast_list.load(std::memory_order_relaxed);
@@ -236,7 +275,7 @@ struct PinnedBinding::Impl {
     std::vector<void*> rotating_resources;
     void rebind_equivalent(NrFfxDispatch original,void* context,void* descriptor){
         if(!scheduler.frozen||list||native_job||wrapper_open||in_capture||maintenance||candidate_pending||original!=scheduler.original||context!=scheduler.context)return;
-        nrffx::Descriptor d{};if(!nrffx::decode(descriptor,d))return;
+        nrffx::Descriptor d{};if(!decodificar(descriptor,d))return;
         void* objects[5]{d.input,d.output,d.motion,d.depth,d.exposure};
         for(unsigned n=0;n<5;++n){
             if(!objects[n]){if(scheduler.resources[n])return;continue;}
@@ -296,18 +335,25 @@ struct PinnedBinding::Impl {
     bool geometry_changed(NrFfxDispatch original,void* context,void* descriptor){
         if(!scheduler.frozen||scheduler.poisoned||list||native_job||wrapper_open||in_capture||maintenance||candidate_pending||
            resolution_pending||restage_pending||!controller||controller->state()!=State::Active||original!=scheduler.original)return false;
-        nrffx::Descriptor d{};if(!nrffx::decode(descriptor,d))return false;
+        nrffx::Descriptor d{};if(!decodificar(descriptor,d))return false;
 
         if(d.motion_x!=static_cast<float>(d.render_w)||d.motion_y!=static_cast<float>(d.render_h))return false;
-        void* objects[5]{d.input,d.output,d.motion,d.depth,d.exposure};bool resized=false;
+        void* objects[5]{d.input,d.output,d.motion,d.depth,d.exposure};bool resized=false,tipo=false;NrResourceDesc x[5]{};
         for(unsigned n=0;n<5;++n){
             if(!objects[n]!=!scheduler.resources[n])return false;if(!objects[n])continue;
             NrResourceDesc rd{};std::uint64_t dev{};const auto& old=scheduler.descriptions[n];
-            if(!host->describe(objects[n],rd)||!host->device_of(objects[n],dev)||dev!=scheduler.selected_device||rd.dimension!=old.dimension||
-               rd.format!=old.format||rd.flags!=old.flags||rd.depth_or_array_size!=old.depth_or_array_size||rd.mip_levels!=old.mip_levels||rd.sample_count!=old.sample_count)return false;
+            if(!host->describe(objects[n],rd)||!host->device_of(objects[n],dev)||dev!=scheduler.selected_device)return false;
+
+            tipo|=rd.dimension!=old.dimension||rd.format!=old.format||rd.flags!=old.flags||rd.depth_or_array_size!=old.depth_or_array_size||
+                  rd.mip_levels!=old.mip_levels||rd.sample_count!=old.sample_count;
             const std::uint64_t w=n==1?d.output_w:n==4?1:d.render_w;const std::uint32_t h=n==1?d.output_h:n==4?1:d.render_h;
             if(rd.width!=w||rd.height!=h)return false;
-            resized|=rd.width!=old.width||rd.height!=old.height;
+            resized|=rd.width!=old.width||rd.height!=old.height;x[n]=rd;
+        }
+        if(tipo){
+            if(nractive::resource_refusal(d,x,nullptr,0))return false;
+            static bool avisado=false;if(!avisado){avisado=true;nrcompat::tolerado("tolerado_religacao_formato","recursos novos com outro formato/flags passam na admissao: religa em vez do estado 7");}
+            return true;
         }
         return resized||context!=scheduler.context;
     }
@@ -340,19 +386,21 @@ struct PinnedBinding::Impl {
         nrcompat::block(nrcompat::Origem::Binding,gid,texto,campo);
     }
     void fail(const char* why)noexcept{fail_with(why,nullptr,nullptr,nullptr);}
-    void fail_with(const char* why,const char* id,const char* detalhe,const char* campo)noexcept{if(!failed)report_failure(why,id,detalhe,campo);wt::Record(wt::Event::Failure,native_job,queue,batch_fence);failed=true;diagnostic=why;if(controller)controller->accept({Kind::EvidenceLost,controller->generation(),proof_device,proof_queue,0,0,false},host->now());}
+
+    void dred_se_removido(const char* why)noexcept{if(!fence)return;const long removido=fence->removed_reason();if(removido<0){fence->dred();(void)nrgpu::marcar(why,removido);}}
+    void fail_with(const char* why,const char* id,const char* detalhe,const char* campo)noexcept{if(!failed){report_failure(why,id,detalhe,campo);dred_se_removido(why);}wt::Record(wt::Event::Failure,native_job,queue,batch_fence);failed=true;diagnostic=why;if(controller)controller->accept({Kind::EvidenceLost,controller->generation(),proof_device,proof_queue,0,0,false},host->now());}
     bool thread_ok()noexcept{return host&&host->thread()!=0;}
     void event(Kind k,std::uint64_t id=0,std::uint64_t related=0,bool success=true)noexcept{
         if(!controller||failed)return;controller->accept({k,controller->generation(),proof_device,proof_queue,id,related,success},host->now());
-        if(controller->state()==State::FailedFsrOnly){report_failure(controller->failure(),nullptr,nullptr,nullptr);failed=true;diagnostic=controller->failure();}
+        if(controller->state()==State::FailedFsrOnly)fail(controller->failure());
     }
     bool globals(nractive::Globals& g)noexcept{
         if(!host->read(g)){fail("global_snapshot_failed");return false;}
 
-        {const float escala=field<float>(g,0x94AAC);if(std::isfinite(escala)&&escala>0.f)nrreproject::escala_nativa.store(escala,std::memory_order_relaxed);}
-        if(!structure_valid(g)||field<unsigned>(g,0x94AB0)>1u){
+        {const float escala=field<float>(g,nrproxy::rva_escala);if(std::isfinite(escala)&&escala>0.f)nrreproject::escala_nativa.store(escala,std::memory_order_relaxed);}
+        if(!structure_valid(g)||field<unsigned>(g,nrproxy::rva_mascara_auto)>1u){
 
-            const float local=field<float>(g,0x94AA4),skin=field<float>(g,0x94AA8);const unsigned mask=field<unsigned>(g,0x94AB0);
+            const float local=field<float>(g,nrproxy::rva_estrutura_local),skin=field<float>(g,nrproxy::rva_estrutura_pele);const unsigned mask=field<unsigned>(g,nrproxy::rva_mascara_auto);
             const float fixed_local=std::isfinite(local)?(std::min)((std::max)(local,0.f),2.f):1.f;
             const float fixed_skin=!std::isfinite(skin)||skin<0.f?-1.f:(std::min)(skin,2.f);
             const unsigned fixed_mask=mask>1u?1u:mask;
@@ -366,7 +414,7 @@ struct PinnedBinding::Impl {
             const bool local_bad=!(std::isfinite(local)&&local>=0.f&&local<=2.f);
             const bool skin_bad=!(std::isfinite(skin)&&(skin==-1.f||(skin>=0.f&&skin<=2.f)));
             const unsigned which=(local_bad?1u:0u)|(skin_bad?2u:0u)|(mask>1u?4u:0u);
-            if(!host->clamp_structure(fixed_local,fixed_skin,fixed_mask,which)||!host->read(g)||!structure_valid(g)||field<unsigned>(g,0x94AB0)>1u){
+            if(!host->clamp_structure(fixed_local,fixed_skin,fixed_mask,which)||!host->read(g)||!structure_valid(g)||field<unsigned>(g,nrproxy::rva_mascara_auto)>1u){
                 fail_with(structure?"invalid_structure_scalar":"invalid_auto_mask",nullptr,detalhe,campo);return false;}
             char limitado[320];
             NRLOGF(limitado,sizeof limitado,"%s -> LocalStructure=%.6g SkinStructure=%.6g UseAutoMask=%u (limitado no proxy, rede segue)",
@@ -375,32 +423,32 @@ struct PinnedBinding::Impl {
             ++ini_clamps;diagnostic="ini_value_clamped";
         }
 
-        if(controller&&(field<std::uint64_t>(g,0x93F38)!=device||(field<std::uint64_t>(g,0x93F40)!=presentation_queue&&field<std::uint64_t>(g,0x93F40)!=queue&&!present_queue_known(field<std::uint64_t>(g,0x93F40)))||lifecycle_config(g)!=config||(field<int>(g,0x949BC)!=-1&&field<int>(g,0x949BC)!=async_pending_job&&field<int>(g,0x949BC)!=native_job))){
+        if(controller&&(field<std::uint64_t>(g,nrproxy::rva_dispositivo)!=device||(field<std::uint64_t>(g,nrproxy::rva_fila)!=presentation_queue&&field<std::uint64_t>(g,nrproxy::rva_fila)!=queue&&!present_queue_known(field<std::uint64_t>(g,nrproxy::rva_fila)))||lifecycle_config(g)!=config||(field<int>(g,nrproxy::rva_worker_job)!=-1&&field<int>(g,nrproxy::rva_worker_job)!=async_pending_job&&field<int>(g,nrproxy::rva_worker_job)!=native_job))){
             NRLOGF(queue_diagnostic,sizeof(queue_diagnostic),"runtime_drift_device_%u_queue_%llx_present_%llx_render_%llx_config_%u_mask_%x_async_%d",
-              field<std::uint64_t>(g,0x93F38)==device?1u:0u,
-              static_cast<unsigned long long>(field<std::uint64_t>(g,0x93F40)),
+              field<std::uint64_t>(g,nrproxy::rva_dispositivo)==device?1u:0u,
+              static_cast<unsigned long long>(field<std::uint64_t>(g,nrproxy::rva_fila)),
               static_cast<unsigned long long>(presentation_queue),static_cast<unsigned long long>(queue),
-              lifecycle_config(g)==config?1u:0u,config_mask(lifecycle_config(g),config),field<int>(g,0x949BC));
-            const auto q=field<std::uint64_t>(g,0x93F40);
-            const char* id=field<std::uint64_t>(g,0x93F38)!=device?"runtime_drift_device":
+              lifecycle_config(g)==config?1u:0u,config_mask(lifecycle_config(g),config),field<int>(g,nrproxy::rva_worker_job));
+            const auto q=field<std::uint64_t>(g,nrproxy::rva_fila);
+            const char* id=field<std::uint64_t>(g,nrproxy::rva_dispositivo)!=device?"runtime_drift_device":
                 (q!=presentation_queue&&q!=queue&&!present_queue_known(q))?"runtime_drift_queue":
                 lifecycle_config(g)!=config?"runtime_drift_config":"runtime_drift_async_job";
             char campo[48];NRLOGF(campo,sizeof campo,"mask 0x%x",config_mask(lifecycle_config(g),config));
             fail_with(queue_diagnostic,id,nullptr,std::strcmp(id,"runtime_drift_config")?nullptr:campo);return false;
         }
-        local_structure=field<float>(g,0x94AA4);skin_structure=field<float>(g,0x94AA8);return true;
+        local_structure=field<float>(g,nrproxy::rva_estrutura_local);skin_structure=field<float>(g,nrproxy::rva_estrutura_pele);return true;
     }
     bool ensure(const NrActiveSelectionV1& selection){
         if(controller)return true;nractive::Globals g{};if(!globals(g))return false;
-        device=field<std::uint64_t>(g,0x93F38);queue=presentation_queue=field<std::uint64_t>(g,0x93F40);if(!device||!queue)return false;
+        device=field<std::uint64_t>(g,nrproxy::rva_dispositivo);queue=presentation_queue=field<std::uint64_t>(g,nrproxy::rva_fila);if(!device||!queue)return false;
         fg_queue_learning=host->fg_render_queue_learning();
-        if(field<std::uint8_t>(g,0x94268)!=1||(field<std::uint8_t>(g,0x9426A)&1))return false;
+        if(field<std::uint8_t>(g,nrproxy::rva_motor_pronto)!=1||(field<std::uint8_t>(g,nrproxy::rva_motor_erro)&1))return false;
 
-        if(field<std::uint8_t>(g,0x94710)!=0){
+        if(field<std::uint8_t>(g,nrproxy::rva_inline_pedido)!=0){
             if(!nractive::first_use_empty(g)||!host->set_inline_mode(0)||!host->read(g)){fail("initial_async_install_failed");return false;}
         }
-        if(field<std::uint8_t>(g,0x94710)!=0){fail("invalid_inline_mode");return false;}
-        config=lifecycle_config(g);enabled=field<std::uint8_t>(g,0x94A8C)!=0;requested=selection.stage==NR_ACTIVE_STAGE_PRE?Stage::Pre:Stage::Post;
+        if(field<std::uint8_t>(g,nrproxy::rva_inline_pedido)!=0){fail("invalid_inline_mode");return false;}
+        config=lifecycle_config(g);enabled=field<std::uint8_t>(g,nrproxy::rva_enabled)!=0;requested=selection.stage==NR_ACTIVE_STAGE_PRE?Stage::Pre:Stage::Post;
         fence=host->fence(1);if(!fence||fence->snapshot().status!=nrfence::Status::Ready){fail("fresh_owned_fence_failed");return false;}
         proof_device=fence->snapshot().identity.device;proof_queue=fence->snapshot().identity.queue;
         controller=std::make_unique<nrtransition::Controller>(nrtransition::Config{proof_device,proof_queue,requested,enabled,1,transition_deadline_ms},host->now());return true;
@@ -458,7 +506,12 @@ struct PinnedBinding::Impl {
         recording=observer;observed_command=command;const auto current=recording->snapshot();
         if(current.phase==nrrecord::Phase::Failed||current.busy){fail(current.diagnostic);return false;}
         if(fg_queue_learning&&!render_queue_proven&&frame_generation_seen())dispatched_note(command,observer);
-        if(!current.primed||current.phase==nrrecord::Phase::Unobserved){capture_deferred=true;diagnostic="waiting_reset_close";return false;}
+        if(!current.primed||current.phase==nrrecord::Phase::Unobserved){capture_deferred=true;diagnostic="waiting_reset_close";
+
+            {static std::atomic<unsigned long long> so_fsr{0};const auto n=so_fsr.fetch_add(1,std::memory_order_relaxed)+1;
+             if((n&(n-1))==0||n%1024==0)nrlogfila::linha(L"nr_reproject.log","pid=%lu LISTA_NAO_PREPARADA quadros_so_fsr=%llu lista=%p fase=%d resets=%llu closes=%llu despachos=%llu (Reset/Close da lista ainda nao vistos: quadro so com o FSR)\n",
+                 GetCurrentProcessId(),n,command,int(current.phase),static_cast<unsigned long long>(current.resets),static_cast<unsigned long long>(current.closes),static_cast<unsigned long long>(enabled_dispatches));}
+            return false;}
         if(current.phase!=nrrecord::Phase::Open){fail("neural_recording_not_open");return false;}
 
         if(fg_queue_learning&&!render_queue_proven&&frame_generation_seen()&&!attempted&&!maintenance&&!baseline_valid&&!list&&!native_job){
@@ -484,10 +537,10 @@ struct PinnedBinding::Impl {
     static unsigned NR_ACTIVE_CALL environment(void* u,NrActiveEnvironmentV1* e){
         auto& p=*static_cast<Impl*>(u);if(!e||p.failed||!p.thread_ok())return 0;nractive::Globals g{};if(!p.globals(g))return 0;
         *e={};e->size=sizeof(*e);e->version=1;e->first_use_empty=p.maintenance||p.host_reset_clean||(!p.attempted&&nractive::first_use_empty(g));
-        e->engine_ready=field<std::uint8_t>(g,0x94268);e->error_clear=(field<std::uint8_t>(g,0x9426A)&1)==0;e->enabled=field<std::uint8_t>(g,0x94A8C);e->use_fsr_inputs=field<std::uint8_t>(g,0x94A8E);e->requested_inline=field<std::uint8_t>(g,0x94710);e->requested_interop=field<std::uint8_t>(g,0x948F4);
-        e->use_depth=field<std::uint8_t>(g,0x94A8F);e->tone=field<unsigned>(g,0x94A90);e->pending_reset=p.maintenance?0:field<std::uint8_t>(g,0x94B78);e->active_inline=field<std::uint8_t>(g,0x94711);e->active_interop=field<std::uint8_t>(g,0x948F5);e->current_thread=p.host->thread();e->owner_thread=p.owner;e->selected_device=p.device;e->selected_queue=p.queue;
-        if(e->use_depth!=1||field<std::uint8_t>(g,0x94BD0)!=1)return 0;e->reserved44=0xA51Cu;e->caches_match=1;
-        if(p.scheduler.frozen&&!p.maintenance){const bool copied=field<int>(g,0x949DC)!=0;const unsigned color=p.scheduler.selection.stage==NR_ACTIVE_STAGE_PRE?0:1;e->caches_match=nractive::cache_matches(g,0x94298,&p.scheduler.descriptions[color],copied)&&nractive::cache_matches(g,0x94398,&p.scheduler.descriptions[2],copied)&&nractive::cache_matches(g,0x94498,&p.scheduler.descriptions[3],copied)&&nractive::cache_matches(g,0x94598,p.scheduler.resources[4]?&p.scheduler.descriptions[4]:nullptr,copied);}return 1;
+        e->engine_ready=field<std::uint8_t>(g,nrproxy::rva_motor_pronto);e->error_clear=(field<std::uint8_t>(g,nrproxy::rva_motor_erro)&1)==0;e->enabled=field<std::uint8_t>(g,nrproxy::rva_enabled);e->use_fsr_inputs=field<std::uint8_t>(g,nrproxy::rva_usar_fsr);e->requested_inline=field<std::uint8_t>(g,nrproxy::rva_inline_pedido);e->requested_interop=field<std::uint8_t>(g,nrproxy::rva_interop_pedido);
+        e->use_depth=field<std::uint8_t>(g,nrproxy::rva_usar_prof);e->tone=field<unsigned>(g,nrproxy::rva_tom_ini);e->pending_reset=p.maintenance?0:field<std::uint8_t>(g,nrproxy::rva_reset_pendente);e->active_inline=field<std::uint8_t>(g,nrproxy::rva_inline_ativo);e->active_interop=field<std::uint8_t>(g,nrproxy::rva_interop_ativo);e->current_thread=p.host->thread();e->owner_thread=p.owner;e->selected_device=p.device;e->selected_queue=p.queue;
+        if(e->use_depth!=1||field<std::uint8_t>(g,nrproxy::rva_prof_global)!=1)return 0;e->reserved44=0xA51Cu;e->caches_match=1;
+        if(p.scheduler.frozen&&!p.maintenance){const bool copied=field<int>(g,nrproxy::rva_job_aceito)!=0;const unsigned color=p.scheduler.selection.stage==NR_ACTIVE_STAGE_PRE?0:1;e->caches_match=nractive::cache_matches(g,nrproxy::rva_cache_cor,&p.scheduler.descriptions[color],copied)&&nractive::cache_matches(g,nrproxy::rva_cache_mv,&p.scheduler.descriptions[2],copied)&&nractive::cache_matches(g,nrproxy::rva_cache_prof,&p.scheduler.descriptions[3],copied)&&nractive::cache_matches(g,nrproxy::rva_cache_expo,p.scheduler.resources[4]?&p.scheduler.descriptions[4]:nullptr,copied);}return 1;
     }
     static void NR_ACTIVE_CALL capture(void* u,const NrCaptureRecord* r){
         auto& p=*static_cast<Impl*>(u);p.reproject_authorized=false;p.capture_invoked=true;if(!r||p.failed||p.in_capture||p.wrapper_open||(p.list&&p.list!=r->command_list)){p.fail("capture_overlap");return;}
@@ -502,8 +555,8 @@ struct PinnedBinding::Impl {
             char campo[48],detalhe[400];
             if(!p.baseline_equivalent(campo,sizeof campo,detalhe,sizeof detalhe)){p.fail_with("fixed_FFX_resources_changed",nullptr,detalhe,campo);return;}
         }
-        nractive::Globals before{};if(!p.globals(before))return;p.observe_async(before);if(p.failed)return;const int accepted=field<int>(before,0x949DC);
-        if(accepted<0||accepted>=INT32_MAX-1||field<std::uint64_t>(before,0x949D0)||field<int>(before,0x949D8)!=-1){p.fail("pending_capture_or_native_wrap");return;}
+        nractive::Globals before{};if(!p.globals(before))return;p.observe_async(before);if(p.failed)return;const int accepted=field<int>(before,nrproxy::rva_job_aceito);
+        if(accepted<0||accepted>=INT32_MAX-1||field<std::uint64_t>(before,nrproxy::rva_lista_pendente)||field<int>(before,nrproxy::rva_job_pendente)!=-1){p.fail("pending_capture_or_native_wrap");return;}
         const bool resetting=p.maintenance;
 
         if(resetting)p.host->retire_reprojection();
@@ -520,22 +573,22 @@ struct PinnedBinding::Impl {
         try{p.host->capture(*r);}catch(...){p.reproject_authorized=false;p.in_capture=false;p.fail("original_A310_exception_command_state_unknown");throw;}p.reproject_authorized=false;p.in_capture=false;if(p.failed)return;
         nractive::Globals after{};if(!p.globals(after))return;p.observe_async(after);if(p.failed)return;
         if(resetting){
-            if(!p.reset_consumed||!p.reset_returned||field<std::uint8_t>(after,0x94B78)){p.fail("missing_checked_reset_return");return;}p.host->clear_async_completion();p.last_completed_async=0;p.prev_completed_async=0;p.event(Kind::ResetFinished);if(p.failed)return;
+            if(!p.reset_consumed||!p.reset_returned||field<std::uint8_t>(after,nrproxy::rva_reset_pendente)){p.fail("missing_checked_reset_return");return;}p.host->clear_async_completion();p.last_completed_async=0;p.prev_completed_async=0;p.event(Kind::ResetFinished);if(p.failed)return;
             p.fence=p.host->fence_on_queue(p.controller->generation(),p.queue);p.fence_sequence=0;p.epoch=0;p.stopped=p.producer_closed=false;
             if(!p.fence||p.fence->snapshot().status!=nrfence::Status::Ready||p.fence->snapshot().identity.device!=p.proof_device||p.fence->snapshot().identity.queue!=p.proof_queue){p.fail("new_generation_fence_identity_failed");return;}
             if(p.retired_valid){nr_active_scheduler_destroy_v1(&p.retired_scheduler);p.retired_valid=false;
                 for(auto* resource:p.rotating_resources)p.host->release(resource);p.rotating_resources.clear();}
         }
-        p.maintenance=false;p.host_reset_clean=false;p.candidate_pending=false;p.attempted=true;if(!p.baseline_valid){p.baseline=p.scheduler;p.baseline_valid=true;}const int expected=resetting?1:accepted+1;const int actual=field<int>(after,0x949DC);if(!p.associate(r->command_list))return;
-        if(actual==(resetting?0:accepted)){if(field<std::uint64_t>(after,0x949D0)||field<int>(after,0x949D8)!=-1)p.fail("jobless_capture_changed_pending_tuple");return;}
-        if(actual!=expected||field<std::uint64_t>(after,0x949D0)!=reinterpret_cast<std::uint64_t>(r->command_list)||field<int>(after,0x949D8)!=actual||field<std::uint8_t>(after,0x94711)!=0||field<std::uint8_t>(after,0x948F5)!=1){p.fail("capture_publication_tuple_failed");return;}
+        p.maintenance=false;p.host_reset_clean=false;p.candidate_pending=false;p.attempted=true;if(!p.baseline_valid){p.baseline=p.scheduler;p.baseline_valid=true;}const int expected=resetting?1:accepted+1;const int actual=field<int>(after,nrproxy::rva_job_aceito);if(!p.associate(r->command_list))return;
+        if(actual==(resetting?0:accepted)){if(field<std::uint64_t>(after,nrproxy::rva_lista_pendente)||field<int>(after,nrproxy::rva_job_pendente)!=-1)p.fail("jobless_capture_changed_pending_tuple");return;}
+        if(actual!=expected||field<std::uint64_t>(after,nrproxy::rva_lista_pendente)!=reinterpret_cast<std::uint64_t>(r->command_list)||field<int>(after,nrproxy::rva_job_pendente)!=actual||field<std::uint8_t>(after,nrproxy::rva_inline_ativo)!=0||field<std::uint8_t>(after,nrproxy::rva_interop_ativo)!=1){p.fail("capture_publication_tuple_failed");return;}
         ++p.captured_jobs;p.native_job=actual;p.job_frame[unsigned(actual)&15u]=p.frame_count;p.rede_cada_quadro=p.frame_count;p.rede_cada_tem=true;nrjob::timeline().stamp(actual,nrjob::Capturado,nrjob::qpc());nrjob::ages().captured();p.previous_published=actual-1;p.expected_worker.store(field<unsigned>(after,0x949B0));p.expected_job.store(actual);wt::Record(wt::Event::CaptureRecorded,actual,p.queue,0,p.controller->generation());if(!p.expected_worker.load())p.fail("missing_worker_identity");p.diagnostic="capture_recorded_waiting_checked_submission";
     }
     void observe_async(const nractive::Globals& g)noexcept {
         if(!async_pending_job||failed)return;
         const int proof=host->async_completion(async_pending_job);
-        if(proof!=NoHip&&proof!=0){fail("async_worker_completion_failed");return;}
-        if(proof==0&&field<int>(g,0x949C8)==async_pending_job&&field<int>(g,0x949BC)==-1){
+        if(proof!=NoHip&&proof!=0){(void)nrgpu::hip(proof,"cena (status do worker)");fail("async_worker_completion_failed");return;}
+        if(proof==0&&field<int>(g,nrproxy::rva_job_pronto)==async_pending_job&&field<int>(g,nrproxy::rva_worker_job)==-1){
             event(Kind::HipCompleted,static_cast<std::uint64_t>(async_pending_job));
             if(failed)return;nrjob::timeline().stamp(async_pending_job,nrjob::Notado,nrjob::qpc());prev_completed_async=last_completed_async;last_completed_async=async_pending_job;async_pending_job=0;
             async_wait_retry.success();
@@ -603,7 +656,7 @@ struct PinnedBinding::Impl {
             else nrcompat::block(nrcompat::Origem::Admissao,recusa,detalhe,campo);
             return;
         }
-        nrffx::Descriptor d{};(void)nrffx::decode(descriptor,d);
+        nrffx::Descriptor d{};(void)decodificar(descriptor,d);
         NrActiveEnvironmentV1 e{};const char* id=nullptr;const char* campo_env=nullptr;
         NrResourceDesc x[5]{};bool ok[5]{};bool mesmo=true,lista_ok=true;
         const bool env_lido=environment(this,&e)!=0;
@@ -622,8 +675,8 @@ struct PinnedBinding::Impl {
         char detalhe[900]{},campo[48]{};
         if(!env_lido){
             nractive::Globals g{};const bool lido=host->read(g);
-            NRLOGF(detalhe,sizeof detalhe,"UseDepth=%u profundidade_global=%u (as duas precisam ser 1)",lido?field<std::uint8_t>(g,0x94A8F):255u,lido?field<std::uint8_t>(g,0x94BD0):255u);
-            NRLOGF(campo,sizeof campo,"UseDepth=%u",lido?field<std::uint8_t>(g,0x94A8F):255u);
+            NRLOGF(detalhe,sizeof detalhe,"UseDepth=%u profundidade_global=%u (as duas precisam ser 1)",lido?field<std::uint8_t>(g,nrproxy::rva_usar_prof):255u,lido?field<std::uint8_t>(g,nrproxy::rva_prof_global):255u);
+            NRLOGF(campo,sizeof campo,"UseDepth=%u",lido?field<std::uint8_t>(g,nrproxy::rva_usar_prof):255u);
         }else if(campo_env){
             NRLOGF(detalhe,sizeof detalhe,"campo=%s ready=%u error_clear=%u enabled=%u use_fsr_inputs=%u inline=%u interop=%u pending_reset=%u",campo_env,
                 e.engine_ready,e.error_clear,e.enabled,e.use_fsr_inputs,e.requested_inline,e.requested_interop,e.pending_reset);
@@ -639,7 +692,7 @@ struct PinnedBinding::Impl {
     }
     void pump()noexcept{
         if(!valid||!thread_ok()||failed)return;if(foreign_failure.load()){fail("invalid_async_callback");return;}if(recording){const auto r=recording->snapshot();if(r.phase==nrrecord::Phase::Failed){fail(r.diagnostic);return;}if(r.busy)return;}if(!controller)return;
-        nractive::Globals g{};if(!globals(g))return;if(field<std::uint8_t>(g,0x94268)!=1||(field<std::uint8_t>(g,0x9426A)&1)){fail("original_engine_error_or_readiness_lost");return;}enabled=field<std::uint8_t>(g,0x94A8C)!=0;controller->set_enabled(enabled);controller->tick(host->now());if(controller->state()==State::FailedFsrOnly){report_failure(controller->failure(),nullptr,nullptr,nullptr);failed=true;diagnostic=controller->failure();return;}
+        nractive::Globals g{};if(!globals(g))return;if(field<std::uint8_t>(g,nrproxy::rva_motor_pronto)!=1||(field<std::uint8_t>(g,nrproxy::rva_motor_erro)&1)){fail("original_engine_error_or_readiness_lost");return;}enabled=field<std::uint8_t>(g,nrproxy::rva_enabled)!=0;controller->set_enabled(enabled);controller->tick(host->now());if(controller->state()==State::FailedFsrOnly){fail(controller->failure());return;}
         observe_async(g);if(failed)return;
         const auto state=controller->state();
         if(state==State::Quiescing){
@@ -681,9 +734,11 @@ bool PinnedBinding::publish_callbacks()noexcept{
 }
 PinnedBinding::~PinnedBinding()=default;
 int PinnedBinding::dispatch(NrFfxDispatch original,void* context,void* descriptor,int nesting,const NrActiveSelectionV1& selection,unsigned* handled,NrActiveDispatchResultV1* result){
-    auto& p=*impl_;std::lock_guard<std::recursive_mutex> lock(p.state_mutex);Impl::MirrorOnExit mirror_on_exit{p};if(handled)*handled=1;if(result){*result={};result->size=sizeof(*result);result->version=1;}static std::uint64_t despachos_ffx=0;++despachos_ffx;nrreproject::base_recurso.store(nullptr);
+    auto& p=*impl_;std::lock_guard<std::recursive_mutex> lock(p.state_mutex);
+    struct ArmaDescritor{Impl& dono;Impl::DescritorCache antes;ArmaDescritor(Impl& x,const void* d):dono(x),antes(x.desc_cache){dono.desc_cache={};dono.desc_cache.de=d;}~ArmaDescritor(){dono.desc_cache=antes;}} arma_descritor{p,descriptor};
+    Impl::MirrorOnExit mirror_on_exit{p};if(handled)*handled=1;if(result){*result={};result->size=sizeof(*result);result->version=1;}static std::uint64_t despachos_ffx=0;++despachos_ffx;nrreproject::base_recurso.store(nullptr);nrreproject::diag_cena_recurso.store(nullptr);nrreproject::diag_warp_recurso.store(nullptr);nrreproject::diag_realce_recurso.store(nullptr);nrreproject::diag_rostos_recurso.store(nullptr);
 
-    if(nrrj::ativo()&&((despachos_ffx&63u)==1u||nrrj::cam_fov.load(std::memory_order_relaxed)==0.f)){nrffx::Descriptor dc{};if(nrffx::decode(descriptor,dc)){nrrj::cam_near.store(dc.camera_near);nrrj::cam_far.store(dc.camera_far);nrrj::cam_fov.store(dc.camera_fov);}}
+    if(nrrj::ativo()&&((despachos_ffx&63u)==1u||nrrj::cam_fov.load(std::memory_order_relaxed)==0.f)){nrffx::Descriptor dc{};if(p.decodificar(descriptor,dc)){nrrj::cam_near.store(dc.camera_near);nrrj::cam_far.store(dc.camera_far);nrrj::cam_fov.store(dc.camera_fov);}}
 
     auto despejar=[&](unsigned modo){
         const unsigned faltam=nrreproject::despejo_final.load();
@@ -691,14 +746,15 @@ int PinnedBinding::dispatch(NrFfxDispatch original,void* context,void* descripto
         const bool preparo=!faltam&&nrreproject::final_quer_preparo();
         if(faltam||preparo){
             nrffx::Descriptor d{};
-            const bool decodificado=nrffx::decode(descriptor,d)&&d.command&&d.input&&d.output;
+            const bool decodificado=p.decodificar(descriptor,d)&&d.command&&d.input&&d.output;
             if(decodificado){auto& x=nrreproject::final_extras;x.motion=d.motion;x.depth=d.depth;x.exposure=d.exposure;
                 x.motion_state=d.motion_state;x.depth_state=d.depth_state;x.exposure_state=d.exposure_state;
                 x.jitter_x=d.jitter_x;x.jitter_y=d.jitter_y;x.mv_x=d.motion_x;x.mv_y=d.motion_y;
                 x.render_w=d.render_w;x.render_h=d.render_h;x.output_w=d.output_w;x.output_h=d.output_h;x.valido=true;
                 x.camera_near=d.camera_near;x.camera_far=d.camera_far;x.camera_fov=d.camera_fov;
+                x.expo_rede=nrexpotrava::exposicao_rede(p.host->base());
 
-                if(nrrj::ativo()){const auto& q=nrrj::quadro_render();x.rj_on=q.on;x.rj_nivel=q.nivel;x.rj_ganho=q.ganho;x.rj_cx=q.cx;x.rj_cy=q.cy;x.rj_lado=q.lado;
+                if(nrrj::ativo()){const auto& q=nrrj::quadro_render();x.rj_on=q.on;x.rj_nivel=q.nivel;x.rj_ganho=q.ganho;x.rj_cx=q.cx;x.rj_cy=q.cy;x.rj_lado=q.lado;x.rj_dx=q.disco_x;x.rj_dy=q.disco_y;
                     x.rj_rx=q.recorte_x;x.rj_ry=q.recorte_y;x.rj_rl=q.recorte_l;x.rj_composto=q.composto;x.rj_job=q.job;x.rj_idade=q.idade;}else x.rj_on=-1;
                 for(int kn=0;kn<nrrj::npc_slots&&kn<7;++kn){nrrj::Inst i1(1+kn);x.rjn_on[kn]=-1;
                  if(nrrj::ativo()){const auto& q=nrrj::quadro_render();x.rjn_on[kn]=q.on;x.rjn_nivel[kn]=q.nivel;x.rjn_ganho[kn]=q.ganho;x.rjn_cx[kn]=q.cx;x.rjn_cy[kn]=q.cy;x.rjn_lado[kn]=q.lado;
@@ -713,8 +769,30 @@ int PinnedBinding::dispatch(NrFfxDispatch original,void* context,void* descripto
         }
         p.host->dump_final_tick();
     };
-    auto forward=[&](){p.host->invalidate_reprojection();const auto r=original?original(context,descriptor):6;if(result)result->original_result=r;despejar(2u);return r;};
-    if(!p.valid||!p.thread_ok())return forward();if(p.in_dispatch||p.in_capture){p.fail("recursive_dispatch_or_capture_overlap");return forward();}if(p.wrapper_open)return forward();p.pump();if(p.failed)return forward();
+
+    auto filtrar=[&](bool com_rosto){
+
+        nrrj::AreaRosto a[4];const unsigned n=com_rosto?nrrj::areas_ligadas(nrrj::UsoArea::Filtros,a):0u;
+        {nrrostosquadro::Lista l{};for(unsigned i=0;i<n;++i)l.a[l.n++]={a[i].x,a[i].y,a[i].rx,a[i].elipse?a[i].ry:0.f};nrrostosquadro::publicar(l);}
+        if(!p.host||(nrfiltros::carregado()&&!nrfiltros::parametros().quais))return;nrffx::Descriptor d{};
+        nrfiltros::n_cabecas=0;
+        if(nrfiltros::areas_rosto(nrfiltros::parametros()))for(unsigned i=0;i<n;++i)
+         nrfiltros::cabecas[nrfiltros::n_cabecas++]={a[i].x,a[i].y,a[i].rx,a[i].elipse?a[i].ry:0.f};
+        if(p.decodificar(descriptor,d)&&d.command&&d.output){
+
+            auto& ae=nrao::entrada;ae={};
+
+            if((nrfiltros::parametros().quais&(1024u|4096u))||nrfiltros::parametros().ceu){
+               ae.valido=d.depth!=nullptr;ae.prof=d.depth;ae.prof_estado=d.depth_state;ae.mov=d.motion;ae.mov_estado=d.motion_state;
+                ae.cor_entrada=d.input;ae.cor_estado=d.input_state;const float mf=nrreproject::value(nrreproject::controls,nrreproject::MotionFactor);
+                ae.mv_x=d.motion_x*mf;ae.mv_y=d.motion_y*mf;ae.render_w=d.render_w;ae.render_h=d.render_h;ae.jitter_x=d.jitter_x;ae.jitter_y=d.jitter_y;
+                ae.near_=d.camera_near;ae.far_=d.camera_far;ae.fov=d.camera_fov;ae.invertida=nrreproject::prof_invertida_jogo.load(std::memory_order_relaxed);}
+            (void)p.host->filtros_post(d.command,d.output,d.output_state);ae.valido=false;}};
+    auto forward=[&](){p.host->invalidate_reprojection();const auto r=original?original(context,descriptor):6;p.desc_cache.feito=false;if(result)result->original_result=r;if(r==0&&p.enabled)filtrar(false);despejar(2u);return r;};
+
+    p.capture_invoked=false;p.capture_deferred=false;p.motivo_so_fsr=nullptr;
+    struct ContaSoFsr{Impl& p;~ContaSoFsr(){if(p.valid&&p.enabled&&!p.failed&&(!p.capture_invoked||p.capture_deferred))p.contar_so_fsr(p.motivo_so_fsr?p.motivo_so_fsr:static_cast<const char*>(p.diagnostic));}} conta_so_fsr{p};
+    if(!p.valid||!p.thread_ok())return forward();if(p.in_dispatch||p.in_capture){p.fail("recursive_dispatch_or_capture_overlap");return forward();}if(p.wrapper_open){p.motivo_so_fsr="involucro_de_fila_aberto";return forward();}p.pump();if(p.failed)return forward();
     if(selection.size!=sizeof(selection)||selection.version!=1||!supported_percent(selection.scale_percent)||(selection.stage!=NR_ACTIVE_STAGE_PRE&&selection.stage!=NR_ACTIVE_STAGE_POST)){p.fail("unsupported_stage_scale_selection");return forward();}
     if(!p.ensure(selection))return forward();p.menu_generation=p.resolution_pending?p.resolution_ticket.request_id:selection.generation;p.requested=(p.resolution_pending?p.resolution_ticket.stage:selection.stage)==NR_ACTIVE_STAGE_PRE?Stage::Pre:Stage::Post;p.controller->request(p.requested,p.host->now());p.pump();if(p.failed)return forward();
 
@@ -747,9 +825,10 @@ int PinnedBinding::dispatch(NrFfxDispatch original,void* context,void* descripto
     if(reset&&p.enabled){if(p.retired_valid||p.host->producers(p.controller->generation())!=Proof::Complete||!p.host->set_pending_reset()){p.fail("maintenance_readiness_failed");return forward();}p.retired_scheduler=p.scheduler;p.retired_valid=true;nr_active_scheduler_init_v1(&p.scheduler);p.attempted=false;p.maintenance=true;}
     if(p.enabled)p.passo_teto_post();
 
-    if(p.enabled&&nroverlayamd::vigiar_entrada.load(std::memory_order_relaxed)){nrffx::Descriptor e{};if(nrffx::decode(descriptor,e))nroverlayamd::nota_entrada(e.input,e.render_w,e.render_h);}
+    if(p.enabled&&nroverlayamd::vigiar_entrada.load(std::memory_order_relaxed)){nrffx::Descriptor e{};if(p.decodificar(descriptor,e))nroverlayamd::nota_entrada(e.input,e.render_w,e.render_h);}
     if(p.enabled){++p.enabled_dispatches;++p.frame_count;if(p.list){if(p.submitted)++p.pending_submitted;else ++p.pending_unsubmitted;}
         auto& idades=nrjob::ages();idades.set_period(p.async_tuning().age_log_frames);idades.frame();if(idades.due()){idades.late(p.host->late_totals());p.host->age_log(idades.take(p.async_tuning()));}}
+    if(p.list)p.motivo_so_fsr=p.submitted?"lote_anterior_sem_completar":"lista_neural_anterior_nao_submetida";
     if(!p.enabled||p.list||(!reset&&!p.controller->neural_allowed()&&!p.controller->initialization_capture_allowed()))return forward();
     if(!reset&&p.geometry_changed(original,context,descriptor)){
         const auto now=p.host->now();if(!p.restage_count||now-p.restage_window>=60000){p.restage_window=now;p.restage_count=0;}
@@ -801,7 +880,7 @@ int PinnedBinding::dispatch(NrFfxDispatch original,void* context,void* descripto
         }
     }
     {
-        nrffx::Descriptor dj{};const bool ok=nrffx::decode(descriptor,dj)&&std::isfinite(dj.jitter_x)&&std::isfinite(dj.jitter_y)&&
+        nrffx::Descriptor dj{};const bool ok=p.decodificar(descriptor,dj)&&std::isfinite(dj.jitter_x)&&std::isfinite(dj.jitter_y)&&
             std::fabs(dj.jitter_x)<=4.f&&std::fabs(dj.jitter_y)<=4.f;
         nrreproject::jitter_atual_x.store(ok?dj.jitter_x:0.f);nrreproject::jitter_atual_y.store(ok?dj.jitter_y:0.f);nrreproject::jitter_valido.store(ok);
         nrreproject::near_atual.store(ok&&std::isfinite(dj.camera_near)&&dj.camera_near>0.f?dj.camera_near:0.f);
@@ -815,17 +894,19 @@ int PinnedBinding::dispatch(NrFfxDispatch original,void* context,void* descripto
     p.rebind_equivalent(original,context,descriptor);if(p.failed)return forward();
     p.capture_invoked=false;
     void* custo_lista=nullptr;
-    if(nrcusto::marca_fn().load(std::memory_order_relaxed)){nrffx::Descriptor dc{};if(nrffx::decode(descriptor,dc)&&dc.command){custo_lista=dc.command;nrcusto::marca(custo_lista,nrcusto::DispInicio);}}
+    if(nrcusto::marca_fn().load(std::memory_order_relaxed)){nrffx::Descriptor dc{};if(p.decodificar(descriptor,dc)&&dc.command){custo_lista=dc.command;nrcusto::marca(custo_lista,nrcusto::DispInicio);}}
     const auto value=nr_active_schedule_dispatch_v1(&p.scheduler,&input,handled,result);
+    p.desc_cache.feito=false;
     if(!p.capture_invoked)p.host->invalidate_reprojection();
 
     if(!p.failed&&p.enabled&&p.capture_invoked&&
        nrreproject::value(nrreproject::controls,nrreproject::ComposeAfter)>.5f){
         nrffx::Descriptor d{};
-        if(nrffx::decode(descriptor,d)&&d.command&&d.output){
+        if(p.decodificar(descriptor,d)&&d.command&&d.output){
             if(p.host->reproject_post(d.command,d.output,d.output_state)>1)p.fail("post_fsr_reprojection_failed");
         }
     }
+    if(!p.failed)filtrar(true);
     if(custo_lista)nrcusto::marca(custo_lista,nrcusto::DispFim);
 
     if(!p.failed&&p.enabled)despejar(0u);
@@ -833,16 +914,16 @@ int PinnedBinding::dispatch(NrFfxDispatch original,void* context,void* descripto
         nractive::Globals observed{};
         if(p.host->read(observed)){
             NrResourceDesc rd[4]{};nrffx::Descriptor descriptor_view{};
-            const bool decoded=nrffx::decode(descriptor,descriptor_view);
+            const bool decoded=p.decodificar(descriptor,descriptor_view);
             void* objects[4]{descriptor_view.input,descriptor_view.output,descriptor_view.motion,descriptor_view.depth};
             unsigned described=0;for(unsigned i=0;i<4&&decoded;++i)if(p.host->describe(objects[i],rd[i]))++described;
             NRLOGF(p.queue_diagnostic,sizeof(p.queue_diagnostic),
               "scheduler_fsr_only_empty_%u_ready_%u_error_%u_fsr_%u_inline_%u_interop_%u_pending_%u_depth_%u_activeinline_%u_activeinterop_%u_described_%u_formats_%u_%u_%u_%u_flags_%u_%u",
-              nractive::first_use_empty(observed)?1u:0u,field<std::uint8_t>(observed,0x94268),
-              (field<std::uint8_t>(observed,0x9426A)&1)?0u:1u,field<std::uint8_t>(observed,0x94A8E),
-              field<std::uint8_t>(observed,0x94710),field<std::uint8_t>(observed,0x948F4),
-              field<std::uint8_t>(observed,0x94B78),field<std::uint8_t>(observed,0x94A8F),
-              field<std::uint8_t>(observed,0x94711),field<std::uint8_t>(observed,0x948F5),described,
+              nractive::first_use_empty(observed)?1u:0u,field<std::uint8_t>(observed,nrproxy::rva_motor_pronto),
+              (field<std::uint8_t>(observed,nrproxy::rva_motor_erro)&1)?0u:1u,field<std::uint8_t>(observed,nrproxy::rva_usar_fsr),
+              field<std::uint8_t>(observed,nrproxy::rva_inline_pedido),field<std::uint8_t>(observed,nrproxy::rva_interop_pedido),
+              field<std::uint8_t>(observed,nrproxy::rva_reset_pendente),field<std::uint8_t>(observed,nrproxy::rva_usar_prof),
+              field<std::uint8_t>(observed,nrproxy::rva_inline_ativo),field<std::uint8_t>(observed,nrproxy::rva_interop_ativo),described,
               rd[0].format,rd[1].format,rd[2].format,rd[3].format,rd[0].flags,rd[1].flags);
             p.diagnostic=p.queue_diagnostic;
         }
@@ -857,7 +938,7 @@ int PinnedBinding::dispatch(NrFfxDispatch original,void* context,void* descripto
     }
     if(p.scheduler.poisoned&&!p.failed){
         nrffx::Descriptor d{};NrActiveEnvironmentV1 e{};unsigned pointers=0,descriptions=0,caches=0;
-        const bool decoded=nrffx::decode(descriptor,d);
+        const bool decoded=p.decodificar(descriptor,d);
         void* objects[5]{d.input,d.output,d.motion,d.depth,d.exposure};
         for(unsigned n=0;n<5;++n){
             if(objects[n]!=p.scheduler.resources[n])pointers|=1u<<n;
@@ -865,7 +946,7 @@ int PinnedBinding::dispatch(NrFfxDispatch original,void* context,void* descripto
         }
         Impl::environment(&p,&e);nractive::Globals g{};
         if(p.host->read(g))for(unsigned n=0;n<4;++n){const unsigned index=n==0?(p.scheduler.selection.stage==NR_ACTIVE_STAGE_PRE?0:1):n+1;
-            if(nractive::cache_matches(g,0x94298+n*0x100,n==3?(p.scheduler.resources[4]?&p.scheduler.descriptions[4]:nullptr):&p.scheduler.descriptions[index],true))caches|=1u<<n;}
+            if(nractive::cache_matches(g,nrproxy::rva_cache_cor+n*0x100,n==3?(p.scheduler.resources[4]?&p.scheduler.descriptions[4]:nullptr):&p.scheduler.descriptions[index],true))caches|=1u<<n;}
         NRLOGF(p.queue_diagnostic,sizeof(p.queue_diagnostic),"scheduler_drift_decoded_%u_pointers_%u_desc_%u_caches_%u_context_%u_env_%u_%u_%u_%u_%u",decoded?1u:0u,pointers,descriptions,caches,context==p.scheduler.context?1u:0u,e.engine_ready,e.error_clear,e.pending_reset,e.active_inline,e.active_interop);
         NrResourceDesc mv{};if(d.motion)p.host->describe(d.motion,mv);
         const auto& old=p.scheduler.descriptions[2];const auto length=std::strlen(p.queue_diagnostic);
@@ -897,7 +978,7 @@ unsigned PinnedBinding::compose(void* command,void* destination,unsigned,int job
     if(p.list&&p.list!=command){nrrecusa::registrar("compose_outra_lista",job,p.last_completed_async,0,0);return 1;}
     nractive::Globals g{};std::uint64_t actual_device{};
     const unsigned color=p.scheduler.selection.stage==NR_ACTIVE_STAGE_PRE?0:1;
-    if(!p.globals(g)||!field<std::uint8_t>(g,0x94A8C))return 1;
+    if(!p.globals(g)||!field<std::uint8_t>(g,nrproxy::rva_enabled))return 1;
     p.observe_async(g);if(p.failed)return 1;
 
     int usar=job;bool segura=false;
@@ -1035,7 +1116,7 @@ std::uint64_t PinnedBinding::queue_begin(void* queue,unsigned count,void** lists
     if(!lock.owns_lock()){if(p.fast_foreign(queue,count,lists,p.host->thread()))return 0;lock.lock();}
     Impl::MirrorOnExit mirror_on_exit{p};if(!p.valid||p.failed||!p.controller)return 0;
 
-    if(p.render_learning()&&!p.in_capture&&!p.in_dispatch&&!p.scheduler.frozen&&count<=64&&lists){
+    if(p.render_learning()&&!p.in_capture&&!p.in_dispatch&&!p.scheduler.frozen&&count<=listas_por_submissao_max&&lists){
         const auto selected=reinterpret_cast<std::uint64_t>(queue);
         for(unsigned i=0;i<count;++i){
             const auto* d=p.dispatched_find(lists[i]);if(!d)continue;
@@ -1049,15 +1130,15 @@ std::uint64_t PinnedBinding::queue_begin(void* queue,unsigned count,void** lists
 
     if(p.in_capture&&p.in_dispatch&&!p.wrapper_open&&(reinterpret_cast<std::uint64_t>(queue)==p.presentation_queue||reinterpret_cast<std::uint64_t>(queue)==p.queue)&&count==1&&lists&&lists[0]&&lists[0]!=p.observed_command&&lists[0]!=p.list){
         nractive::Globals g{};if(!p.globals(g))return 0;
-        if(field<std::uint64_t>(g,0x93F40)==reinterpret_cast<std::uint64_t>(queue)&&field<std::uint64_t>(g,0x94A70)==reinterpret_cast<std::uint64_t>(lists[0])&&
-           !field<std::uint64_t>(g,0x949D0)&&field<int>(g,0x949D8)==-1&&p.ticket_sequence!=UINT64_MAX){
-            p.queue_before=g;p.wrapper_count=1;p.wrapper_lists[0]=lists[0];
+        if(field<std::uint64_t>(g,nrproxy::rva_fila)==reinterpret_cast<std::uint64_t>(queue)&&field<std::uint64_t>(g,nrproxy::rva_lista_interna)==reinterpret_cast<std::uint64_t>(lists[0])&&
+           !field<std::uint64_t>(g,nrproxy::rva_lista_pendente)&&field<int>(g,nrproxy::rva_job_pendente)==-1&&p.ticket_sequence!=UINT64_MAX){
+            if(!p.guarda_listas(1,lists))return 0;p.queue_before=g;
             p.relevant_wrapper=false;p.internal_wrapper=true;p.wrapper_epoch=0;
             p.wrapper_queue=reinterpret_cast<std::uint64_t>(queue);p.ticket=++p.ticket_sequence;p.wrapper_open=true;p.wrapper_thread=p.host->thread();wt::Record(wt::Event::QueueBegin,0,p.wrapper_queue,p.ticket,count,2);return p.ticket;
         }
     }
 
-    if(p.host->thread()!=p.owner&&!p.in_capture&&!p.in_dispatch&&count<=64&&(lists||!count)){
+    if(p.host->thread()!=p.owner&&!p.in_capture&&!p.in_dispatch&&count<=listas_por_submissao_max&&(lists||!count)){
         bool tracked=false;
         for(unsigned i=0;i<count;++i)tracked|=lists[i]&&(lists[i]==p.observed_command||lists[i]==p.list);
         if(!tracked)return 0;
@@ -1065,7 +1146,7 @@ std::uint64_t PinnedBinding::queue_begin(void* queue,unsigned count,void** lists
 
     if(!p.in_capture&&!p.in_dispatch&&reinterpret_cast<std::uint64_t>(queue)!=p.queue){
 
-        if(count>64||(!lists&&count)){p.fail("foreign_queue_invalid_lists");return 0;}
+        if(count>listas_por_submissao_max||(!lists&&count)){p.fail("foreign_queue_invalid_lists");return 0;}
         for(unsigned i=0;i<count;++i)if(lists[i]&&(lists[i]==p.observed_command||lists[i]==p.list)){
             const auto observed=p.recording?p.recording->snapshot():nrrecord::Snapshot{};
             if(!p.attempted&&!p.list&&!p.baseline_valid&&!p.scheduler.frozen&&p.recording&&
@@ -1084,12 +1165,12 @@ std::uint64_t PinnedBinding::queue_begin(void* queue,unsigned count,void** lists
     }
 
     if(p.wrapper_open&&!p.in_capture&&!p.in_dispatch&&reinterpret_cast<std::uint64_t>(queue)==p.queue&&
-       p.host->thread()!=p.wrapper_thread&&count<=64&&(lists||!count)){
+       p.host->thread()!=p.wrapper_thread&&count<=listas_por_submissao_max&&(lists||!count)){
         bool tracked=false;
         for(unsigned i=0;i<count;++i)tracked|=lists[i]&&(lists[i]==p.observed_command||lists[i]==p.list);
         if(!tracked)return 0;
     }
-    if(p.in_capture||p.in_dispatch||p.wrapper_open||reinterpret_cast<std::uint64_t>(queue)!=p.queue||count>64||(!lists&&count)){NRLOGF(p.queue_diagnostic,sizeof(p.queue_diagnostic),"queue_overlap_capture_%u_dispatch_%u_open_%u_queue_%llx_expected_%llx_count_%u_lists_%llx",p.in_capture?1u:0u,p.in_dispatch?1u:0u,p.wrapper_open?1u:0u,static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(queue)),static_cast<unsigned long long>(p.queue),count,static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(lists)));p.fail(p.queue_diagnostic);return 0;}
+    if(p.in_capture||p.in_dispatch||p.wrapper_open||reinterpret_cast<std::uint64_t>(queue)!=p.queue||count>listas_por_submissao_max||(!lists&&count)){NRLOGF(p.queue_diagnostic,sizeof(p.queue_diagnostic),"queue_overlap_capture_%u_dispatch_%u_open_%u_queue_%llx_expected_%llx_count_%u_lists_%llx",p.in_capture?1u:0u,p.in_dispatch?1u:0u,p.wrapper_open?1u:0u,static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(queue)),static_cast<unsigned long long>(p.queue),count,static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(lists)));p.fail(p.queue_diagnostic);return 0;}
 
     if(p.host->thread()==p.owner)p.pump();if(p.failed)return 0;
     unsigned object_hits=0;for(unsigned i=0;i<count;++i)if(lists[i]==p.observed_command&&p.observed_command)++object_hits;
@@ -1110,34 +1191,34 @@ std::uint64_t PinnedBinding::queue_begin(void* queue,unsigned count,void** lists
         p.fail(p.queue_diagnostic);return 0;
     }
     nractive::Globals g{};if(!p.globals(g))return 0;
-    if(hits&&p.native_job){if(field<std::uint64_t>(g,0x949D0)!=reinterpret_cast<std::uint64_t>(p.list)||field<int>(g,0x949D8)!=p.native_job||field<int>(g,0x949DC)!=p.native_job){p.fail("queue_preassociation_failed");return 0;}}
-    else if(hits&&(field<std::uint64_t>(g,0x949D0)||field<int>(g,0x949D8)!=-1)){p.fail("jobless_queue_unexpected_pending");return 0;}
-    p.internal_wrapper=false;p.queue_before=g;p.wrapper_count=count;for(unsigned i=0;i<count;++i)p.wrapper_lists[i]=lists[i];p.relevant_wrapper=hits==1;
+    if(hits&&p.native_job){if(field<std::uint64_t>(g,nrproxy::rva_lista_pendente)!=reinterpret_cast<std::uint64_t>(p.list)||field<int>(g,nrproxy::rva_job_pendente)!=p.native_job||field<int>(g,nrproxy::rva_job_aceito)!=p.native_job){p.fail("queue_preassociation_failed");return 0;}}
+    else if(hits&&(field<std::uint64_t>(g,nrproxy::rva_lista_pendente)||field<int>(g,nrproxy::rva_job_pendente)!=-1)){p.fail("jobless_queue_unexpected_pending");return 0;}
+    if(!p.guarda_listas(count,lists))return 0;p.internal_wrapper=false;p.queue_before=g;p.relevant_wrapper=hits==1;
     p.wrapper_queue=reinterpret_cast<std::uint64_t>(queue);p.ticket=++p.ticket_sequence;p.wrapper_open=true;p.wrapper_thread=p.host->thread();if(p.relevant_wrapper){p.event(Kind::SubmissionBegin,p.ticket);p.event(Kind::SubmitList,p.list_epoch,p.ticket);}wt::Record(wt::Event::QueueBegin,p.native_job,p.wrapper_queue,p.ticket,count,p.relevant_wrapper?1u:0u);return p.failed?0:p.ticket;
 }
 void PinnedBinding::queue_end(std::uint64_t ticket,void* queue,unsigned count,void** lists)noexcept{
     if(!ticket)return;
-    auto& p=*impl_;std::lock_guard<std::recursive_mutex> lock(p.state_mutex);Impl::MirrorOnExit mirror_on_exit{p};if(!p.valid||p.failed)return;if(!p.wrapper_open||ticket!=p.ticket||reinterpret_cast<std::uint64_t>(queue)!=p.wrapper_queue||count>64||(!lists&&count)){p.fail("queue_end_mismatch");return;}
+    auto& p=*impl_;std::lock_guard<std::recursive_mutex> lock(p.state_mutex);Impl::MirrorOnExit mirror_on_exit{p};if(!p.valid||p.failed)return;if(!p.wrapper_open||ticket!=p.ticket||reinterpret_cast<std::uint64_t>(queue)!=p.wrapper_queue||count>listas_por_submissao_max||(!lists&&count)){p.fail("queue_end_mismatch");return;}
     if(count!=p.wrapper_count){p.fail("queue_end_count_mismatch");return;}for(unsigned i=0;i<count;++i)if(lists[i]!=p.wrapper_lists[i]){p.fail("queue_end_list_mismatch");return;}nractive::Globals g{};if(!p.globals(g))return;
-    if(p.internal_wrapper&&(!p.in_capture||!p.in_dispatch||count!=1||field<std::uint64_t>(g,0x94A70)!=reinterpret_cast<std::uint64_t>(lists[0]))){p.fail("internal_queue_identity_changed");return;}
+    if(p.internal_wrapper&&(!p.in_capture||!p.in_dispatch||count!=1||field<std::uint64_t>(g,nrproxy::rva_lista_interna)!=reinterpret_cast<std::uint64_t>(lists[0]))){p.fail("internal_queue_identity_changed");return;}
     if(p.wrapper_epoch){const auto current=p.recording->snapshot();if(current.epoch!=p.wrapper_epoch||current.phase!=nrrecord::Phase::Closed||current.busy){p.fail("recording_changed_during_queue_wrapper");return;}}
     if(!p.relevant_wrapper){
-        if(field<std::uint64_t>(g,0x949D0)!=field<std::uint64_t>(p.queue_before,0x949D0)||field<int>(g,0x949D8)!=field<int>(p.queue_before,0x949D8)||field<int>(g,0x949DC)!=field<int>(p.queue_before,0x949DC)||field<int>(g,0x94740)!=field<int>(p.queue_before,0x94740)){p.fail("unrelated_wrapper_changed_publication");return;}
+        if(field<std::uint64_t>(g,nrproxy::rva_lista_pendente)!=field<std::uint64_t>(p.queue_before,nrproxy::rva_lista_pendente)||field<int>(g,nrproxy::rva_job_pendente)!=field<int>(p.queue_before,nrproxy::rva_job_pendente)||field<int>(g,nrproxy::rva_job_aceito)!=field<int>(p.queue_before,nrproxy::rva_job_aceito)||field<int>(g,0x94740)!=field<int>(p.queue_before,0x94740)){p.fail("unrelated_wrapper_changed_publication");return;}
         wt::Record(wt::Event::QueueEnd,0,p.wrapper_queue,p.ticket,count,p.internal_wrapper?2u:0u);p.wrapper_open=false;p.internal_wrapper=false;p.ticket=0;return;
     }
-    if(field<std::uint64_t>(g,0x949D0)||field<int>(g,0x949D8)!=-1||field<std::uint8_t>(g,0x94711)!=0){p.fail("queue_posttuple_failed");return;}
+    if(field<std::uint64_t>(g,nrproxy::rva_lista_pendente)||field<int>(g,nrproxy::rva_job_pendente)!=-1||field<std::uint8_t>(g,nrproxy::rva_inline_ativo)!=0){p.fail("queue_posttuple_failed");return;}
     if(p.native_job){
-        const bool job_publication=field<int>(g,0x949BC)==p.native_job||(field<int>(g,0x949BC)==-1&&field<int>(g,0x949C8)==p.native_job);
-        if(!job_publication||field<int>(g,0x949DC)!=p.native_job||p.async_pending_job){p.fail("queue_postpublication_failed");return;}
-        const auto previous_fence=field<std::uint64_t>(p.queue_before,0x949A0);
-        if(previous_fence==UINT64_MAX||!field<std::uint64_t>(g,0x94990)||
-           field<std::uint64_t>(g,0x94990)!=field<std::uint64_t>(p.queue_before,0x94990)||
-           field<std::uint64_t>(g,0x949C0)!=previous_fence+1||
-           field<std::uint64_t>(g,0x949C0)!=field<std::uint64_t>(g,0x949A0)){p.fail("async_capture_fence_publication_failed");return;}
+        const bool job_publication=field<int>(g,nrproxy::rva_worker_job)==p.native_job||(field<int>(g,nrproxy::rva_worker_job)==-1&&field<int>(g,nrproxy::rva_job_pronto)==p.native_job);
+        if(!job_publication||field<int>(g,nrproxy::rva_job_aceito)!=p.native_job||p.async_pending_job){p.fail("queue_postpublication_failed");return;}
+        const auto previous_fence=field<std::uint64_t>(p.queue_before,nrproxy::rva_cerca_valor);
+        if(previous_fence==UINT64_MAX||!field<std::uint64_t>(g,nrproxy::rva_cerca)||
+           field<std::uint64_t>(g,nrproxy::rva_cerca)!=field<std::uint64_t>(p.queue_before,nrproxy::rva_cerca)||
+           field<std::uint64_t>(g,nrproxy::rva_cerca_alvo)!=previous_fence+1||
+           field<std::uint64_t>(g,nrproxy::rva_cerca_alvo)!=field<std::uint64_t>(g,nrproxy::rva_cerca_valor)){p.fail("async_capture_fence_publication_failed");return;}
         p.async_pending_job=p.native_job;p.async_started=p.host->now();nrjob::timeline().stamp(p.native_job,nrjob::Submetido,nrjob::qpc());p.host->captura_submetida(p.native_job,queue);
         p.event(Kind::JobPublished,static_cast<std::uint64_t>(p.native_job),p.ticket);
     }
-    else if(field<int>(g,0x94740)!=field<int>(p.queue_before,0x94740)||field<int>(g,0x949DC)!=field<int>(p.queue_before,0x949DC)){p.fail("jobless_wrapper_changed_publication");return;}
+    else if(field<int>(g,0x94740)!=field<int>(p.queue_before,0x94740)||field<int>(g,nrproxy::rva_job_aceito)!=field<int>(p.queue_before,nrproxy::rva_job_aceito)){p.fail("jobless_wrapper_changed_publication");return;}
     wt::Record(wt::Event::QueueEnd,p.native_job,p.wrapper_queue,p.ticket,count,1);p.event(Kind::SubmissionEnd,p.ticket);p.wrapper_open=false;p.submitted=true;
 }
 void PinnedBinding::hip_complete(int status,int job)noexcept{auto& p=*impl_;if(job<=0||job!=p.expected_job.load()||p.host->thread()!=p.expected_worker.load()){wt::Record(wt::Event::HipComplete,job,0,0,static_cast<unsigned>(status),1);p.foreign_failure.store(true);return;}int none=NoHip;const bool accepted=status!=NoHip&&p.hip_status.compare_exchange_strong(none,status);wt::Record(wt::Event::HipComplete,job,0,0,static_cast<unsigned>(status),accepted?0u:1u);if(!accepted)p.foreign_failure.store(true);}
@@ -1145,7 +1226,7 @@ unsigned PinnedBinding::reset_gate(unsigned kind)noexcept{
     auto& p=*impl_;std::lock_guard<std::recursive_mutex> lock(p.state_mutex);if(!p.valid||!p.thread_ok()||p.failed||!p.in_capture||!p.controller)return 0;nractive::Globals g{};if(!p.globals(g))return 0;
     if(kind==0){const auto token=p.controller->reset_authorization();if(!p.maintenance||!token||p.reset_consumed||!p.recording||!p.recording->can_retire(p.controller->generation())){p.fail("pending_reset_without_single_use_proof");return 0;}
         for(auto r:{0x949A8u,0x948E0u})if(field<std::uint64_t>(g,r)!=field<std::uint64_t>(p.stopped_globals,r)){p.fail("stopped_handle_changed");return 0;}
-        for(auto r:{0x949B0u,0x948E8u,0x94BA0u})if(field<unsigned>(g,r)!=field<unsigned>(p.stopped_globals,r)){p.fail("stopped_identity_changed");return 0;}
+        for(auto r:{0x949B0u,0x948E8u,nrproxy::rva_hip_dispositivo})if(field<unsigned>(g,r)!=field<unsigned>(p.stopped_globals,r)){p.fail("stopped_identity_changed");return 0;}
         p.reset_before=g;p.event(Kind::BeginReset,0,token->serial);p.reset_consumed=!p.failed;return p.failed?0u:1u;
     }
     if(kind==1){if(p.layout_used){p.fail("duplicate_layout_reset");return 0;}if(!(p.maintenance&&p.reset_consumed&&p.reset_returned)&&!p.host_reset_clean&&!(!p.attempted&&nractive::first_use_empty(g))){p.fail("layout_reset_without_retired_or_initial_proof");return 0;}p.layout_used=true;p.reset_before=g;return 1;}

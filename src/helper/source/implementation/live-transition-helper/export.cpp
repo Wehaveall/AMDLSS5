@@ -1,15 +1,12 @@
 #include "../../../runtime/nr_publico.h"
+#include "../../../runtime/proxy_layout.h"
 #include "multipass_runtime.h"
-#if NR_SPIN_DRAW
-#include "integration.h"
-#endif
 #include "pre_scale_state.h"
 #include "reuso_state.h"
 #include "../compose-controls/control_state.h"
 #include "../compose-controls/realce.h"
 #include "../async-reprojection/reproject_controls.h"
 #include "../async-reprojection/recusa_log.h"
-#include "present_integration.h"
 #include "present_trace.h"
 #include "../adapter-menu/adapter_menu.h"
 #include "../live-transition-binding/live_binding.h"
@@ -18,17 +15,40 @@
 #include "../universal-scale/coordinator.h"
 #include "../universal-scale/d3d12_backend.h"
 #include "../active-scheduling/legacy_fsr3_descriptor.h"
+#include "fsr2_gancho.h"
 #include "../frame-limiter/frame_limiter.h"
 #include "fg_nitidez.h"
 #include "fg_tempo.h"
 #include "../../../layout/menu_compacto.h"
+#include "../../../runtime/fsr_intermitente.h"
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
 #include <intrin.h>
 #include "../../../runtime/native_ini_path.h"
+#include "../../../runtime/pasta_helper.h"
 #include "../../../runtime/log_fila.h"
+#include "../../../runtime/saida_rapida.h"
+#include <d3d12.h>
+#include <atomic>
+#include <cstdio>
+#include <cstdint>
+#include "../active-scheduling/ffx_descriptor.h"
+#include "../compat-diag/compat.h"
+
+namespace {
+bool tamanho_saida_do_recurso(void* o,std::uint32_t& w,std::uint32_t& h) noexcept {
+    if(!o)return false;
+    const D3D12_RESOURCE_DESC d=static_cast<ID3D12Resource*>(o)->GetDesc();
+    if(d.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D||!d.Width||!d.Height||d.Width>16384||d.Height>16384)return false;
+    w=static_cast<std::uint32_t>(d.Width);h=d.Height;
+    static std::atomic<bool> avisado{false};
+    if(!avisado.exchange(true)){char t[96];std::snprintf(t,sizeof t,"upscaleSize 0x0 -> saida %ux%u (recurso)",w,h);nrcompat::tolerado("tolerado_upscale_zero",t);}
+    return true;
+}
+const bool fonte_registrada=(nrffx::set_fonte_tamanho_saida(&tamanho_saida_do_recurso),true);
+}
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -39,9 +59,6 @@
 #include <algorithm>
 #include <optional>
 #include <mutex>
-#if NR_SPIN_DRAW
-namespace { void spin_fault(const char* message) noexcept; }
-#endif
 
 extern "C" __declspec(dllexport) void NRMenuAppend_v1(void* base) noexcept {
     try{
@@ -50,9 +67,6 @@ extern "C" __declspec(dllexport) void NRMenuAppend_v1(void* base) noexcept {
             reinterpret_cast<LPCWSTR>(&NRMenuAppend_v1),&self))return;
         const auto appended=nradapter::append_from_base(base);
         if(appended==nradapter::AppendResult::Appended || appended==nradapter::AppendResult::AlreadyPresent) {
-#if NR_SPIN_DRAW
-            nrspin::install(base,spin_fault);
-#endif
             nradapter::NativeHost host;
             if(nradapter::resolve_host(base,host) && host.multipass_requested && host.multipass_effective)
                 (void)NRMultipassInstall_v1(base);
@@ -63,11 +77,6 @@ namespace {
 
 std::atomic<nrlive::PinnedBinding*> binding{};
 std::atomic<void*> binding_base{};
-#if NR_SPIN_DRAW
-void spin_fault(const char* message) noexcept {
-    if(auto* current=binding.load(std::memory_order_acquire))current->report_error(message);
-}
-#endif
 std::atomic<bool> attempted{};
 std::atomic<nrscale::Coordinator*> scale_coordinator{};
 std::atomic<bool> host_resolution_owned{};
@@ -102,7 +111,21 @@ public:
 };
 
 std::string menu_line(void* base,const nradapter::GatewayResult& request) noexcept {
-(void)base;(void)request;return {};
+    auto* current=binding.load(std::memory_order_acquire);if(!current||!request.state)return {};
+    try{
+        const auto snapshot=current->snapshot();
+        auto* coordinator=scale_coordinator.load(std::memory_order_acquire);
+        const bool universal=!host_resolution_owned.load(std::memory_order_acquire)&&coordinator;
+        const char* scale_diagnostic=universal?coordinator->diagnostic():"scale_backend_host";
+        if(universal&&coordinator->sticky()){
+            (void)nradapter::runtime_fail(base,request.state->generation,scale_diagnostic);
+        }else if(snapshot.state==nrtransition::State::FailedFsrOnly){
+            (void)nradapter::runtime_fail(base,request.state->generation,current->status());
+        }else if(const auto generation=current->acknowledged_generation();generation&&*generation==request.state->generation&&snapshot.working_percent==request.state->requested.percent&&snapshot.effective_stage==(request.state->requested.pre_upscale?1u:2u)){
+            (void)nradapter::runtime_acknowledge(base,*generation);
+        }
+    }catch(...){ }
+    return {};
 }
 void write_menu_line(const std::string& text) noexcept {
 (void)text;
@@ -135,9 +158,10 @@ std::int32_t dispatch(void* base,nrabi::FfxDispatch original,void* context,
             if(handled)*handled=0;
             if(type==0x20003ull){
                 nrlive::note_frame_generation();nrfgtempo::evento('G',0);
+                nrfsrint::gerados.fetch_add(1,std::memory_order_relaxed);
                 const auto r=original(context,descriptor);
 
-                if(r==0){static const std::wstring ini=nrinipath::resolve(base,reinterpret_cast<const void*>(&NRMenuAppend_v1));nrfgnitidez::aplicar(descriptor,ini);}
+                if(r==0){static const std::wstring ini=nrproxy::ini(base);nrfgnitidez::aplicar(descriptor,ini);}
                 return r;
             }
             return original(context,descriptor);
@@ -145,11 +169,11 @@ std::int32_t dispatch(void* base,nrabi::FfxDispatch original,void* context,
         if(effect==0x30000ull)return original(context,descriptor);
 
         if(type==0x10001ull&&nesting==0){
-            {static std::atomic<bool> lido{false};if(!lido.exchange(true,std::memory_order_relaxed)){nrfgtempo::ler(nrinipath::resolve(base,reinterpret_cast<const void*>(&NRMenuAppend_v1)));}}
+            {static std::atomic<bool> lido{false};if(!lido.exchange(true,std::memory_order_relaxed)){nrfgtempo::ler(nrproxy::ini(base));}}
             nrfgtempo::evento('U',nrreproject::idade_composta.load(std::memory_order_relaxed));
+            nrpresenttrace::nota_fsr();
             nrlimit::ritmar(base);ritmo.upscale=true;}
     }
-    if(nrpresentintegration::selected(base))return original(context,descriptor);
     auto request=snapshot_com_espera(base);
     if(request.status!=nradapter::GatewayStatus::Ok||!request.state)return original(context,descriptor);
     auto* current=binding.load(std::memory_order_acquire);
@@ -189,7 +213,7 @@ std::int32_t dispatch(void* base,nrabi::FfxDispatch original,void* context,
     if(nesting==0&&nrffx::host_reset(descriptor))nrreusostate::pedir_cheio();
     bool decoded=nrffx::decode(descriptor,scale_descriptor);
     if(!decoded){nrffx::RawDescriptor raw{};if(nrffx::decode_raw(descriptor,raw)&&!raw.reset){scale_descriptor=raw;decoded=true;}}
-    if(decoded && nesting==0){
+    if(decoded && nesting==0 && nrproxy::admitido(base)){
 
         auto* bytes=static_cast<char*>(base);
         if(nradapter::accessible(bytes+0x949E0,4,nradapter::Access::Read) &&
@@ -232,9 +256,10 @@ std::uint32_t compose(void* base,void* command,void* destination,std::uint32_t s
     return 1;
 }
 void tick(void* base){
+    if(!nrproxy::admitido(base))return;
 
     if(nrmenucompacto::pedido&&base){
-        auto& vis=*reinterpret_cast<volatile std::uint8_t*>(static_cast<std::uint8_t*>(base)+0x923B0);
+        auto& vis=nrproxy::menu_visivel(base);
         if(vis==0){nrmenucompacto::desenhando.store(true,std::memory_order_relaxed);vis=1;}
         nrmenucompacto::pedido=false;
     }
@@ -248,7 +273,43 @@ void tick(void* base){
     write_menu_line(call.line);
 }
 void reload(void* base){(void)nradapter::runtime_reload(base);tick(base);}
-constexpr nrabi::PipelineApiV1 api{40,1,dispatch,compose,tick,reload};
+
+struct OriginalRastreado {nrabi::FfxDispatch real{};bool chamou{};std::int32_t resultado{6};OriginalRastreado* anterior{};};
+thread_local OriginalRastreado* original_atual{};
+std::int32_t original_rastreado(void* context,void* descriptor){
+    auto* r=original_atual;if(!r||!r->real)return 6;
+    r->chamou=true;r->resultado=6;r->resultado=r->real(context,descriptor);return r->resultado;
+}
+std::atomic<unsigned long long> excecoes_contidas{};
+void excecao_contida(const char* onde) noexcept {
+    excecoes_contidas.fetch_add(1,std::memory_order_relaxed);
+    if(auto* current=binding.load(std::memory_order_acquire))current->report_error(onde);
+    NRDIAG(OutputDebugStringA("NR helper callback exception contained\n");)
+}
+template<class Corpo>
+std::int32_t despacho_protegido(nrabi::FfxDispatch original,void* context,void* descriptor,std::uint32_t* handled,const char* onde,Corpo corpo) noexcept {
+    if(!original){if(handled)*handled=1;return 6;}
+    OriginalRastreado r{original,false,6,original_atual};
+    original_atual=&r;
+    struct Volta {OriginalRastreado* anterior;~Volta(){original_atual=anterior;}} volta{r.anterior};
+    try{return corpo(&original_rastreado);}
+    catch(...){excecao_contida(onde);}
+    if(r.chamou)return r.resultado;
+    if(handled)*handled=1;
+    try{return original(context,descriptor);}catch(...){return 6;}
+}
+std::int32_t dispatch_seguro(void* base,nrabi::FfxDispatch original,void* context,void* descriptor,std::int32_t nesting,std::uint32_t* handled) noexcept {
+    return despacho_protegido(original,context,descriptor,handled,"excecao_contida_despacho",
+        [&](nrabi::FfxDispatch rastreado){return dispatch(base,rastreado,context,descriptor,nesting,handled);});
+}
+std::uint32_t compose_seguro(void* base,void* command,void* destination,std::uint32_t state,std::int32_t job,float exposure,std::int32_t alternate,std::uint32_t inline_mode) noexcept {
+    try{return compose(base,command,destination,state,job,exposure,alternate,inline_mode);}
+    catch(...){excecao_contida("excecao_contida_composicao");}
+    return 1;
+}
+void tick_seguro(void* base) noexcept {try{tick(base);}catch(...){excecao_contida("excecao_contida_tick");}}
+void reload_seguro(void* base) noexcept {try{reload(base);}catch(...){excecao_contida("excecao_contida_reload");}}
+constexpr nrabi::PipelineApiV1 api{40,1,dispatch_seguro,compose_seguro,tick_seguro,reload_seguro};
 struct LegacyCall {nrabi::FfxDispatch original{};void* context{};void* descriptor{};};
 thread_local LegacyCall* legacy_call{};
 std::int32_t legacy_original(void* context,void*){
@@ -259,7 +320,6 @@ std::int32_t legacy_original(void* context,void*){
 std::int32_t dispatch_fsr3(void* base,nrabi::FfxDispatch original,void* context,
     void* descriptor,std::int32_t nesting,std::uint32_t* handled){
     if(handled)*handled=1;if(!original)return 6;
-    if(nrpresentintegration::selected(base))return original(context,descriptor);
     if(nesting!=0)return original(context,descriptor);
     std::array<std::byte,nrffx::descriptor_size> generic{};
     const bool converted=nrffx::legacy_fsr3_to_generic(descriptor,generic.data(),generic.size());
@@ -270,7 +330,12 @@ std::int32_t dispatch_fsr3(void* base,nrabi::FfxDispatch original,void* context,
     struct Scope {LegacyCall* previous;Scope(LegacyCall* value):previous(legacy_call){legacy_call=value;}~Scope(){legacy_call=previous;}} scope(&call);
     return dispatch(base,legacy_original,context,generic.data(),nesting,handled);
 }
-constexpr nrabi::LegacyPipelineApiV1 legacy_api{16,1,dispatch_fsr3};
+
+std::int32_t dispatch_fsr3_seguro(void* base,nrabi::FfxDispatch original,void* context,void* descriptor,std::int32_t nesting,std::uint32_t* handled) noexcept {
+    return despacho_protegido(original,context,descriptor,handled,"excecao_contida_despacho_fsr3",
+        [&](nrabi::FfxDispatch rastreado){return dispatch_fsr3(base,rastreado,context,descriptor,nesting,handled);});
+}
+constexpr nrabi::LegacyPipelineApiV1 legacy_api{16,1,dispatch_fsr3_seguro};
 nrhost::Status host_request(nrhost::Request* out)noexcept{
     if(!out||out->size!=sizeof(*out)||out->version!=1)return nrhost::Status::Failed;
     auto* current=binding.load(std::memory_order_acquire);auto* base=binding_base.load(std::memory_order_acquire);
@@ -302,6 +367,12 @@ nrhost::Status host_cancel(std::uint64_t id)noexcept{
 }
 constexpr nrhost::Api host_api{sizeof(nrhost::Api),1,host_request,host_set,host_prepare,host_install,host_poll,host_cancel};
 }
+
+std::int32_t nr_despacho_generico(void* base,nrabi::FfxDispatch original,void* context,void* descriptor,std::int32_t nesting,std::uint32_t* handled){
+    return dispatch_seguro(base,original,context,descriptor,nesting,handled);
+}
 extern "C" __declspec(dllexport) const nrabi::PipelineApiV1* NRGetPipelineApi_v1() noexcept{return &api;}
 extern "C" __declspec(dllexport) const nrabi::LegacyPipelineApiV1* NRGetLegacyPipelineApi_v1() noexcept{return &legacy_api;}
 extern "C" __declspec(dllexport) const nrhost::Api* NRGetHostResolutionApi_v1() noexcept{return &host_api;}
+
+BOOL WINAPI DllMain(HINSTANCE,DWORD motivo,LPVOID reservado){nrsaida::no_detach(motivo,reservado);return TRUE;}

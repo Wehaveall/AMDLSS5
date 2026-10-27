@@ -217,7 +217,7 @@ public:
 struct TitleLayout { float x,y,scale,bold,split_x; };
 inline constexpr char title_text[]="AMDLSS5 MOD";
 
-inline constexpr char mod_version[]="v1.5.2";
+inline constexpr char mod_version[]="v1.6.0";
 inline Color title_color(std::size_t index) {
 
     return index<2?palette::brand_red:index<7?palette::brand_green:palette::title_neutral;
@@ -250,6 +250,8 @@ struct Frame {
     std::string fallback_status;
     bool show_help=true;
     std::string network_word="rede";
+    std::string aviso;
+    std::string fg;
 };
 inline constexpr unsigned panel_columns=52;
 inline std::string footer_text(const Frame& f){return f.position.empty()?f.hints:f.position+"   "+f.hints;}
@@ -356,7 +358,8 @@ inline Canvas build_compacto(unsigned width,unsigned height,const Frame& f,float
     std::string rede=ms.end>ms.begin?status.substr(ms.begin,ms.end-ms.begin):std::string("--");
 
     const std::string fps=pad_digitos(f.fps,3);rede=pad_digitos(rede,3);
-    const std::string linha=fps+"  \xc2\xb7  "+f.network_word+" "+rede;
+
+    const std::string linha=fps+"  \xc2\xb7  "+(f.fg.empty()?std::string():f.fg+"  \xc2\xb7  ")+f.network_word+" "+rede;
     const std::size_t ini=linha.size()-rede.size();
     const float largura=float(columns_of(linha))*cell_width*esc+2*pad,altura=cell_height*esc+2*pad;
     const float x=W-margin-largura,y=margin;
@@ -371,6 +374,14 @@ inline Canvas build_compacto(unsigned width,unsigned height,const Frame& f,float
         const float bx=W-margin-bl,by=y+altura+3*s;
         c.rect(bx,by,bl,ba,rede_ligada?verde:vermelho);
         c.text(selo,bx+pad,by+pad*.7f,esc,branco,unsigned(columns_of(selo))+1);
+    }
+
+    if(!f.aviso.empty()){
+        constexpr Color ambar{1.f,.78f,.22f,1};
+        const float al=float(columns_of(f.aviso))*cell_width*esc+2*pad,aa=cell_height*esc+2*pad*.7f;
+        const float ax=std::max(0.f,W-margin-al),ay=y+altura+3*s+(rede_ligada>=0?cell_height*esc+2*pad*.7f+3*s:0.f);
+        c.rect(ax,ay,al,aa,palette::background);
+        c.text(f.aviso,ax+pad,ay+pad*.7f,esc,ambar,unsigned(columns_of(f.aviso))+1);
     }
     return c;
 }

@@ -35,8 +35,6 @@ struct Config {
 
  int cam_reusa=0;
 
- int warp=0;
- float warp_fator=1.f;
  int dilata_sep=1;
  int mascara_pulo=0;
  int crono=0;
@@ -51,7 +49,7 @@ struct Config {
  float ret_escuro=0.f;
  int ret_raio=2;
  int alinha=0;
- int ret_v1=0;
+
  bool retifica() const noexcept {return ret_mov>0.f||ret_gama>0.f||ret_escuro>0.f;}
 
  int fade=0;
@@ -64,15 +62,6 @@ struct Config {
  int protege_ini_s=20;
  float protege_frac=.002f;
  int fade_curva=0;
-
- float comp=0.f;
- float comp_max=2.f;
- float comp_ini=0.f;
- int comp_mascara=1;
- float comp_escuro=1.f;
- float comp_media=.25f;
- int comp_baixa=0;
- float comp_baixa_k=1.f;
 
  int pre_carrega=0;
  int trava_ms=0;
@@ -104,18 +93,14 @@ inline Config limitar(Config c) noexcept {
  c.parado=std::clamp(c.parado,0.f,1.f);c.cada=std::clamp(c.cada,1,16);c.parado_max=std::clamp(c.parado_max,0,64);
  c.reusa=std::clamp(c.reusa,0,1);c.guia=std::clamp(c.guia,0.f,1.f);
  c.cam_px=std::clamp(c.cam_px,0.f,64.f);c.cam_frac=std::clamp(c.cam_frac,0.f,1.f);c.cam_reusa=std::clamp(c.cam_reusa,0,1);
- c.warp=std::clamp(c.warp,0,1);c.warp_fator=std::clamp(c.warp_fator,-2.f,2.f);c.crono=std::clamp(c.crono,0,2);c.copia_async=std::clamp(c.copia_async,0,1);c.menos_esperas=std::clamp(c.menos_esperas,0,1);c.dilata_sep=std::clamp(c.dilata_sep,0,1);c.mascara_pulo=std::clamp(c.mascara_pulo,0,1);
+ c.crono=std::clamp(c.crono,0,2);c.copia_async=std::clamp(c.copia_async,0,1);c.menos_esperas=std::clamp(c.menos_esperas,0,1);c.dilata_sep=std::clamp(c.dilata_sep,0,1);c.mascara_pulo=std::clamp(c.mascara_pulo,0,1);
  c.ret_mov=std::clamp(c.ret_mov,0.f,256.f);c.ret_tudo=std::clamp(c.ret_tudo,0,1);c.ret_idade=std::clamp(c.ret_idade,0.f,8.f);
  c.ret_gama=std::clamp(c.ret_gama,0.f,16.f);c.ret_gama_mov=std::clamp(c.ret_gama_mov,0.f,256.f);c.ret_escuro=std::clamp(c.ret_escuro,0.f,1.f);
  c.ret_raio=std::clamp(c.ret_raio,1,3);
  c.alinha=std::clamp(c.alinha,0,64);
- c.ret_v1=std::clamp(c.ret_v1,0,1);
  c.fade=std::clamp(c.fade,0,64);
  c.protege=std::clamp(c.protege,0,1);c.protege_ini_s=std::clamp(c.protege_ini_s,0,600);c.protege_frac=std::clamp(c.protege_frac,0.f,1.f);
  c.fade_sobe=std::clamp(c.fade_sobe,0,600);c.fade_curva=std::clamp(c.fade_curva,0,1);
- c.comp=std::clamp(c.comp,0.f,2.f);c.comp_max=std::clamp(c.comp_max,1.f,4.f);c.comp_ini=c.comp_ini>0.f?std::clamp(c.comp_ini,1.f,c.comp_max):0.f;
- c.comp_baixa=std::clamp(c.comp_baixa,0,16);c.comp_baixa_k=std::clamp(c.comp_baixa_k,1.f,4.f);
- c.comp_mascara=std::clamp(c.comp_mascara,0,1);c.comp_escuro=std::clamp(c.comp_escuro,0.f,1.f);c.comp_media=std::clamp(c.comp_media,.01f,1.f);
  c.pre_carrega=std::clamp(c.pre_carrega,0,1);c.trava_ms=c.trava_ms<=0?0:std::clamp(c.trava_ms,200,10000);
  c.trava_n=std::clamp(c.trava_n,1,8);c.trava_janela_s=std::clamp(c.trava_janela_s,1,3600);
  c.cont=std::clamp(c.cont,0,1);c.cont_escala=c.cont_escala<=0?0:std::clamp(c.cont_escala,25,100);c.cont_raio=std::clamp(c.cont_raio,1.f,64.f);
@@ -163,20 +148,6 @@ inline bool protege_job(const Config& c,double seg,float frac_zero) noexcept {
  return frac_zero>=0.f&&frac_zero<=c.protege_frac;
 }
 
-inline float comp_ganho(const Config& c,float razao,float peso) noexcept {
- if(c.comp<=0.f)return 1.f;
- if(!(razao>0.f))razao=c.comp_ini;
- if(!(razao>1.f))return 1.f;
- razao=razao>c.comp_max?c.comp_max:razao;peso=peso<0.f?0.f:(peso>1.f?1.f:peso);
- return 1.f+c.comp*(razao-1.f)*(c.comp_baixa>0?c.comp_baixa_k:1.f)*(1.f-peso);
-}
-
-inline float comp_mede(const Config& c,float ant,float nova) noexcept {
- if(!(nova>0.f)||!(nova<1e6f))return ant;
- if(!(ant>0.f))return nova;
- return ant+c.comp_media*(nova-ant);
-}
-
 struct Trava {unsigned long long t[8]{};int n=0;bool desligado=false;};
 inline bool trava_registra(Trava& g,const Config& c,double ms,unsigned long long agora_ms) noexcept {
  if(c.trava_ms<=0)return false;
@@ -208,10 +179,11 @@ inline int quadros_entre(unsigned long long agora,unsigned long long antes) noex
  const unsigned long long d=agora-antes;return d>8ull?8:int(d);
 }
 
-inline float quadros_warp(unsigned long long agora,unsigned long long antes,float fator) noexcept {
- if(!agora||!antes||agora<antes)return 0.f;
- const unsigned long long d=agora-antes;return float(d>16ull?16ull:d)*fator;
-}
+struct MedidaCamera {
+ struct E{unsigned long long q=0;float lim=-1.f,f=-1.f;};E e[2];unsigned i=0;unsigned long long reusos=0;
+ bool lembra(unsigned long long q,float lim,float& f) noexcept {if(!q)return false;for(const auto& x:e)if(x.q==q&&x.lim==lim){f=x.f;++reusos;return true;}return false;}
+ void guarda(unsigned long long q,float lim,float f) noexcept {if(q)e[i++&1u]={q,lim,f};}
+};
 inline std::atomic<bool> quer_mv{false};
 inline thread_local unsigned char params[0x70]{};inline thread_local bool params_ok=false;
 inline void guardar(const void* p) noexcept {std::memcpy(params,p,sizeof params);params_ok=true;}

@@ -65,6 +65,18 @@ float3 gradeCg2r(float3 v) {
 #else
 #define NR_GRADE(v) (v)
 #endif
+#if defined(NR_GRADE_CG2R) && !defined(NR_GANHO_HISTORICO)
+
+float3 ProtegeRealce(float3 b, float3 d) {
+    const uint k = gp2 & 255u;
+    if (k == 0u || all(d >= 0.0)) return d;
+    const float w = 1.0 - smoothstep(0.30 + 0.05 * float(k & 15u), 0.30 + 0.05 * float(k >> 4), max(b.r, max(b.g, b.b)));
+    return float3(d.r < 0.0 ? d.r * w : d.r, d.g < 0.0 ? d.g * w : d.g, d.b < 0.0 ? d.b * w : d.b);
+}
+#define NR_PROTEGE_REALCE(b, d) ProtegeRealce(b, d)
+#else
+#define NR_PROTEGE_REALCE(b, d) (d)
+#endif
 #ifdef NR_GRADE_CG2R
 
 static float2 ganhoLimite=float2(0.0,0.0);
@@ -486,6 +498,7 @@ float3 ComposeControls(float3 original,float3 proxy,float3 model,float detail,fl
     bool bridge=(tone&0x80000000)!=0 && !(di==20 && co==20 && gu==40);
     if(!bridge) {
         if(tone&1) {float3 s=c.rgb*expo;float3 b=float3(tmf(s.r),tmf(s.g),tmf(s.b));
+            d=NR_PROTEGE_REALCE(b,d);
             e=max(s+tmi3(NR_GRADE(b+d))-float3(tmi(b.r),tmi(b.g),tmi(b.b)),0.0)/expo;
         }else e=NR_GRADE(saturate(c.rgb+d));
     }else if(all(d==float3(0,0,0))) {
@@ -496,6 +509,7 @@ float3 ComposeControls(float3 original,float3 proxy,float3 model,float detail,fl
         if(tone&1) {
             float3 s=c.rgb*expo,b=float3(tmf(s.r),tmf(s.g),tmf(s.b));
             float3 proxy=float3(tmi(b.r),tmi(b.g),tmi(b.b));
+            d=NR_PROTEGE_REALCE(b,d);
             float3 model=tmi3(NR_GRADE(b+d));
             e=max(ComposeControls(s,proxy,model,detail,color,guard),0.0)/expo;
         }else e=saturate(ComposeControls(c.rgb,c.rgb,NR_GRADE(saturate(c.rgb+d)),detail,color,guard));

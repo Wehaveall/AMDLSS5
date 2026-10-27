@@ -1,0 +1,15 @@
+LIBRARY ffx_fsr2_api_x64
+EXPORTS
+    ffxAssertReport @1
+    ffxAssertSetPrintingCallback @2
+    ffxFsr2ContextCreate @3
+    ffxFsr2ContextDestroy @4
+    ffxFsr2ContextDispatch @5
+    ffxFsr2ContextGenerateReactiveMask @6
+    ffxFsr2GetJitterOffset @7
+    ffxFsr2GetJitterPhaseCount @8
+    ffxFsr2GetRenderResolutionFromQualityMode @9
+    ffxFsr2GetUpscaleRatioFromQualityMode @10
+    ffxFsr2ResourceIsNull @11
+    nrFsr2FfxVersao @12
+    nrFsr2FfxFgEstado @13

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include "../../../runtime/pasta_helper.h"
 #include "../async-reprojection/reproject_controls.h"
 namespace nrfgtempo {
 struct Ev{std::int64_t qpc;std::int32_t valor;char tipo;};

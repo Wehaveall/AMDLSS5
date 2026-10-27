@@ -9,17 +9,21 @@ Texture2D<float4> atual : register(t0);
 Texture2D<float4> anterior : register(t1);
 Texture2DArray<float2> movimento : register(t2);
 Texture2DArray<float> profundidade : register(t3);
+#if NR_BASE_PRONTA
+
+Texture2D<float4> basePronta : register(t4);
+#else
 Texture2DArray<float4> cor : register(t4);
+#endif
 RWTexture2D<float4> estado : register(u0);
 RWTexture2D<float4> saida : register(u1);
 
-static const float3 LUMA = float3(0.2126, 0.7152, 0.0722);
-float tmf(float v) { v = max(v, 0.0); v = v / (1.0 + v); return v <= 0.0031308 ? v * 12.92 : 1.055 * pow(v, 1.0 / 2.4) - 0.055; }
-float3 base_em(int2 q) {
-    const float3 c = cor.Load(int4(q, fatia, 0)).rgb;
-    if (!all(isfinite(c))) return float3(0.0, 0.0, 0.0);
-    return tonemap != 0u ? float3(tmf(c.r * expo), tmf(c.g * expo), tmf(c.b * expo)) : saturate(c);
-}
+#include "tom_comum.hlsli"
+static const float3 LUMA = NR_LUMA;
+#include "prof_comum.hlsli"
+#include "base_tom.hlsli"
+#include "filtro_comum.hlsli"
+#define NR_VALIDO_LUZ(v) (v.w > 0.0)
 
 [numthreads(8, 8, 1)]
 void LuzGrossa(uint3 id : SV_DispatchThreadID) {
@@ -50,21 +54,10 @@ void LuzGrossa(uint3 id : SV_DispatchThreadID) {
         const uint2 o = min(uint2(uvp * tam), uint2(largura - 1, altura - 1));
         const float za = profundidade.Load(int4(id.xy, fatia, 0));
         const float zb = profundidade.Load(int4(o, fatiaAnterior, 0));
-        const float tol = max(profAbs, profRel * max(abs(za), abs(zb)));
+        const float tol = NR_TOL_PROF(profAbs, profRel, za, zb);
         float4 h = sem;
-        {
-            const float2 s = uvp * tam - 0.5; const int2 b0 = int2(floor(s)); const float2 f = s - float2(b0);
-            float4 acc = float4(0.0, 0.0, 0.0, 0.0); float wsum = 0.0;
-            [unroll] for (int j = 0; j < 4; ++j) {
-                const int2 off = int2(j & 1, j >> 1);
-                const int2 q = clamp(b0 + off, int2(0, 0), int2(int(largura) - 1, int(altura) - 1));
-                const float4 v = anterior.Load(int3(q, 0));
-                const float wv = (off.x ? f.x : 1.0 - f.x) * (off.y ? f.y : 1.0 - f.y);
-                if (all(isfinite(v)) && v.w > 0.0 && wv > 0.0) { acc += wv * v; wsum += wv; }
-            }
-            if (wsum > 0.25) h = acc / wsum;
-        }
-        if (isfinite(za) && isfinite(zb) && tol > 0.0 && abs(za - zb) <= tol && all(isfinite(h)) && h.w > 0.0) {
+        NR_BILINEAR_COM_ESTADO(h, uvp, tam, NR_VALIDO_LUZ)
+        if (NR_MESMA_SUPERFICIE(za, zb, tol) && all(isfinite(h)) && h.w > 0.0) {
             gp = h.x;
             const float mov = refMov > 0.0 ? saturate(length(mv * tam) / refMov) : 0.0;
             const float a0 = lerp(alfa, alfaMov, mov);

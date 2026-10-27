@@ -1,23 +1,94 @@
 AMDLSS5 MOD {VERSAO}
 
-Run AMDLSS5-Instalador.exe, click "Select game folder..." (or the game .exe) and Install.
-To remove: run the installer, choose the game and click Uninstall (everything goes back as it was).
-In game: use FSR 3.1. The neural network starts OFF: press F10 to turn it on (and off).
-End opens the mod menu.
+Run AMDLSS5-Instalador.exe: it finds the games installed on this PC (Steam, Epic, GOG, Ubisoft, EA, Battle.net, Xbox),
+shows each one with its cover and status, and installs, updates or removes the mod with one click.
+To remove: open the installer, pick the game and click Remove (everything goes back as it was).
+A game that is not listed can be added with "Add game manually...".
+In game: use FSR 3.1 (Shadow of the Tomb Raider: use XeSS; Red Dead Redemption 2: run the game in DirectX 12 and
+choose AMD FSR 2). The neural network starts ON: F10 turns it off and on. End opens the mod menu.
 The package includes dlssnr_on_amd.ini with the mod settings. Uninstalling restores the folder as it was.
+A first install starts with the default settings (image filters off); a game with its own profile (The Witcher 3) starts
+with that profile instead. Updating over an older version installs the new settings and keeps your own choices (menu
+language and options, structure, style, neural passes, FPS limit, image filters, F10 on/off). The last menu line,
+"Restore defaults", puts the menu options back to the mod's general defaults (image filters off, Default style), also in a
+game with its own profile; menu language, input blocking and F10 on/off stay as they are.
 
 Requirements: AMD Radeon RX 9070 / RX 9070 XT (RDNA 4); DirectX 12 game with FSR 3.1.
 Tested only on a Radeon RX 9070 XT, in Resident Evil Requiem, The Witcher 3: Wild Hunt (next-gen, DirectX 12),
-Onimusha: Way of the Sword (demo), Cyberpunk 2077 and Monster Hunter Wilds.
+Onimusha: Way of the Sword (demo), Cyberpunk 2077, Monster Hunter Wilds, Shadow of the Tomb Raider,
+Red Dead Redemption 2, Stellar Blade (demo) and Final Fantasy XVI (demo).
 Keep the payload folder next to the installer.
+The game library downloads cover art from Steam's public image servers, only for games that have a Steam app id.
+Games from other stores get a plain cover; start the installer with --capas-por-nome to look their covers up on Steam by name.
 
 WARNING (AMD Adrenalin):
 Before playing, turn off the Adrenalin metrics overlay and recording/instant replay and set performance tuning
 to "Default" (no saved overclock); reboot after changing it. With them on the GPU can become very slow and hang
-(black screen/TDR) while the game loads, with this mod and with the original one.
+(black screen/TDR) while the game loads.
+
+WHAT'S NEW IN 1.6.0:
+- Greater stability.
+- New game library in the installer: it finds the installed games on all stores, shows each game with its cover and
+  status (tested, not tested yet, not supported, installed version) and installs, updates or removes the mod with one
+  click. Games with anti-cheat are marked and cannot be installed (online games may ban mods).
+- New image filters in the mod menu (End), applied to the final image before the game HUD. All of them start off
+  (except the ones a game's own profile turns on); turning one on opens its settings right below it (Enter opens and
+  closes them):
+  - CAS sharpening: AMD FidelityFX CAS adaptive sharpening. Brings out fine detail without jagged edges, stronger where
+    contrast is low. Setting: strength.
+  - LumaSharpen: sharpens brightness only, without touching color, with a limit that prevents halos. Settings: strength
+    and limit.
+  - Only face outlines: inside faces, CAS and LumaSharpen sharpen only eyes, lashes, brows, lips, nostrils and the face
+    edge; smooth skin is left without sharpening.
+  - Local contrast (Clarity): brings out the texture of skin, cloth, stone and wood without changing the overall light of
+    the scene. Settings: strength, radius (fine texture to large shapes), midtones (spares deep shadows and highlights),
+    zone (everywhere or shadows only) and "Clarity off the face": Off, Skin (keeps the face and neck skin, found by its
+    color, out of it) or Head (keeps the whole head out - skin, hair, beard and hat - for games where the skin color is
+    not found; the default).
+  - Levels: sets the black point and the white point to remove the grey veil and give depth to the shadows; the output
+    black and white give a faded or softer look.
+  - Tone and color (Tonemap): gamma, exposure, saturation, bleach bypass (desaturated film contrast) and defog (removes
+    the haze veil), for a cinematic look.
+  - Temperature (K): white balance of the whole image, from 4000 K (warmer, orange) to 9000 K (cooler, blue), 6500 K =
+    neutral, plus a green/magenta tint. Brightness does not change.
+  - Face skin: adjusts only the skin of the face and neck - light, saturation, hue and temperature - without touching
+    hair, clothes or the scene.
+  - Color by range (HSL): changes the hue, saturation and lightness of each color range (reds, oranges, yellows, greens,
+    cyans, blues, purples, magentas) or of all colors, with a smoothness setting and an option to protect skin tones.
+  - Ambient occlusion (AO): adds soft contact shadows in corners, crevices and under objects, computed from the game's
+    depth after upscaling and before the HUD. Sky, HUD and bright areas are left as they are. Settings: quality (Low,
+    Medium, High, Ultra), intensity, radius, thickness (lets light pass behind thin objects, fewer halos), range,
+    protect skin, less AO in bright areas, resolution (Automatic, Full, Half) and a debug view. Off by default; large
+    radius values can make grass and foliage shimmer.
+  - Indirect lighting (IL): light bounced from nearby surfaces (one bounce) - a red wall tints the floor next to it,
+    sunlit grass tints what is close to it green. Computed from the game's depth and colors after upscaling and before
+    the HUD; sky and HUD are left as they are. Settings: style (Subtle, Default, Strong), intensity, saturation, bounce
+    brightness (0 = color only, 100 = full light), quality, update (every frame or in rotation, cheaper), protect skin
+    and a debug view. Off by default; if the game already has global illumination or ray tracing, keep the bounce
+    brightness low.
+- "Restore defaults" line at the end of the menu.
+- Shadow of the Tomb Raider support. The game has no FSR, so the installer adds it: in the game settings choose XeSS as
+  the upscaler (the mod turns XeSS into FSR 3.1). Frame generation also works here (through XeSS): a "Frame generation"
+  line in the mod menu, off at every launch (turning it on lasts for that session only); the image filters, ambient
+  occlusion and indirect lighting pause while it is on.
+- Red Dead Redemption 2 support (DirectX 12), with frame generation: in the game's graphics settings set the API to
+  DirectX 12 and choose AMD FSR 2 - the mod upgrades it to FSR 4. The installer adds the FSR files the game needs.
+  A "Frame generation" line appears in the mod menu (End); it starts off every time the game opens. Turned on, it adds
+  one generated frame between two game frames (almost twice the FPS on screen, about one frame more latency; the game
+  HUD can shimmer while the camera turns), and the compact counter shows "FG x2".
+- About frame generation: the mod's own frame generation (x2) is there for games that do not have frame generation
+  of their own - Red Dead Redemption 2 (through its FSR 2) and Shadow of the Tomb Raider (through its XeSS). In games
+  that already offer frame generation, just turn it on in the game's own graphics menu; the mod works with it.
+- Stellar Blade and Final Fantasy XVI support.
+- Option to hide the compact FPS counter ("Compact counter" in the menu), for OLED screens.
+- Compatibility improvements.
+
+KNOWN ISSUES IN 1.6.0:
+- While the mod's frame generation is on, the image filters (including ambient occlusion and indirect lighting) are
+  paused automatically, for stability. They come back when frame generation is turned off.
 
 WHAT'S NEW IN 1.5.2:
-- New DLSS 5 neural network installed: the "Small FP8" model from NVIDIA DLSS NR 310.9.16 (faster network).
+- New, faster DLSS 5 neural network model ("Small FP8").
 - The Witcher 3: Wild Hunt (next-gen / remastered, DirectX 12) support, with its own settings.
   Install it in the DirectX 12 folder: in the installer click "Select the .exe..." and choose
   <game folder>\bin\x64_dx12\witcher3.exe (Steam: C:\Program Files (x86)\Steam\steamapps\common\The Witcher 3\bin\x64_dx12).
@@ -35,6 +106,5 @@ WHAT'S NEW IN 1.2.1:
 WHAT'S NEW IN 1.2.0:
 - Image quality, stability and performance improvements; bug fixes.
 
-Credits: Daniel (danielblnc), DLSS-NR-on-AMD (proxy version.dll; still trying to contact him for permission);
-NVIDIA (DLSS, nvngx_dlssnr.dll); praydog (REFramework, MIT).
+Third-party components keep their own licenses (see THIRD_PARTY_NOTICES.txt and payload\reframework\LEIA.txt).
 SHA-256 of every file: payload\pacote.json.

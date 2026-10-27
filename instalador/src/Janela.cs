@@ -15,20 +15,22 @@ namespace Amdlss5.Instalador
 {
     public sealed class Janela : Form, IRelato
     {
-        static readonly Color Fundo = Color.FromArgb(20, 20, 22);
-        static readonly Color Painel = Color.FromArgb(13, 13, 14);
-        static readonly Color Texto = Color.FromArgb(219, 224, 232);
-        static readonly Color Cinza = Color.FromArgb(151, 161, 176);
-        static readonly Color Verde = Color.FromArgb(118, 185, 0);
-        static readonly Color VerdeSelo = Color.FromArgb(28, 132, 28);
-        static readonly Color Vermelho = Color.FromArgb(237, 28, 36);
-        static readonly Color Amarelo = Color.FromArgb(240, 190, 60);
+        internal static readonly Color Fundo = Color.FromArgb(20, 20, 22);
+        internal static readonly Color Painel = Color.FromArgb(13, 13, 14);
+        internal static readonly Color Texto = Color.FromArgb(219, 224, 232);
+        internal static readonly Color Cinza = Color.FromArgb(151, 161, 176);
+        internal static readonly Color Verde = Color.FromArgb(118, 185, 0);
+        internal static readonly Color VerdeSelo = Color.FromArgb(28, 132, 28);
+        internal static readonly Color Vermelho = Color.FromArgb(237, 28, 36);
+        internal static readonly Color Amarelo = Color.FromArgb(240, 190, 60);
 
         readonly string pastaPayload;
         Payload payload;
         string erroPayload;
         Jogo jogo;
         bool ocupado;
+        volatile bool mexendoNoJogo;   // instalar/desinstalar em andamento: a janela nao fecha (a thread e de fundo e morreria no meio)
+        readonly List<IDisposable> recursos = new List<IDisposable>();   // fontes, icone e logo criados aqui (liberados no Dispose)
 
         TextBox txtCaminho, txtLog;
         Button btnPasta, btnExe, btnInstalar, btnDesinstalar, btnAbrir, btnLogs;
@@ -44,7 +46,7 @@ namespace Amdlss5.Instalador
         {
             this.pastaPayload = pastaPayload;
             Text = T.S("titulo");
-            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch (Exception) { }
+            try { Icon ico = Icon.ExtractAssociatedIcon(Application.ExecutablePath); recursos.Add(ico); Icon = ico; } catch (Exception) { }
             AutoScaleMode = AutoScaleMode.Dpi;
             AutoScaleDimensions = new SizeF(96F, 96F);
             ClientSize = new Size(780, 780);
@@ -53,8 +55,38 @@ namespace Amdlss5.Instalador
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = Fundo;
             ForeColor = Texto;
-            Font = new Font("Segoe UI", 9.5F);
+            Font = Fonte("Segoe UI", 9.5F, FontStyle.Regular);
             Montar();
+        }
+
+        Font Fonte(string familia, float tamanho, FontStyle estilo)
+        {
+            Font f = new Font(familia, tamanho, estilo);
+            recursos.Add(f);
+            return f;
+        }
+
+        // Fechar no meio de instalar/desinstalar mataria a thread de fundo com a pasta do jogo pela metade (o desfazer
+        // automatico so roda dentro dela). So o fechamento pedido pelo usuario e barrado; o do Windows (desligar) nao.
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (mexendoNoJogo && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                MessageBox.Show(this, T.S("aguarde_fechar"), T.S("titulo"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            base.OnFormClosing(e);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            if (disposing)
+            {
+                foreach (IDisposable d in recursos) { try { d.Dispose(); } catch (Exception) { } }
+                recursos.Clear();
+            }
         }
 
         Label Rotulo(string texto, int x, int y, int w, Color cor, Font f)
@@ -80,17 +112,23 @@ namespace Amdlss5.Instalador
 
         void Montar()
         {
-            Font negrito = new Font("Segoe UI", 10F, FontStyle.Bold);
+            Font negrito = Fonte("Segoe UI", 10F, FontStyle.Bold);
             PictureBox logo = new PictureBox();
             logo.Left = 20; logo.Top = 16; logo.Width = 384; logo.Height = 120;
             logo.SizeMode = PictureBoxSizeMode.Zoom;
             logo.BackColor = Color.Transparent;
             Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream("Amdlss5.logo.png");
-            if (s != null) logo.Image = Image.FromStream(s);
+            if (s != null)
+            {
+                recursos.Add(s);   // Image.FromStream precisa do fluxo aberto enquanto a imagem viver
+                Image img = Image.FromStream(s);
+                recursos.Insert(0, img);
+                logo.Image = img;
+            }
             Controls.Add(logo);
             Label sub = Rotulo(T.S("subtitulo"), 424, 22, 340, Cinza, Font);
             sub.Height = 84;
-            Label ver = Rotulo("", 424, 112, 340, Cinza, new Font("Consolas", 9F));
+            Label ver = Rotulo("", 424, 112, 340, Cinza, Fonte("Consolas", 9F, FontStyle.Regular));
             ver.Name = "versao";
 
             // 09/10 (usuario: botoes cortados): o titulo em negrito e mais alto que o espaco antigo e cobria o topo dos botoes.
@@ -142,9 +180,9 @@ namespace Amdlss5.Instalador
             txtLog.Left = 20; txtLog.Top = logTopo; txtLog.Width = 740; txtLog.Height = logAltura;
             txtLog.Multiline = true; txtLog.ReadOnly = true; txtLog.ScrollBars = ScrollBars.Vertical; txtLog.WordWrap = true;
             txtLog.BackColor = Painel; txtLog.ForeColor = Texto; txtLog.BorderStyle = BorderStyle.FixedSingle;
-            txtLog.Font = new Font("Consolas", 8.75F);
+            txtLog.Font = Fonte("Consolas", 8.75F, FontStyle.Regular);
             Controls.Add(txtLog);
-            lblRodape = Rotulo("", 20, rodapeY, 740, Cinza, new Font("Segoe UI", 8F));
+            lblRodape = Rotulo("", 20, rodapeY, 740, Cinza, Fonte("Segoe UI", 8F, FontStyle.Regular));
             ClientSize = new Size(780, rodapeY + lblRodape.Height + 12);
 
             btnPasta.Click += delegate { EscolherPasta(); };
@@ -337,6 +375,13 @@ namespace Amdlss5.Instalador
                 MessageBox.Show(this, T.F("bloqueado", string.Join("\r\n", jogo.Bloqueios.ToArray())), T.S("erro_titulo"), MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
+            // anticheat (mesma regra da biblioteca): a pasta escolhida e a do exe; o modo silencioso nao muda
+            if (Classificacao.TemAnticheat(jogo.PastaMod, jogo.Raiz))
+            {
+                Linha(T.S("motivo_anticheat"));
+                MessageBox.Show(this, T.F("bloqueado", T.S("motivo_anticheat")), T.S("erro_titulo"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
             if (jogo.Avisos.Count > 0 && MessageBox.Show(this, T.F("avisos_continuar", string.Join("\r\n\r\n", jogo.Avisos.ToArray())), T.S("avisos_titulo"),
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
 
@@ -344,39 +389,49 @@ namespace Amdlss5.Instalador
             o.InstalarReframework = chkRef.Checked;
             o.PermitirDownload = chkBaixar.Checked;
             o.Idioma = T.Codigo;
-            foreach (string falta in payload.FaltandoNvidia())
-            {
-                bool nv = falta == Util.NomeNvngx;
-                MessageBox.Show(this, T.S(nv ? "pedir_nvngx" : "pedir_pesos"), T.S("avisos_titulo"), MessageBoxButtons.OK, MessageBoxIcon.Information);
-                using (OpenFileDialog d = new OpenFileDialog())
-                {
-                    d.Title = falta;
-                    d.Filter = T.S(nv ? "filtro_nvngx" : "filtro_pesos");
-                    d.CheckFileExists = true;
-                    if (d.ShowDialog(this) != DialogResult.OK) { Linha(T.S("cancelado")); return; }
-                    if (nv)
-                    {
-                        InfoPe pe = Pe.Ler(d.FileName);
-                        if (pe == null || !pe.X64 || !pe.EhDll)
-                        {
-                            MessageBox.Show(this, T.F("nvngx_invalido", d.FileName), T.S("erro_titulo"), MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            return;
-                        }
-                    }
-                    o.Fornecidos[falta] = d.FileName;
-                }
-            }
+            if (!PedirArquivosNvidia(this, payload, o, this)) return;
             Jogo j = jogo;
             Payload p = payload;
             txtLog.Clear();
             Ocupado(true);
+            mexendoNoJogo = true;
             EmSegundoPlano(delegate { return (object)Instalacao.Instalar(j, p, o, this); }, delegate (object r, Exception e)
             {
+                mexendoNoJogo = false;
                 Ocupado(false);
                 if (e == null) MessageBox.Show(this, T.F("sucesso", j.PastaMod), T.S("sucesso_titulo"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                 else TratarErro(e);
                 Detectar(j.Escolhido);
             });
+        }
+
+        // Arquivos da NVIDIA que o pacote nao traz: pede cada um ao usuario (vao em o.Fornecidos). Falso = cancelado ou
+        // arquivo invalido (nada a instalar). Tambem usado pela Biblioteca.
+        internal static bool PedirArquivosNvidia(IWin32Window dono, Payload p, OpcoesInstalacao o, IRelato r)
+        {
+            foreach (string falta in p.FaltandoNvidia())
+            {
+                bool nv = falta == Util.NomeNvngx;
+                MessageBox.Show(dono, T.S(nv ? "pedir_nvngx" : "pedir_pesos"), T.S("avisos_titulo"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                using (OpenFileDialog d = new OpenFileDialog())
+                {
+                    d.Title = falta;
+                    d.Filter = T.S(nv ? "filtro_nvngx" : "filtro_pesos");
+                    d.CheckFileExists = true;
+                    if (d.ShowDialog(dono) != DialogResult.OK) { r.Linha(T.S("cancelado")); return false; }
+                    if (nv)
+                    {
+                        InfoPe pe = Pe.Ler(d.FileName);
+                        if (pe == null || !pe.X64 || !pe.EhDll)
+                        {
+                            MessageBox.Show(dono, T.F("nvngx_invalido", d.FileName), T.S("erro_titulo"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            return false;
+                        }
+                    }
+                    o.Fornecidos[falta] = d.FileName;
+                }
+            }
+            return true;
         }
 
         void DesinstalarClick()
@@ -386,12 +441,14 @@ namespace Amdlss5.Instalador
             Jogo j = jogo;
             txtLog.Clear();
             Ocupado(true);
+            mexendoNoJogo = true;
             EmSegundoPlano(delegate { return (object)Instalacao.Desinstalar(j, this); }, delegate (object r, Exception e)
             {
+                mexendoNoJogo = false;
                 Ocupado(false);
                 if (e == null)
                 {
-                    bool limpo = !Directory.Exists(Path.Combine(j.PastaMod, Util.PastaBackup));
+                    bool limpo = !Sessoes.Resta(j.PastaMod);
                     MessageBox.Show(this, limpo ? T.S("des_sucesso") : T.F("des_parcial", Path.Combine(j.PastaMod, Util.PastaBackup), r),
                         T.S("des_titulo"), MessageBoxButtons.OK, limpo ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
                 }
@@ -412,7 +469,8 @@ namespace Amdlss5.Instalador
                 {
                     try
                     {
-                        ProcessStartInfo psi = new ProcessStartInfo(Application.ExecutablePath, "--pasta \"" + jogo.Escolhido + "\" --payload \"" + pastaPayload + "\"");
+                        // aspas pelas regras do Windows: "E:\" (raiz de um disco) nao pode virar E:" e engolir o --payload
+                        ProcessStartInfo psi = new ProcessStartInfo(Application.ExecutablePath, "--pasta " + Util.Argumento(jogo.Escolhido) + " --payload " + Util.Argumento(pastaPayload) + " --idioma " + T.Codigo);
                         psi.Verb = "runas";
                         psi.UseShellExecute = true;
                         Process.Start(psi);
@@ -424,7 +482,10 @@ namespace Amdlss5.Instalador
             else MessageBox.Show(this, e.Message, T.S("erro_titulo"), MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
 
-        void EmSegundoPlano(Func<object> trabalho, Action<object, Exception> fim)
+        void EmSegundoPlano(Func<object> trabalho, Action<object, Exception> fim) { EmSegundoPlano(this, trabalho, fim); }
+
+        // trabalho numa thread de fundo; fim(resultado, erro) volta na thread da janela (tambem usado pela Biblioteca)
+        internal static void EmSegundoPlano(Control dono, Func<object> trabalho, Action<object, Exception> fim)
         {
             Thread t = new Thread(delegate ()
             {
@@ -432,7 +493,7 @@ namespace Amdlss5.Instalador
                 Exception erro = null;
                 try { r = trabalho(); }
                 catch (Exception e) { erro = e; }
-                try { BeginInvoke(fim, r, erro); } catch (Exception) { }
+                try { dono.BeginInvoke(fim, r, erro); } catch (Exception) { }
             });
             t.IsBackground = true;
             t.Start();

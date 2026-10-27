@@ -6,9 +6,13 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include "../../../runtime/pasta_helper.h"
+#include "../../../runtime/fg_externo.h"
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <vector>
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
@@ -19,7 +23,9 @@ std::atomic_flag ocupado=ATOMIC_FLAG_INIT;
 std::atomic<bool> ativo{false};
 std::atomic<bool> carregando{false};
 Agenda agenda;
-HANDLE timer=nullptr;bool timer_tentado=false,alta_resolucao=false;
+
+struct TimerDaThread{HANDLE h=nullptr;bool tentado=false;~TimerDaThread(){if(h)CloseHandle(h);}};
+std::atomic<bool> alta_resolucao{false};
 std::atomic<unsigned long long> quadros{0},atrasados{0},esperados{0},pulados{0},espera_ns{0},alinhados{0},espera_depois_ns{0};
 std::atomic<long long> folga_atual{0};
 
@@ -42,13 +48,6 @@ void ritmo_log(long long T) noexcept {
 std::atomic<unsigned> fg_umjob{0};
 long long umjob_saida=0,umjob_T=0;long long umjob_nat[16]{};unsigned umjob_n=0;unsigned long long umjob_quadros=0,umjob_faltas=0,umjob_esperas=0;long long umjob_espera_ns=0;
 void umjob_log() noexcept {
-    try{
-        const auto arquivo=log_limitador();if(arquivo.empty())return;
-        std::ofstream log(arquivo,std::ios::app);
-        log<<"FG_UMJOB T_ms="<<double(umjob_T)/1e6<<" fps="<<(umjob_T?1e9/double(umjob_T):0.)<<" quadros="<<umjob_quadros<<" faltas="<<umjob_faltas
-           <<" esperas="<<umjob_esperas<<" espera_media_ms="<<(umjob_quadros?double(umjob_espera_ns)/1e6/double(umjob_quadros):0.)
-           <<" pid="<<GetCurrentProcessId()<<" tick="<<GetTickCount64()<<"\n";
-    }catch(...){}
 }
 bool umjob_fg(long long chegada) noexcept {
     if(!fg_umjob.load(std::memory_order_relaxed)||!nrreproject::fg_ativo()){umjob_saida=0;umjob_T=0;umjob_n=0;return false;}
@@ -110,6 +109,11 @@ void carregar_ini(void* base) noexcept {
     if(definido.compare_exchange_strong(livre,true,std::memory_order_acq_rel))pedido.store(valor,std::memory_order_release);
 }
 }
+unsigned pedido_real() noexcept {
+
+    thread_local nrfgext::Vigia vigia_fg;
+    return real_com_fg(pedido.load(std::memory_order_relaxed),nrfgext::gerando_agora(vigia_fg,GetTickCount64()));
+}
 long long agora_ns() noexcept {
     static const long long frequencia=qpc_frequencia();
     LARGE_INTEGER t{};QueryPerformanceCounter(&t);
@@ -119,12 +123,14 @@ long long agora_ns() noexcept {
 
 void esperar_ate(long long prazo) noexcept {
     constexpr long long giro=300'000;
-    if(!timer_tentado){
-        timer_tentado=true;
-        timer=CreateWaitableTimerExW(nullptr,nullptr,CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,TIMER_ALL_ACCESS);
-        alta_resolucao=timer!=nullptr;
-        if(!timer)timer=CreateWaitableTimerExW(nullptr,nullptr,0,TIMER_ALL_ACCESS);
+    thread_local TimerDaThread t;
+    if(!t.tentado){
+        t.tentado=true;
+        t.h=CreateWaitableTimerExW(nullptr,nullptr,CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,TIMER_ALL_ACCESS);
+        if(t.h)alta_resolucao.store(true,std::memory_order_relaxed);
+        else t.h=CreateWaitableTimerExW(nullptr,nullptr,0,TIMER_ALL_ACCESS);
     }
+    const HANDLE timer=t.h;
     const long long resta=prazo-agora_ns();
     if(timer&&resta>giro){
         LARGE_INTEGER due{};due.QuadPart=-((resta-giro)/100);
@@ -135,7 +141,7 @@ void esperar_ate(long long prazo) noexcept {
 }
 Contagem contagem() noexcept {
     return {quadros.load(),atrasados.load(),esperados.load(),pulados.load(),alinhados.load(),double(espera_ns.load())/1e6,
-            double(espera_depois_ns.load())/1e6,double(folga_atual.load())/1e6,modo.load(),alta_resolucao};
+            double(espera_depois_ns.load())/1e6,double(folga_atual.load())/1e6,modo.load(),alta_resolucao.load(std::memory_order_relaxed)};
 }
 namespace {
 
@@ -161,7 +167,7 @@ long long passo(unsigned fps) noexcept {
 void ritmar(void* base) noexcept {
 
     if(!carregando.load(std::memory_order_acquire))carregar_ini(base);
-    unsigned fps=pedido.load(std::memory_order_relaxed);
+    unsigned fps=pedido_real();
     if(!fps&&(fg_ritmo.load(std::memory_order_relaxed)||fg_umjob.load(std::memory_order_relaxed))){
         static std::atomic_flag ritmo_ocupado=ATOMIC_FLAG_INIT;
         if(!ritmo_ocupado.test_and_set(std::memory_order_acquire)){
@@ -184,8 +190,8 @@ void depois() noexcept {
     if(ocupado.test_and_set(std::memory_order_acquire))return;
     struct Soltar{~Soltar(){ocupado.clear(std::memory_order_release);}} soltar;
     if(!pendente.exchange(false,std::memory_order_relaxed))return;
-    if(modo_quadro==2){(void)passo(pedido.load(std::memory_order_relaxed));return;}
-    const unsigned fps=pedido.load(std::memory_order_relaxed);
+    if(modo_quadro==2){(void)passo(pedido_real());return;}
+    const unsigned fps=pedido_real();
     if(!fps||fps!=agenda.fps)return;
     const long long agora=agora_ns();
     folga.registrar(agora-fim_antes);

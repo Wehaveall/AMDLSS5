@@ -1,0 +1,11 @@
+#ifndef NR_AREA_ROSTO_HLSLI
+#define NR_AREA_ROSTO_HLSLI
+
+#define NR_AREA_SEMI_X 0.5
+#define NR_AREA_SEMI_Y 0.6
+#define NR_AREA_BORDA0 0.85
+#define NR_AREA_BORDA1 1.15
+
+#define NR_AREA_MIOLO0 0.55
+#define NR_AREA_MIOLO1 0.85
+#endif

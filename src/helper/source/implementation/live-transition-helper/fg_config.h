@@ -2,6 +2,9 @@
 #include "../../../runtime/nr_publico.h"
 
 #include <windows.h>
+#include "../../../runtime/log_fila.h"
+#include "fg_comum.h"
+#include "../../../runtime/pasta_helper.h"
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -53,29 +56,9 @@ inline std::int32_t substituta(void** ctx,Header* desc){
  using F=std::int32_t(*)(void*,void**,Header*);
  return reinterpret_cast<F>(vt[5])(obj,ctx,desc);
 }
+
 inline void instalar(const std::wstring& ini) noexcept {
  auto& e=st();int zero=0;if(!e.estado.compare_exchange_strong(zero,1))return;
- try{
-  e.log=NRCFG_INT(L"DlssNrOnAmd",L"NeuralFgConfigLog",0,ini.c_str())==1;
-  e.sem_hudless=NRCFG_INT(L"DlssNrOnAmd",L"NeuralFgSemHudless",0,ini.c_str())==1;
-  if(!e.log&&!e.sem_hudless){e.estado=3;return;}
-  HMODULE fg=GetModuleHandleW(L"amd_fidelityfx_framegeneration_dx12.dll");
-  if(!fg){
-   wchar_t p[32768]{};std::wstring pastas[3];
-   if(HMODULE ld=GetModuleHandleW(L"amd_fidelityfx_loader_dx12.dll");ld&&GetModuleFileNameW(ld,p,32768)){std::wstring s(p);pastas[0]=s.substr(0,s.find_last_of(L"\\/"));}
-   if(GetModuleFileNameW(nullptr,p,32768)){std::wstring s(p);pastas[1]=s.substr(0,s.find_last_of(L"\\/"));}
-   if(!ini.empty())pastas[2]=ini.substr(0,ini.find_last_of(L"\\/"));
-   for(auto& d:pastas){if(d.empty())continue;const std::wstring f=d+L"\\amd_fidelityfx_framegeneration_dx12.dll";
-    if(GetFileAttributesW(f.c_str())!=INVALID_FILE_ATTRIBUTES){fg=LoadLibraryW(f.c_str());if(fg)break;}}
-  }
-  if(!fg){escrever("FG_CONFIG provedor de FG ausente");e.estado=3;return;}
-  auto* alvo=reinterpret_cast<unsigned char*>(GetProcAddress(fg,"ffxConfigure"));
-  if(!alvo||std::memcmp(alvo,prologo,sizeof prologo)!=0){escrever("FG_CONFIG ffxConfigure do provedor desconhecido: nada feito");e.estado=3;return;}
-  unsigned char p[14]={0xFF,0x25,0,0,0,0};const std::uint64_t nosso=reinterpret_cast<std::uint64_t>(&substituta);std::memcpy(p+6,&nosso,8);
-  DWORD velho=0;if(!VirtualProtect(alvo,sizeof p,PAGE_EXECUTE_READWRITE,&velho)){escrever("FG_CONFIG VirtualProtect falhou");e.estado=3;return;}
-  std::memcpy(alvo,p,sizeof p);DWORD x=0;VirtualProtect(alvo,sizeof p,velho,&x);FlushInstructionCache(GetCurrentProcess(),alvo,sizeof p);
-  char s[160];NRLOGF(s,sizeof s,"FG_CONFIG instalado log=%d sem_hudless=%d",int(e.log),int(e.sem_hudless));escrever(s);
-  e.estado=2;
- }catch(...){e.estado=3;}
+ (void)ini;e.estado=3;
 }
 }

@@ -1,10 +1,12 @@
 #include "live_image.h"
 #include "image_pins.h"
 #include <windows.h>
-#include <bcrypt.h>
+#include "../../../runtime/sha256.h"
 #include <array>
 #include <cstring>
 #include <limits>
+#include <mutex>
+#include <string>
 #include <vector>
 
 namespace nrliveimage {
@@ -12,12 +14,6 @@ namespace {
 bool reject(VerificationDiagnostic* d,VerificationStage stage,std::uint32_t rva=0,DWORD error=0,DWORD protection=0) noexcept {
     if(d)*d={stage,rva,error,protection};return false;
 }
-struct Hash {
-    BCRYPT_ALG_HANDLE algorithm{};
-    BCRYPT_HASH_HANDLE hash{};
-    std::vector<std::uint8_t> object;
-    ~Hash() { if(hash)BCryptDestroyHash(hash); if(algorithm)BCryptCloseAlgorithmProvider(algorithm,0); }
-};
 struct File {
     HANDLE value=INVALID_HANDLE_VALUE;
     ~File() { if(value!=INVALID_HANDLE_VALUE)CloseHandle(value); }
@@ -108,24 +104,43 @@ bool inspect_mapped_snapshot(const void* data,std::size_t size,VerificationDiagn
     if(diagnostic)*diagnostic={VerificationStage::Verified,0,0};return true;
 }
 bool detail::sha256_matches(const void* data,std::size_t size,const std::uint8_t* expected) noexcept {
-    if(!data||!expected||size>std::numeric_limits<ULONG>::max())return false;
-    try {
-        Hash state;
-        if(BCryptOpenAlgorithmProvider(&state.algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0)return false;
-        ULONG length=0,received=0;
-        if(BCryptGetProperty(state.algorithm,BCRYPT_OBJECT_LENGTH,reinterpret_cast<PUCHAR>(&length),sizeof(length),&received,0)<0||
-           received!=sizeof(length)||!length||length>65536)return false;
-        state.object.resize(length);
-        std::array<std::uint8_t,32> digest{};
-        if(BCryptCreateHash(state.algorithm,&state.hash,state.object.data(),length,nullptr,0,0)<0||
-           BCryptHashData(state.hash,const_cast<PUCHAR>(static_cast<const UCHAR*>(data)),static_cast<ULONG>(size),0)<0||
-           BCryptFinishHash(state.hash,digest.data(),static_cast<ULONG>(digest.size()),0)<0)return false;
-        return std::memcmp(digest.data(),expected,digest.size())==0;
-    } catch(...) { return false; }
+    return nrsha::igual(data,size,expected);
 }
 bool inspect_disk_snapshot(const void* data,std::size_t size) noexcept {
 
     return size==file_size&&detail::sha256_matches(data,size,pins::digest);
+}
+namespace {
+
+std::mutex& admitidos_trava() {static std::mutex* m=new std::mutex;return *m;}
+std::vector<std::wstring>& admitidos() {static auto* v=new std::vector<std::wstring>;return *v;}
+bool ja_admitido(const wchar_t* path) {
+    std::lock_guard<std::mutex> t(admitidos_trava());
+    for(const auto& p:admitidos())if(p==path)return true;
+    return false;
+}
+
+bool conferir_disco(const wchar_t* path,VerificationDiagnostic* diagnostic) {
+    File file;
+    file.value=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(file.value==INVALID_HANDLE_VALUE)return reject(diagnostic,VerificationStage::DiskOpen,0,GetLastError());
+    LARGE_INTEGER length{};
+    if(!GetFileSizeEx(file.value,&length))return reject(diagnostic,VerificationStage::DiskSize,0,GetLastError());
+    if(length.QuadPart!=file_size)return reject(diagnostic,VerificationStage::DiskSize);
+    std::vector<std::uint8_t> disk(file_size);
+    DWORD received=0;
+    if(!ReadFile(file.value,disk.data(),static_cast<DWORD>(disk.size()),&received,nullptr))return reject(diagnostic,VerificationStage::DiskRead,0,GetLastError());
+    if(received!=disk.size())return reject(diagnostic,VerificationStage::DiskRead,0,ERROR_HANDLE_EOF);
+    if(!inspect_disk_snapshot(disk.data(),disk.size()))return reject(diagnostic,VerificationStage::DiskDigest);
+    std::lock_guard<std::mutex> t(admitidos_trava());
+    bool novo=true;for(const auto& p:admitidos())if(p==path)novo=false;
+    if(novo)admitidos().emplace_back(path);
+    return true;
+}
+}
+bool disk_file_admitted(const wchar_t* path) noexcept {
+    if(!path||!*path)return false;
+    try{return ja_admitido(path)||conferir_disco(path,nullptr);}catch(...){return false;}
 }
 bool verify_live_image(void* base) noexcept {
     return verify_live_image(base,nullptr);
@@ -141,21 +156,11 @@ bool verify_live_image(void* base,VerificationDiagnostic* diagnostic) noexcept {
         if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                               reinterpret_cast<LPCWSTR>(base),&actual))return reject(diagnostic,VerificationStage::ModuleIdentity,0,GetLastError());
         if(actual!=base)return reject(diagnostic,VerificationStage::ModuleIdentity);
-        wchar_t path[32768]{};
-        const auto path_size=GetModuleFileNameW(actual,path,32768);
+        std::vector<wchar_t> path(32768);
+        const auto path_size=GetModuleFileNameW(actual,path.data(),32768);
         if(!path_size)return reject(diagnostic,VerificationStage::ModulePath,0,GetLastError());
         if(path_size>=32768)return reject(diagnostic,VerificationStage::ModulePath,0,ERROR_INSUFFICIENT_BUFFER);
-        File file;
-        file.value=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-        if(file.value==INVALID_HANDLE_VALUE)return reject(diagnostic,VerificationStage::DiskOpen,0,GetLastError());
-        LARGE_INTEGER length{};
-        if(!GetFileSizeEx(file.value,&length))return reject(diagnostic,VerificationStage::DiskSize,0,GetLastError());
-        if(length.QuadPart!=file_size)return reject(diagnostic,VerificationStage::DiskSize);
-        std::vector<std::uint8_t> disk(file_size);
-        DWORD received=0;
-        if(!ReadFile(file.value,disk.data(),static_cast<DWORD>(disk.size()),&received,nullptr))return reject(diagnostic,VerificationStage::DiskRead,0,GetLastError());
-        if(received!=disk.size())return reject(diagnostic,VerificationStage::DiskRead,0,ERROR_HANDLE_EOF);
-        if(!inspect_disk_snapshot(disk.data(),disk.size()))return reject(diagnostic,VerificationStage::DiskDigest);
+        if(!ja_admitido(path.data())&&!conferir_disco(path.data(),diagnostic))return false;
         std::vector<std::uint8_t> snapshot(image_size);
         for(const auto& pin:pins::spans) {
             if(!readable_image_range(base,address+pin.rva,pin.size,pin.executable,false,error,protection))return reject(diagnostic,VerificationStage::SpanProtection,pin.rva,error,protection);

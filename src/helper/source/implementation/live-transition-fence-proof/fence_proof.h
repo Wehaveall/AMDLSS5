@@ -8,6 +8,15 @@ struct Identity { std::uintptr_t device{}; std::uintptr_t queue{}; };
 enum class Status { Ready, Pending, Completed, Failed };
 struct Result { Status status{Status::Failed}; Value generation{}; Value target{}; Identity identity{}; };
 
+enum class DredLista { Completa, NaoComecou, Parou };
+constexpr DredLista dred_lista(std::uint32_t feito, std::uint32_t total) noexcept {
+    return feito >= total ? DredLista::Completa : feito == 0 ? DredLista::NaoComecou : DredLista::Parou;
+}
+struct DredJanela { std::uint32_t de{}, ate{}; };
+constexpr DredJanela dred_janela(std::uint32_t feito, std::uint32_t total, std::uint32_t lado = 4) noexcept {
+    return { feito > lado ? feito - lado : 0u, (feito < total && total - feito > lado) ? feito + lado : total };
+}
+
 class Backend {
 public:
     virtual ~Backend() = default;
@@ -20,6 +29,8 @@ public:
     virtual bool arm_event(Value target, void* event) noexcept { (void)target; (void)event; return false; }
 
     virtual long removed_reason() noexcept { return 0; }
+
+    virtual void dred() noexcept {}
 };
 class OwnedFence {
 public:
@@ -38,6 +49,7 @@ public:
 
     Value last_read() const noexcept { return last_read_; }
     long removed_reason() noexcept;
+    void dred() noexcept;
 private:
     std::unique_ptr<Backend> backend_;
     Result result_;
