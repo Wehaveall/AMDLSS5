@@ -21,7 +21,7 @@ Tested **only** on a **Radeon RX 9070 XT**, in these games:
 - Onimusha: Way of the Sword (demo)
 - Cyberpunk 2077
 - Monster Hunter Wilds
-- The Witcher 3: Wild Hunt (DirectX 12): in the installer select `bin\x64_dx12\witcher3.exe`
+- The Witcher 3: Wild Hunt (DirectX 12): if you add it manually, select `bin\x64_dx12\witcher3.exe`
 - Shadow of the Tomb Raider: choose **XeSS** as the upscaler in the game settings (the mod turns it into FSR)
 - Red Dead Redemption 2: set the API to **DirectX 12** and choose **AMD FSR 2** in the game settings (the mod upgrades it)
 - Stellar Blade: choose **AMD FSR 3.1** in the game settings
@@ -35,9 +35,16 @@ installed.
 
 1. Download `AMDLSS5-<version>.zip` from the releases page and extract **the whole folder** (the `payload` folder stays
    next to the installer).
-2. Run `AMDLSS5-Instalador.exe`, pick the game in the library (or select its folder) and click **Install**.
-3. In game, keep the upscaler named above on. The network starts **off**: press **F10** to turn it on and off.
-4. To remove: run the installer, pick the game and click **Uninstall** (the game folder goes back as it was).
+2. Run `AMDLSS5-Instalador.exe`. It finds the games installed on your PC (Steam, Epic, GOG, Ubisoft, EA, Battle.net and
+   Xbox) and shows them as a library of covers, grouped as **Tested**, **Not tested yet** and **Not supported yet**.
+   Each cover shows its state: *Not installed*, *Installed v<version>* or *Update available*. Games with anti-cheat show
+   a red banner and cannot be installed.
+3. Click the game's cover to **Install**, **Update** or **Remove** the mod. A game that is not in the list can be added
+   with **Add a game manually...** (select its `.exe`).
+4. In game, set the upscaler named above. The network starts **off**: press **F10** to turn it on and off; **End** opens
+   the mod menu.
+5. To remove: open the installer, click the game and choose **Remove** (the game folder goes back exactly as it was;
+   anything the mod replaced is kept in `AMDLSS5_backup` until then).
 
 ## Features
 
