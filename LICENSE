@@ -1,0 +1,45 @@
+MIT License
+
+Copyright (c) 2026 Denis Valjean and AMDLSS5 contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+------------------------------------------------------------------------------
+Scope of this license
+------------------------------------------------------------------------------
+
+This license covers the source code and build scripts written by the AMDLSS5
+authors (the host nr_host, its loader, the helper, the installer and the
+shaders and kernels in this repository that carry no other notice).
+
+It does NOT cover, and grants no rights to, the following. Each keeps its own
+license or terms, listed in instalador/modelos/THIRD_PARTY_NOTICES.txt:
+
+  * NVIDIA DLSS / Neural Rendering files (nvngx_dlssnr.dll and the network
+    weights read from it). They are NVIDIA's property and are used unchanged.
+  * The SCRFD detection model weights (nr_scrfd.bin, InsightFace project):
+    research / non-commercial use only.
+  * AMD ROCm/HIP runtime DLLs and AMD FidelityFX binaries and SDK files.
+  * Other third-party components with their own notices (for example RenoDX,
+    RedDukeDev kernels, OpenDLSS-NR, REFramework SDK, XeSS SDK headers, Khronos
+    PBR Neutral, ACES 2.0, Bend Screen Space Shadows).
+
+Research material under analysis/, docs/ and other archive folders that records
+measurements of third-party products is kept as history and is not part of the
+shipped 2.0 code; see docs/LICENCA-AUDITORIA-2.0.md.
