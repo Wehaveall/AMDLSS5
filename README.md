@@ -8,8 +8,10 @@ the mod menu.
 
 **Supported games: see [COMPATIBLE_GAMES.md](COMPATIBLE_GAMES.md)** (the list keeps growing, with the setting each game needs).
 
-The source code currently in this repository is the 1.6.1 source, with its original credits kept in the files; newer
-source will be published here later.
+**Source code status.** This repository currently holds the 1.6.1 source (original credits kept in the files). The 2.x source
+is being cleaned up and will be published here in stages, starting with the 2.5 integration code (MIT). A few parts will stay
+closed: NVIDIA's network data, third-party binaries such as the Apex frame generator, and some proprietary engine components.
+Every release lists the SHA-256 of its files, so you can always verify exactly what you download.
 
 ## What's new in 2.5
 
